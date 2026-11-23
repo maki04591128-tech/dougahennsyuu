@@ -75,6 +75,7 @@ BACKGROUNDS = {
     "plum": ("0x1F0F2E", "0x5A2D6E"),
 }
 CHART_MAX_SEC = 30.0
+HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発話数の上限
 
 
 @dataclass
@@ -305,7 +306,13 @@ class DirectionService:
         windows: list[tuple[Shot, int, int]] = []
         for i, s in enumerate(mains):
             start = max(lines[s.from_line - 1].start, title_end)
-            end = lines[mains[i + 1].from_line - 1].start if i + 1 < len(mains) else total
+            if i + 1 < len(mains):
+                # 次の図・カードまで表示する。ただし説明している範囲（to_line）の
+                # 2 発話先までに留める（話題が変わった後に古い図を出し続けない）
+                hold = lines[min(len(lines), (s.to_line or s.from_line) + HOLD_LINES) - 1].end
+                end = min(lines[mains[i + 1].from_line - 1].start, hold)
+            else:
+                end = total
             end = max(end, title_end)
             if end - start < frames(0.5):
                 skipped.append(f"{s.from_line}: 表示時間が短すぎる {s.kind.value} を外しました")

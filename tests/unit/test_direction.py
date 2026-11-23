@@ -74,3 +74,20 @@ def test_card_layout_and_placement():
     assert t.fit.value == "fit" and t.scale == round(600 / 1920, 4) and abs(t.y + 0.08) < 1e-9
     t = native_transform(1000, 900, 1920, 1080, cx=0.5, cy=0.42, max_h=0.58)
     assert t.scale * 1080 <= 0.58 * 1080 + 1
+
+
+def test_infer_unit_and_whitespace():
+    from video_automation.services.direction.plan import infer_unit
+
+    assert infer_unit([114, 97], "w-BNは114ギガパスカル、ダイヤは97ギガパスカル") == "GPa"
+    assert infer_unit([18], "約18%上回る") == "%"
+    assert infer_unit([46], "約46GPaでした") == "GPa"
+    assert infer_unit([3], "3人います") == ""
+    plan = DirectionPlan(
+        shots=[
+            Shot(kind="chart", from_line=2, labels=["a", "b"], values=[114, 97]),
+            Shot(kind="keyword", from_line=3, text="約46\nギガパスカル"),
+        ]
+    )
+    out = normalize(plan, LINES)
+    assert out.shots[0].unit == "GPa" and out.shots[1].text == "約46 ギガパスカル"

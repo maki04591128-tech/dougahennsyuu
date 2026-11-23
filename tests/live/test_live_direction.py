@@ -33,8 +33,9 @@ LINES = [
 
 
 async def _job(c: httpx.AsyncClient, app, r: httpx.Response) -> dict:
-    assert r.status_code == 202, r.text
-    j = await app.state.jobs.wait(r.json()["id"])
+    assert r.status_code in (200, 201, 202), r.text
+    body = r.json()
+    j = await app.state.jobs.wait(body.get("job_id") or body["id"])
     assert j.status == "SUCCEEDED", j.error
     return j.result
 

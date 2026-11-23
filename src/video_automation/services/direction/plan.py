@@ -13,7 +13,7 @@ import unicodedata
 from typing import Any
 
 from video_automation.schemas.direction import MAIN_KINDS, DirectionPlan, Shot, ShotKind
-from video_automation.services.voice.reading import emphasis_terms
+from video_automation.services.voice.reading import UNITS, emphasis_terms
 
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -56,7 +56,8 @@ SYSTEM = (
     "(2〜5)、unit は単位。台本に無い数値は絶対に作らない。強調する項目は highlight(0始まり)。\n"
     "- keyword: 画面上部の短いテロップ(text, 12文字以内)。その発話に出てくる重要な語や数値。\n"
     "- image: 画像が分かりやすい場面。query に画像検索の語(日本語か英語)。\n"
-    "from_line はその演出を出し始める発話番号、to_line は出し終える発話番号。"
+    "from_line はその演出を出し始める発話番号、to_line はその演出が説明している最後の発話番号。"
+    "話題が変わったら（例: 計算の話から実験の話へ）、新しい card / chart を置く。"
     "2〜4 発話に 1 つは card / chart / image を置く。"
     "同じ発話から始まる card / chart / image は 1 つだけ。"
     "title は動画のタイトル(20文字以内)、subtitle は興味を引く一言(24文字以内)。"
@@ -85,8 +86,30 @@ def _keyword_ok(text: str, source: str) -> bool:
 
 
 def _trim(text: str, n: int) -> str:
-    text = text.strip()
+    text = re.sub(r"\s+", " ", text).strip()  # 改行や連続した空白は 1 つの空白に
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+_KANA_UNITS = sorted(((v, k) for k, v in UNITS.items() if len(v) >= 3), key=lambda x: -len(x[0]))
+
+
+def infer_unit(values: list[float], text: str) -> str:
+    """台本で数値の直後に書かれている単位（カタカナは記号に戻す。例: ギガパスカル→GPa）。"""
+    t = unicodedata.normalize("NFKC", text)
+    for v in values:
+        m = re.search(rf"(?<![\d.]){re.escape(_num_str(v))}\s*([^\d\s、。,]{{1,8}})", t)
+        if not m:
+            continue
+        tail = m.group(1)
+        for kana, sym in _KANA_UNITS:
+            if tail.startswith(kana):
+                return sym
+        for sym in sorted(UNITS, key=len, reverse=True):
+            if tail.startswith(sym):
+                return sym
+        if tail[0] in "%％":
+            return "%"
+    return ""
 
 
 def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> DirectionPlan:
@@ -123,6 +146,9 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
                 s.highlight = None
             s.labels = [_trim(x, 12) for x in s.labels]
             s.heading = _trim(s.heading, 24)
+            if not s.unit.strip():
+                s.unit = infer_unit(s.values, "".join(lines[s.from_line - 1 : s.to_line]))
+                s.unit = s.unit or infer_unit(s.values, "".join(lines))
         elif s.kind == ShotKind.KEYWORD:
             s.text = _trim(s.text or s.heading, 14)
             src = "".join(lines[s.from_line - 1 : s.to_line])
