@@ -23,6 +23,11 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
 - **Phase 8（対話型編集）** — 対話型台本作成（全自動 / 片側入力・固定セリフ・1発話の再生成・検証・版と差分）、
   会話による編集指示（計画 → 検証・修正 → 承認待ち）、承認の一元管理とポリシー、編集差分・履歴と取り消し、
   モデルを替えた再実行、MCP（mcp_script・mcp_core の計画）、台本作成（AI）・AIアシスタントタブUI
+- **Phase 9（統合・品質検査）** — E2E テスト、品質検査（音声・字幕同期・映像・ライセンス）と品質検査タブ、
+  性能レポート、動作環境の確認（`--doctor`）、Windows 配布物（zip＋セットアップ）、利用者マニュアル・運用ガイド
+
+利用者向けの説明は [docs/USER_MANUAL.md](docs/USER_MANUAL.md)、運用・トラブル対応は
+[docs/OPERATIONS.md](docs/OPERATIONS.md) を参照。
 
 ## Phase 2 の要点
 
@@ -166,6 +171,22 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   `set_user_script`, `generate_counterpart_dialogue`, `regenerate_dialogue`, `lock_dialogue_turn`,
   `validate_script`, `get_script_versions`（生成・登録は承認待ちの修正案になる）。mcp_core に
   `create_project`, `get_project_state`, `plan_edit`。
+
+## Phase 9 の要点
+
+- 品質検査（`POST /projects/{id}/qa` → Job、`GET /qa/{report_id}`、MCP `run_quality_check`）:
+  - 音声: ピーク（音割れ）・ラウドネス・セリフ間の音量差・前後/途中の無音・読み上げ速度
+  - 字幕: 未同期・重なり・音声区間からのはみ出し・表示時間・読む速さ・行数/文字数・ちらつき
+  - 映像: 解像度・fps・コーデック・長さ・音声の有無・ラウドネス（-14 LUFS）・トゥルーピーク・黒画面・静止
+  - ライセンス: 未確認・商用不可・改変禁止素材の加工・継承条件・必要なクレジット・記録の無い取り込み素材
+  - 測定は FFmpeg の ebur128 / silencedetect / blackdetect / freezedetect を 1 回の実行で行う。
+    結果は error（要修正）/ warning（要確認）/ info（参考）で、`qa_reports` に保存する。
+- E2E: `tests/integration/test_e2e.py`（偽エンジン＋実 FFmpeg）、`tests/live/test_live_e2e.py`
+  （実機。工程ごとの時間・GPU メモリ・RAM を `performance_report.md` に出力）。
+- `video-automation --doctor`: FFmpeg・Blender・LLM・音声・ACE-Step・データフォルダを確認する。
+- 配布物: `uv run python tools/build_release.py` → `dist/VideoAutomation-<版>-windows.zip`。展開して
+  `install.bat`（uv で Python 3.12 と固定版の依存を導入、ショートカット作成、環境確認）。
+- 台本・字幕タブで既存の台本（台本作成（AI）で作ったもの）を選んで音声・字幕にできる。
 
 ## セットアップ
 

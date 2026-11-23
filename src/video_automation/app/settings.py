@@ -8,7 +8,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "VideoAutomation"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.9.0"
 
 
 class Settings(BaseSettings):
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     freesound_api_key: SecretStr | None = None
     # Wikimedia の利用規約で連絡先入りの User-Agent が求められる
     http_user_agent: str = (
-        "VideoAutomation/0.8 (+https://github.com/maki04591128-tech/dougahennsyuu)"
+        "VideoAutomation/0.9 (+https://github.com/maki04591128-tech/dougahennsyuu)"
     )
     asset_search_cache_hours: float = Field(default=24.0, ge=0)  # Pixabay は24時間キャッシュ必須
     asset_max_download_mb: int = Field(default=1024, ge=1)

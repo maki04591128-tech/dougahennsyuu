@@ -37,6 +37,10 @@ class SubtitleWidget(QWidget):
         self._projects: list[dict[str, Any]] = []
 
         self.project_combo = QComboBox()
+        self.project_combo.currentIndexChanged.connect(self.load_scripts)
+        # 台本作成（AI）タブで作った台本もここで音声・字幕にできる
+        self.script_combo = QComboBox()
+        self.script_combo.currentIndexChanged.connect(self.select_script)
         self.style_combo = QComboBox()
         self.max_chars = QSpinBox()
         self.max_chars.setRange(0, 60)
@@ -68,6 +72,7 @@ class SubtitleWidget(QWidget):
 
         form = QFormLayout()
         form.addRow("プロジェクト", self.project_combo)
+        form.addRow("台本", self.script_combo)
         form.addRow("既定の話者", self.style_combo)
         form.addRow("1行の最大文字数", self.max_chars)
         btns = QHBoxLayout()
@@ -113,12 +118,50 @@ class SubtitleWidget(QWidget):
             self.project_combo.clear()
             for p in self._projects:
                 self.project_combo.addItem(f"{p['name']} ({p['width']}x{p['height']})", p["id"])
+            self.load_scripts()
             self.style_combo.clear()
             for sp in self.api.voice_speakers():
                 for st in sp["styles"]:
                     self.style_combo.addItem(f"{sp['name']}（{st['name']}）", st["id"])
         except Exception as exc:
             self._error("読み込み", exc)
+
+    def load_scripts(self, *_: Any) -> None:
+        pid = self.project_combo.currentData()
+        self.script_combo.blockSignals(True)
+        self.script_combo.clear()
+        self.script_combo.addItem("（新しい台本を下の欄から作成）", None)
+        if pid and hasattr(self.api, "list_scripts"):
+            try:
+                for sc in self.api.list_scripts(pid):
+                    n = len(sc.get("segments", []))
+                    label = sc.get("title") or sc["id"][:8]
+                    self.script_combo.addItem(f"{label}（{sc.get('mode', '')}・{n} 発話）", sc)
+            except Exception as exc:
+                self._error("台本一覧の取得", exc)
+        self.script_combo.blockSignals(False)
+
+    def select_script(self, *_: Any) -> None:
+        sc = self.script_combo.currentData()
+        if not sc:
+            self.script_id = None
+            self.cue_table.setRowCount(0)
+            self._set_stage(0)
+            return
+        self.script_id = sc["id"]
+        segs = sc.get("segments", [])
+        voiced = bool(segs) and all(x.get("audio_file_id") for x in segs)
+        cues: list[dict[str, Any]] = []
+        if voiced and hasattr(self.api, "subtitle_cues"):
+            try:
+                cues = self.api.subtitle_cues(sc["id"])
+            except Exception:  # noqa: BLE001 - 字幕が未生成のときは一覧なし
+                cues = []
+        synced = bool(cues) and all(c.get("start_frame") is not None for c in cues)
+        self.show_cues(cues)
+        self._set_stage(3 if synced else 2 if voiced else 1)
+        state = "字幕同期済み" if synced else "音声生成済み" if voiced else "音声未生成"
+        self.status_label.setText(f"台本を選びました（{len(segs)} 発話・{state}）")
 
     def _fps(self) -> float:
         pid = self.project_combo.currentData()

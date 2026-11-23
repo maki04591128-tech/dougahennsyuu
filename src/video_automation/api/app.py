@@ -15,6 +15,7 @@ from video_automation.api.routes import (
     motion,
     projects,
     providers,
+    qa,
     render,
     script_studio,
     subtitles,
@@ -236,6 +237,8 @@ def create_app(
     app.include_router(assistant.conversations, prefix=prefix)
     app.include_router(assistant.approvals, prefix=prefix)
     app.include_router(assistant.projects, prefix=prefix)
+    app.include_router(qa.projects, prefix=prefix)
+    app.include_router(qa.reports, prefix=prefix)
     app.include_router(subtitles.scripts, prefix=prefix)
     app.include_router(subtitles.router, prefix=prefix)
     app.include_router(asset_sources.sources, prefix=prefix)

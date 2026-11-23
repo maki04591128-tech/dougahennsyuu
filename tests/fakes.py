@@ -327,7 +327,18 @@ def _wav(seconds: float, rate: int = 24000) -> bytes:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(b"\x00\x00" * round(seconds * rate))
+        # 実際の音声に近いよう、無音ではなく -20 dBFS 程度の正弦波（品質検査で測れる）
+        import math
+        import struct
+
+        n = round(seconds * rate)
+        amp = 3277
+        w.writeframes(
+            b"".join(
+                struct.pack("<h", int(amp * math.sin(2 * math.pi * 220 * i / rate)))
+                for i in range(n)
+            )
+        )
     return buf.getvalue()
 
 

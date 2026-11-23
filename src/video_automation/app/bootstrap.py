@@ -24,6 +24,7 @@ from video_automation.services.music.music_service import MusicService
 from video_automation.services.orchestrator.approvals import ApprovalService
 from video_automation.services.orchestrator.history import HistoryService
 from video_automation.services.orchestrator.orchestrator import Orchestrator, ToolRouter
+from video_automation.services.qa.qa_service import QAService
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.script.studio import ScriptStudio
@@ -57,6 +58,7 @@ class AppContainer:
     approvals: ApprovalService
     history: HistoryService
     orchestrator: Orchestrator
+    qa: QAService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -130,4 +132,5 @@ async def build_container(
         approvals=approvals,
         history=HistoryService(db, timeline, approvals),
         orchestrator=orchestrator,
+        qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs),
     )

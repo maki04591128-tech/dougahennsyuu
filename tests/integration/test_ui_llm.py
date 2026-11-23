@@ -32,7 +32,7 @@ class FakeApi:
         self.active = None
 
     def health(self):
-        return {"status": "ok", "version": "0.8.0", "database": "connected"}
+        return {"status": "ok", "version": "0.9.0", "database": "connected"}
 
     def list_projects(self):
         return []
