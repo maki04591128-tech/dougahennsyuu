@@ -14,3 +14,17 @@ blender -b --factory-startup -P recipes.py -- <出力フォルダ> <フォント
 
 確認結果（Blender 5.3.0 / Windows / RTX 5050）: 13 レシピすべて成功。
 1080p・64 サンプルの立体文字＋被写界深度＋グローで約 0.52 秒／フレーム。
+
+## 動画編集機能（VSE）で MV / PV を作る
+
+- `vse_probe.py` — VSE の API を実機で調べる（ストリップ・エフェクト・合成方法・モディファイアの種類、テキスト／音／速度／グローの設定項目、コンポジタモディファイア、リタイミング）。結果は `vse_probe.json`
+- `vse_mv.py` — 曲から拍を検出し（Blender 同梱の aud + numpy）、VSE だけで 20 秒の MV を組んで書き出す。成否は `vse_mv.json`
+  - 拍のマーカー、音量フェード、3D シーンストリップ、2 拍ごとのカットとクロスフェード、ワイプ、スロー（SPEED・MULTIPLY）、調整レイヤー（カラーバランス・カーブ・拍ごとのズーム）、コンポジタモディファイア（ブルーム・周辺減光）、アクセントでのフラッシュ、黒帯、歌詞と題名の文字、SCREEN 合成の光、グロー
+
+```
+blender -b --factory-startup -P vse_probe.py -- <出力フォルダ>
+blender -b --factory-startup -P vse_mv.py -- <出力フォルダ> <素材フォルダ> <フォントのパス>
+```
+
+確認結果（Blender 5.3.0）: 13 機能すべて成功、84 BPM を検出、20 秒 1080p の書き出しに約 96 秒。
+手順とコードはスキル `blender-vse-mv-editing` にまとめた。
