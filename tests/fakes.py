@@ -57,6 +57,9 @@ class FakeServers:
         self.ollama_loaded: set[str] = set()
         self.lm_loaded: dict[str, str] = {"qwen/qwen3-8b": "inst-1"}
         self.requests: list[tuple[str, str, Any]] = []
+        # /api/chat の応答を差し替える（body -> content 文字列 or dict）。None で既定応答
+        self.chat_responder: Any = None
+        self.chat_bodies: list[dict[str, Any]] = []
         self.nemo = FakeNemo()
         from fake_assets import FakeAceStep, FakeAssetWeb
 
@@ -153,8 +156,14 @@ class FakeServers:
                 },
             )
         self.ollama_loaded.add(name)
+        self.chat_bodies.append(body)
         msg: dict[str, Any] = {"role": "assistant", "content": ""}
-        if body.get("tools"):
+        custom = self.chat_responder(body) if self.chat_responder else None
+        if custom is not None:
+            msg["content"] = (
+                custom if isinstance(custom, str) else json.dumps(custom, ensure_ascii=False)
+            )
+        elif body.get("tools"):
             tool = body["tools"][0]["function"]["name"]
             if m["tools"] == "native":
                 msg["tool_calls"] = [

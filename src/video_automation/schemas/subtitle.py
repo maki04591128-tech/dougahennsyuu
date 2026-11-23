@@ -37,6 +37,7 @@ class ScriptSegmentRead(BaseModel):
     audio_file_id: str | None
     start_frame: int | None
     end_frame: int | None
+    reply_to_segment_id: str | None = None
 
 
 class ScriptRead(BaseModel):

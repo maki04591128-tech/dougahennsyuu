@@ -1,6 +1,7 @@
 """メインウィンドウ (P1-08)。
 
-タブ: プロジェクト / LLM設定 / 音声 / 台本・字幕 / 素材・BGM / 編集・書き出し。"""
+タブ: プロジェクト / LLM設定 / 音声 / 台本作成（AI） / 台本・字幕 / 素材・BGM /
+編集・書き出し / AIアシスタント。"""
 
 from typing import Any
 
@@ -15,7 +16,9 @@ from PySide6.QtWidgets import (
 )
 
 from video_automation.ui.assets.widget import AssetsWidget
+from video_automation.ui.assistant.widget import AssistantWidget
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
+from video_automation.ui.script_studio.widget import ScriptStudioWidget
 from video_automation.ui.subtitle.widget import SubtitleWidget
 from video_automation.ui.timeline.widget import TimelineWidget
 from video_automation.ui.voice.widget import VoiceWidget
@@ -45,12 +48,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.llm_settings, "LLM設定")
         self.voice = VoiceWidget(api)
         self.tabs.addTab(self.voice, "音声")
+        self.studio = ScriptStudioWidget(api)
+        self.tabs.addTab(self.studio, "台本作成（AI）")
         self.subtitles = SubtitleWidget(api)
         self.tabs.addTab(self.subtitles, "台本・字幕")
         self.assets = AssetsWidget(api)
         self.tabs.addTab(self.assets, "素材・BGM")
         self.timeline = TimelineWidget(api)
         self.tabs.addTab(self.timeline, "編集・書き出し")
+        self.assistant = AssistantWidget(api)
+        self.tabs.addTab(self.assistant, "AIアシスタント")
         self.setCentralWidget(self.tabs)
 
     def refresh(self) -> None:
@@ -67,9 +74,13 @@ class MainWindow(QMainWindow):
             self.llm_settings.refresh()
         if hasattr(self.api, "voice_engines"):
             self.voice.refresh()
+        if hasattr(self.api, "studio_create"):
+            self.studio.refresh()
         if hasattr(self.api, "create_script"):
             self.subtitles.refresh()
         if hasattr(self.api, "asset_sources"):
             self.assets.refresh()
         if hasattr(self.api, "timeline"):
             self.timeline.refresh()
+        if hasattr(self.api, "send_message"):
+            self.assistant.refresh()

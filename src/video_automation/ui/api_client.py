@@ -288,5 +288,122 @@ class ApiClient:
         )
         return self.submit_command(project_id, {"type": "batch", "commands": cmds})
 
+    # ----- Phase 8: 対話型台本作成 -----
+    LLM_TIMEOUT = 600.0  # ローカル LLM の生成は数分かかることがある
+
+    def studio_create(self, project_id: str, **kw: Any) -> dict[str, Any]:
+        return self._json(self._http.post("/scripts/studio", json={"project_id": project_id, **kw}))
+
+    def studio_detail(self, script_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/scripts/{script_id}/detail"))
+
+    def studio_update(self, script_id: str, **kw: Any) -> dict[str, Any]:
+        return self._json(self._http.put(f"/scripts/{script_id}", json=kw))
+
+    def studio_generate(self, script_id: str, instruction: str = "", model_key: str | None = None):
+        body = {"instruction": instruction, "model_key": model_key}
+        return self._json(
+            self._http.post(f"/scripts/{script_id}/generate", json=body, timeout=self.LLM_TIMEOUT)
+        )
+
+    def studio_add_lines(
+        self, script_id: str, lines: list[dict[str, Any]], replace: bool = False
+    ) -> dict[str, Any]:
+        body = {"lines": lines, "replace": replace}
+        return self._json(self._http.post(f"/scripts/{script_id}/dialogue", json=body))
+
+    def studio_update_turn(self, script_id: str, turn_id: str, **kw: Any) -> dict[str, Any]:
+        return self._json(self._http.put(f"/scripts/{script_id}/dialogue/{turn_id}", json=kw))
+
+    def studio_delete_turn(self, script_id: str, turn_id: str) -> dict[str, Any]:
+        return self._json(self._http.delete(f"/scripts/{script_id}/dialogue/{turn_id}"))
+
+    def studio_lock(self, script_id: str, turn_id: str, locked: bool) -> dict[str, Any]:
+        url = f"/scripts/{script_id}/dialogue/{turn_id}/lock"
+        return self._json(self._http.put(url, json={"locked": locked}))
+
+    def studio_regenerate(
+        self, script_id: str, turn_id: str, candidates: int = 1, instruction: str = ""
+    ) -> dict[str, Any]:
+        url = f"/scripts/{script_id}/dialogue/{turn_id}/regenerate"
+        body = {"candidates": candidates, "instruction": instruction}
+        return self._json(self._http.post(url, json=body, timeout=self.LLM_TIMEOUT))
+
+    def studio_apply(self, script_id: str, turn_id: str, text: str) -> dict[str, Any]:
+        url = f"/scripts/{script_id}/dialogue/{turn_id}/apply"
+        return self._json(self._http.post(url, json={"text": text}))
+
+    def studio_validate(self, script_id: str, use_llm: bool = False) -> dict[str, Any]:
+        return self._json(
+            self._http.post(
+                f"/scripts/{script_id}/validate",
+                json={"use_llm": use_llm},
+                timeout=self.LLM_TIMEOUT,
+            )
+        )
+
+    def studio_versions(self, script_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get(f"/scripts/{script_id}/versions"))
+
+    def studio_diff(self, script_id: str, from_version: int, to_version: int | None = None):
+        params: dict[str, Any] = {"from_version": from_version}
+        if to_version is not None:
+            params["to_version"] = to_version
+        return self._json(self._http.get(f"/scripts/{script_id}/versions/diff", params=params))
+
+    def studio_restore(self, script_id: str, version: int) -> dict[str, Any]:
+        return self._json(self._http.post(f"/scripts/{script_id}/versions/{version}/restore"))
+
+    # ----- Phase 8: AI アシスタント・承認・履歴 -----
+    def conversations(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/conversations", params={"project_id": project_id}))
+
+    def create_conversation(self, project_id: str, title: str = "") -> dict[str, Any]:
+        body = {"project_id": project_id, "title": title}
+        return self._json(self._http.post("/conversations", json=body))
+
+    def conversation(self, conversation_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/conversations/{conversation_id}"))
+
+    def send_message(
+        self, conversation_id: str, text: str, model_key: str | None = None
+    ) -> dict[str, Any]:
+        return self._json(
+            self._http.post(
+                f"/conversations/{conversation_id}/messages",
+                json={"text": text, "model_key": model_key},
+                timeout=self.LLM_TIMEOUT,
+            )
+        )
+
+    def rerun_message(self, message_id: str, model_key: str | None = None) -> dict[str, Any]:
+        return self._json(
+            self._http.post(
+                f"/conversations/messages/{message_id}/rerun",
+                json={"model_key": model_key},
+                timeout=self.LLM_TIMEOUT,
+            )
+        )
+
+    def approvals(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get(f"/projects/{project_id}/approvals"))
+
+    def decide_approval(self, kind: str, item_id: str, approve: bool) -> dict[str, Any]:
+        url = f"/approvals/{kind}/{item_id}"
+        return self._json(self._http.post(url, json={"approve": approve}))
+
+    def approval_policy(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/approvals/policy"))
+
+    def set_approval_policy(self, **kw: Any) -> list[dict[str, Any]]:
+        return self._json(self._http.put("/approvals/policy", json=kw))
+
+    def history(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get(f"/projects/{project_id}/history"))
+
+    def revert_history(self, project_id: str, to_command_id: str | None) -> dict[str, Any]:
+        url = f"/projects/{project_id}/history/revert"
+        return self._json(self._http.post(url, json={"to_command_id": to_command_id}))
+
     def close(self) -> None:
         self._http.close()

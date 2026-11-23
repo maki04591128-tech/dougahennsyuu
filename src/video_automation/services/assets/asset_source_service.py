@@ -96,6 +96,12 @@ _EXT_BY_TYPE = {
 }
 
 
+class LicenseForbiddenError(Exception):
+    """設定でライセンス不明・要確認の素材の使用を禁止している。"""
+
+    code = "license_forbidden"
+
+
 class LicenseAckRequiredError(Exception):
     """ライセンスが不明・非営利限定などで、ユーザーの明示承認が必要。"""
 
@@ -381,6 +387,8 @@ class AssetSourceService:
         detail = await self.fetch_detail(req)
         c = check(detail)
         needs_ack = c.verdict != LicenseVerdict.ALLOWED
+        if needs_ack and self.settings.unknown_license_policy == "forbidden":
+            raise LicenseForbiddenError("; ".join(c.reasons) or "license not allowed by policy")
         if req.origin == "llm":
             if needs_ack or self.settings.llm_asset_download_requires_approval:
                 async with self.db.session_factory() as s:
@@ -535,6 +543,9 @@ class AssetSourceService:
         # 承認時に取得元から取り直す（承認待ちの間に条件が変わっている可能性があるため）
         detail = await self.fetch_detail(ref)
         needs_ack = check(detail).verdict != LicenseVerdict.ALLOWED
+        if needs_ack and self.settings.unknown_license_policy == "forbidden":
+            await self._update_request(request_id, status=AssetRequestStatus.REJECTED.value)
+            raise LicenseForbiddenError("license not allowed by policy")
         job = self._submit(project_id, detail, acknowledged=needs_ack, request_id=request_id)
         await self._update_request(
             request_id,

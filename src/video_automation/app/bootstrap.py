@@ -16,12 +16,17 @@ from video_automation.services.animation.preset_service import PresetService
 from video_automation.services.animation.scene_service import SceneService
 from video_automation.services.assets.asset_source_service import AssetSourceService
 from video_automation.services.assets.downloader import Resolver
+from video_automation.services.llm_tasks.gateway import LLMGateway
 from video_automation.services.llm_tasks.task_router import TaskRouter
 from video_automation.services.model_discovery.inference_test import InferenceTester
 from video_automation.services.model_discovery.provider_manager import ProviderManager
 from video_automation.services.music.music_service import MusicService
+from video_automation.services.orchestrator.approvals import ApprovalService
+from video_automation.services.orchestrator.history import HistoryService
+from video_automation.services.orchestrator.orchestrator import Orchestrator, ToolRouter
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.rendering.title_card import TitleCardService
+from video_automation.services.script.studio import ScriptStudio
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import TimelineService
 from video_automation.services.voice.voice_service import VoiceService
@@ -47,6 +52,11 @@ class AppContainer:
     music: MusicService
     presets: PresetService
     scenes: SceneService
+    llm: LLMGateway
+    studio: ScriptStudio
+    approvals: ApprovalService
+    history: HistoryService
+    orchestrator: Orchestrator
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -78,6 +88,24 @@ async def build_container(
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
     titles = TitleCardService(settings, db, blender, ffmpeg, timeline)
+    router = TaskRouter()
+    llm = LLMGateway(settings, db, providers, router)
+    render = RenderService(settings, db, ffmpeg, timeline, subtitles, jobs)
+    asset_sources = AssetSourceService(
+        settings,
+        db,
+        timeline,
+        jobs,
+        providers.protector,
+        transport=http_transport,
+        resolver=dns_resolver,
+    )
+    studio = ScriptStudio(db, llm)
+    approvals = ApprovalService(settings, db, timeline, render, asset_sources, studio)
+    await approvals.load_policy()
+    orchestrator = Orchestrator(
+        db, llm, ToolRouter(timeline, studio, render, asset_sources, approvals), approvals
+    )
     return AppContainer(
         settings=settings,
         db=db,
@@ -85,24 +113,21 @@ async def build_container(
         jobs=jobs,
         providers=providers,
         tester=InferenceTester(providers),
-        router=TaskRouter(),
+        router=router,
         voice=voice,
         subtitles=subtitles,
         ffmpeg=ffmpeg,
         blender=blender,
         timeline=timeline,
-        render=RenderService(settings, db, ffmpeg, timeline, subtitles, jobs),
+        render=render,
         titles=titles,
-        asset_sources=AssetSourceService(
-            settings,
-            db,
-            timeline,
-            jobs,
-            providers.protector,
-            transport=http_transport,
-            resolver=dns_resolver,
-        ),
+        asset_sources=asset_sources,
         music=MusicService(settings, db, timeline, providers, transport=http_transport),
         presets=PresetService(db),
         scenes=SceneService(settings, db, ffmpeg, timeline, titles),
+        llm=llm,
+        studio=studio,
+        approvals=approvals,
+        history=HistoryService(db, timeline, approvals),
+        orchestrator=orchestrator,
     )

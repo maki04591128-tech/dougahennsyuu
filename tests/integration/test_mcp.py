@@ -269,3 +269,122 @@ async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
     finally:
         _shared.set_container(None)
         await c.aclose()
+
+
+async def test_mcp_script_tools(settings, fake):
+    from fakes import FakeProtector
+    from video_automation.app.bootstrap import build_container
+    from video_automation.database.models import Project
+    from video_automation.mcp_servers import _shared, script_server
+
+    names = {t.name for t in await script_server.mcp.list_tools()}
+    assert {
+        "create_script",
+        "generate_full_script",
+        "set_user_script",
+        "generate_counterpart_dialogue",
+        "regenerate_dialogue",
+        "lock_dialogue_turn",
+        "validate_script",
+        "get_script_versions",
+    } <= names
+    c = await build_container(
+        settings, http_transport=fake.transport, protector=FakeProtector(), configure_logs=False
+    )
+    _shared.set_container(c)
+    try:
+        await c.providers.discover()
+        async with c.db.session_factory() as ses:
+            p = Project(name="s", width=320, height=180)
+            ses.add(p)
+            await ses.commit()
+            pid = p.id
+        sc = await script_server.create_script(
+            pid,
+            "USER_ONE_SIDE",
+            characters=[{"name": "A", "is_user": True}, {"name": "B"}],
+        )
+        sid = sc["script_id"]
+        prop = await script_server.set_user_script(sid, ["こんにちは", "では始めます"])
+        assert prop["status"] == "PENDING_APPROVAL" and len(prop["changes"]) == 2
+        assert (await c.studio.detail(sid)).segments == []  # 承認前は反映しない
+        await c.studio.decide_proposal(prop["proposal_id"], True)
+        assert [t.generation_source for t in (await c.studio.detail(sid)).segments] == [
+            "USER",
+            "USER",
+        ]
+
+        def responder(body):
+            props = (body.get("format") or {}).get("properties", {})
+            if "replies" in props:
+                return {"replies": [{"after": "L1", "turns": [{"text": "よろしく"}]}], "notes": []}
+            if "candidates" in props:
+                return {"candidates": ["どうも", "はじめまして"]}
+            return None
+
+        fake.chat_responder = responder
+        prop = await script_server.generate_counterpart_dialogue(sid)
+        assert prop["changes"] == [
+            {
+                "kind": "added",
+                "turn_id": prop["changes"][0]["turn_id"],
+                "speaker": "B",
+                "after": "よろしく",
+            }
+        ]
+        await c.studio.decide_proposal(prop["proposal_id"], True)
+        d = script_server._brief(await c.studio.detail(sid))
+        assert [t["text"] for t in d["turns"]] == ["こんにちは", "よろしく", "では始めます"]
+        ai_turn = d["turns"][1]["turn_id"]
+        cand = await script_server.regenerate_dialogue(sid, ai_turn)
+        assert cand["candidates"] == ["どうも", "はじめまして"]
+        # 候補は未適用
+        v = await script_server.get_script_versions(sid, diff_from=1)
+        assert len(v["versions"]) == 3 and len(v["diff"]["changes"]) == 3
+        d = await script_server.lock_dialogue_turn(sid, ai_turn)
+        assert d["turns"][1]["locked"] and d["turns"][1]["text"] == "よろしく"
+        assert (await script_server.validate_script(sid))["valid"] is True
+    finally:
+        _shared.set_container(None)
+        await c.aclose()
+
+
+async def test_mcp_core_plan_edit_requires_approval(settings, fake):
+    from fakes import FakeProtector
+    from video_automation.app.bootstrap import build_container
+    from video_automation.mcp_servers import _shared, core_server
+
+    names = {t.name for t in await core_server.mcp.list_tools()}
+    assert {"create_project", "get_project_state", "plan_edit"} <= names
+    c = await build_container(
+        settings, http_transport=fake.transport, protector=FakeProtector(), configure_logs=False
+    )
+    _shared.set_container(c)
+    try:
+        await c.providers.discover()
+        p = await core_server.create_project("mcp", width=1280, height=720)
+        pid = p["project_id"]
+        fake.chat_responder = lambda b: (
+            {
+                "reply": "映像トラックを追加します",
+                "actions": [
+                    {
+                        "tool": "edit_timeline",
+                        "args": {
+                            "description": "トラック追加",
+                            "command": {"type": "add_track", "kind": "video", "name": "V"},
+                        },
+                    }
+                ],
+            }
+            if "actions" in (b.get("format") or {}).get("properties", {})
+            else None
+        )
+        r = await core_server.plan_edit(pid, "映像トラックを作って")
+        assert r["actions"][0]["approval"]["kind"] == "command"
+        st = await core_server.get_project_state(pid)
+        assert st["tracks"] == [] and st["pending_approvals"][0]["kind"] == "command"
+        assert st["project"]["width"] == 1280
+    finally:
+        _shared.set_container(None)
+        await c.aclose()
