@@ -54,6 +54,9 @@ from video_automation.services.voice.voice_service import (
     VoiceService,
 )
 
+# 話者の既定の色（明るめ。縁取りには暗くして使う）
+SPEAKER_PALETTE = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFD54F"]
+
 log = get_logger("subtitle")
 if TYPE_CHECKING:
     from video_automation.services.voice.reading_service import ReadingService
@@ -307,11 +310,63 @@ class SubtitleService:
         log.info("subtitles_synchronized", script_id=req.script_id, cues=len(all_cues))
         return await self.cues(req.script_id)
 
+    # ---------- 見た目（P4-07 の拡張） ----------
+    async def project_style(self, project_id: str) -> SubtitleStyle:
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            if p is None:
+                raise NotFoundError(f"project {project_id}")
+            return SubtitleStyle.model_validate(p.subtitle_style or {})
+
+    async def set_project_style(self, project_id: str, style: SubtitleStyle) -> SubtitleStyle:
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            if p is None:
+                raise NotFoundError(f"project {project_id}")
+            p.subtitle_style = style.model_dump(mode="json")
+            await s.commit()
+        return style
+
+    async def speaker_accents(self, script_id: str) -> dict[str, str]:
+        """話者の色。キャラクターに色があればそれを、無ければ登場順に既定の色を割り当てる。"""
+        async with self.db.session_factory() as s:
+            await self._project_of(s, script_id)
+            chars = list(
+                (
+                    await s.execute(
+                        select(ScriptCharacter)
+                        .where(ScriptCharacter.script_id == script_id)
+                        .order_by(ScriptCharacter.sequence)
+                    )
+                ).scalars()
+            )
+            speakers = list(
+                dict.fromkeys(
+                    (
+                        await s.execute(
+                            select(ScriptSegment.speaker)
+                            .where(ScriptSegment.script_id == script_id)
+                            .order_by(ScriptSegment.sequence)
+                        )
+                    ).scalars()
+                )
+            )
+        out: dict[str, str] = {c.name: c.color for c in chars if c.color}
+        order = [c.name for c in chars] + [x for x in speakers if x]
+        i = 0
+        for name in dict.fromkeys(order):
+            if name in out:
+                continue
+            out[name] = SPEAKER_PALETTE[i % len(SPEAKER_PALETTE)]
+            i += 1
+        return out
+
     # ---------- 出力 (P4-05 / P4-06 / P4-07) ----------
     async def export(self, req: SubtitleExportRequest) -> SubtitleExportResult:
         async with self.db.session_factory() as s:
             script, project = await self._project_of(s, req.script_id)
             fps = fps_of(project)
+            saved = project.subtitle_style
         cues = await self.cues(req.script_id)
         if not cues:
             raise SubtitleStateError("generate subtitles first")
@@ -324,9 +379,10 @@ class SubtitleService:
                 fps,
                 project.width,
                 project.height,
-                req.style or SubtitleStyle(),
+                req.style or SubtitleStyle.model_validate(saved or {}),
                 req.speaker_colors,
                 title=script.title or "VideoAutomation",
+                speaker_accents=await self.speaker_accents(req.script_id),
             )
         else:
             content = build_srt(rows, fps)

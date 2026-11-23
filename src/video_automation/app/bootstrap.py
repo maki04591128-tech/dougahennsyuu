@@ -16,6 +16,7 @@ from video_automation.services.animation.preset_service import PresetService
 from video_automation.services.animation.scene_service import SceneService
 from video_automation.services.assets.asset_source_service import AssetSourceService
 from video_automation.services.assets.downloader import Resolver
+from video_automation.services.direction.service import DirectionService
 from video_automation.services.llm_tasks.gateway import LLMGateway
 from video_automation.services.llm_tasks.task_router import TaskRouter
 from video_automation.services.model_discovery.inference_test import InferenceTester
@@ -61,6 +62,7 @@ class AppContainer:
     orchestrator: Orchestrator
     qa: QAService
     readings: ReadingService
+    direction: DirectionService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -137,4 +139,5 @@ async def build_container(
         orchestrator=orchestrator,
         qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs),
         readings=readings,
+        direction=DirectionService(settings, db, llm, timeline, titles, ffmpeg),
     )

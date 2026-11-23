@@ -5,6 +5,7 @@
 別スレッドで実行して画面を止めない。
 """
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from video_automation.services.direction.plan import describe_plan
 from video_automation.ui.async_call import AsyncCaller, error_text
 
 MODES = [
@@ -40,7 +42,26 @@ MODES = [
 POLICIES = ["おまかせ", "補足", "質問", "ツッコミ", "解説"]
 SOURCE_LABEL = {"USER": "ユーザー", "AI": "AI", "EDITED": "手修正"}
 SOURCE_COLOR = {"USER": "#dbe9ff", "AI": "#ffffff", "EDITED": "#fff3c4"}
-CHAR_COLS = ["名前", "役割", "性格", "口調", "ユーザー担当", "話者ID", "抑揚の強さ(0-2)"]
+
+_COLOR = re.compile(r"^#?[0-9A-Fa-f]{6}$")
+
+
+def _color(text: str) -> str | None:
+    """「#RRGGBB」以外は自動（None）。"""
+    t = text.strip()
+    return ("#" + t.lstrip("#")).upper() if _COLOR.match(t) else None
+
+
+CHAR_COLS = [
+    "名前",
+    "役割",
+    "性格",
+    "口調",
+    "ユーザー担当",
+    "話者ID",
+    "抑揚の強さ(0-2)",
+    "字幕の色(#RRGGBB)",
+]
 TURN_COLS = ["#", "シーン", "話者", "セリフ", "生成元", "固定", "推定秒"]
 
 
@@ -164,6 +185,12 @@ class ScriptStudioWidget(QWidget):
         self.validate_llm_button.clicked.connect(lambda: self.validate(True))
         self.reading_button = QPushButton("読みチェック（AI）")
         self.reading_button.clicked.connect(self.check_readings)
+        self.direction_button = QPushButton("演出プラン（AI）")
+        self.direction_button.clicked.connect(self.plan_direction)
+        self.direction_apply_button = QPushButton("演出を適用")
+        self.direction_apply_button.setEnabled(False)
+        self.direction_apply_button.clicked.connect(self.apply_direction)
+        self.direction_plan: dict[str, Any] | None = None
         self.issue_list = QListWidget()
         self.version_combo = QComboBox()
         self.diff_button = QPushButton("最新版との差分")
@@ -201,6 +228,8 @@ class ScriptStudioWidget(QWidget):
         vb.addWidget(self.validate_button)
         vb.addWidget(self.validate_llm_button)
         vb.addWidget(self.reading_button)
+        vb.addWidget(self.direction_button)
+        vb.addWidget(self.direction_apply_button)
         vb.addWidget(QLabel("版"))
         vb.addWidget(self.version_combo)
         vb.addWidget(self.diff_button)
@@ -251,8 +280,10 @@ class ScriptStudioWidget(QWidget):
             self.regen_button,
             self.validate_llm_button,
             self.reading_button,
+            self.direction_button,
         ):
             b.setEnabled(not busy)
+        self.direction_apply_button.setEnabled(not busy and self.direction_plan is not None)
 
     def _error(self, exc: BaseException) -> None:
         self.status_label.setText(f"エラー: {error_text(exc)[:300]}")
@@ -282,6 +313,7 @@ class ScriptStudioWidget(QWidget):
         self.char_table.setItem(r, 5, QTableWidgetItem("" if sid is None else str(sid)))
         ex = voice.get("expressiveness")
         self.char_table.setItem(r, 6, QTableWidgetItem("" if ex is None else f"{ex:g}"))
+        self.char_table.setItem(r, 7, QTableWidgetItem(str(c.get("color") or "")))
 
     def characters(self) -> list[dict[str, Any]]:
         out = []
@@ -315,6 +347,7 @@ class ScriptStudioWidget(QWidget):
                     "speaking_style": cell[3].text() if cell[3] else "",
                     "is_user": bool(cell[4] and cell[4].checkState() == Qt.CheckState.Checked),
                     "voice": voice,
+                    "color": _color(cell[7].text() if len(cell) > 7 and cell[7] else ""),
                 }
             )
         return out
@@ -538,6 +571,39 @@ class ScriptStudioWidget(QWidget):
             )
 
         self._call(lambda: self.api.check_readings(sid), done, "読みを確認中…")
+
+    # ---------- 演出 ----------
+    def plan_direction(self) -> None:
+        """AI が演出プラン（カード・図表・テロップ）を作る。確認後「演出を適用」で配置する。"""
+        if not self._require():
+            return
+        sid = self.script_id
+
+        def done(r: dict[str, Any]) -> None:
+            self.direction_plan = r["plan"]
+            self.diff_view.setPlainText(describe_plan(r["plan"]))
+            self.direction_apply_button.setEnabled(True)
+            n = len(r["plan"]["shots"])
+            self.status_label.setText(
+                f"演出プラン: {n} 件（内容を確認して「演出を適用」を押してください）"
+            )
+
+        self._call(lambda: self.api.direction_plan(sid), done, "演出を考えています…")
+
+    def apply_direction(self) -> None:
+        if not self._require() or self.direction_plan is None:
+            return
+        sid, plan = self.script_id, self.direction_plan
+
+        def done(r: dict[str, Any]) -> None:
+            skipped = "\n".join(r["skipped"])
+            self.status_label.setText(
+                f"演出を配置しました（{r['clips']} クリップ、元に戻すで取り消せます）"
+            )
+            if skipped:
+                self.diff_view.appendPlainText("\n[外した演出]\n" + skipped)
+
+        self._call(lambda: self.api.direction_apply(sid, plan), done, "素材を作って配置中…")
 
     def show_diff(self) -> None:
         v = self.version_combo.currentData()

@@ -58,6 +58,7 @@ class SubtitleStyle(BaseModel):
     name: str = Field(default="Default", pattern=r"^[A-Za-z0-9_\-]{1,40}$")
     font_name: str = "Meiryo"
     font_size: int | None = Field(default=None, ge=8, le=400)  # None=解像度から自動
+    font_size_ratio: float = Field(default=0.062, ge=0.02, le=0.2)  # 自動のとき（短辺比）
     bold: bool = True
     primary_color: str = "#FFFFFF"
     outline_color: str = "#000000"
@@ -69,8 +70,14 @@ class SubtitleStyle(BaseModel):
     margin_h_ratio: float = Field(default=0.05, ge=0, le=0.5)
     fade_in_ms: int = Field(default=80, ge=0, le=2000)
     fade_out_ms: int = Field(default=80, ge=0, le=2000)
+    # 話者の表示: 字幕の上に名前を小さく出し、縁取りを話者の色（暗め）にする
+    speaker_label: bool = True
+    speaker_outline: bool = True
+    # 字幕の後ろに画面幅の半透明の帯を敷く（背景が明るくても読める）
+    band: bool = True
+    band_color: str = "#8C000000"
 
-    @field_validator("primary_color", "outline_color", "back_color")
+    @field_validator("primary_color", "outline_color", "back_color", "band_color")
     @classmethod
     def _color(cls, v: str) -> str:
         h = v.lstrip("#")

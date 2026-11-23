@@ -26,6 +26,8 @@ class Project(Base):
     height: Mapped[int] = mapped_column(Integer, nullable=False, default=1080)
     fps_num: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     fps_den: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 字幕の見た目（SubtitleStyle）。None は既定値
+    subtitle_style: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
@@ -473,6 +475,7 @@ class ScriptCharacter(Base):
     is_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     voice_style_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     voice: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # 抑揚など
+    color: Mapped[str | None] = mapped_column(String(9), nullable=True)  # 字幕・名前の色
 
 
 class ScriptScene(Base):

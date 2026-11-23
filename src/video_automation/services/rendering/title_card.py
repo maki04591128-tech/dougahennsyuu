@@ -15,8 +15,9 @@ from video_automation.database.database import Database
 from video_automation.database.models import Project
 from video_automation.integrations.blender.runner import Blender
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds
-from video_automation.schemas.animation import InfographicRequest
+from video_automation.schemas.animation import CardRequest, InfographicRequest
 from video_automation.schemas.timeline import AssetKind, AssetRead, TitleCardRequest
+from video_automation.services.rendering.card import card_filter, card_layout
 from video_automation.services.timeline.timeline_service import (
     TimelineNotFoundError,
     TimelineService,
@@ -211,6 +212,14 @@ class TitleCardService:
         )
         return AssetRead.model_validate(asset)
 
+    @staticmethod
+    def _chart_colors(req: InfographicRequest) -> list[str]:
+        if req.highlight is None or req.highlight >= len(req.values):
+            return req.colors
+        return [
+            req.colors[0] if i == req.highlight else req.muted_color for i in range(len(req.values))
+        ]
+
     async def infographic(self, req: InfographicRequest) -> AssetRead:
         w, h, fps_num, fps_den = await self._project(req.project_id)
         fps = round(fps_num / fps_den)
@@ -235,7 +244,7 @@ class TitleCardService:
                     "frames": rendered,
                     "font_path": self.font_path(),
                     "text_color": _rgba(req.text_color),
-                    "accent_colors": [_rgba(c) for c in req.colors],
+                    "accent_colors": [_rgba(c) for c in self._chart_colors(req)],
                     "output_dir": tmp,
                 },
             )
@@ -257,5 +266,39 @@ class TitleCardService:
         name = f"図表「{(req.title or req.kind)[:20]}」"
         asset = await self.timeline.register_generated(
             req.project_id, out, AssetKind.VIDEO, "blender", name
+        )
+        return AssetRead.model_validate(asset)
+
+    # ---------- 情報カード（FFmpeg で静止画を作る） ----------
+    async def card(self, req: CardRequest) -> AssetRead:
+        w, h, _, _ = await self._project(req.project_id)
+        font = self.font_path()
+        if font is None:
+            raise RuntimeError("no Japanese font found (set title_font_path)")
+        layout = card_layout(req, w, h)
+        out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"card_{uuid4().hex[:8]}.png"
+        with tempfile.TemporaryDirectory(prefix="va_card_") as tmp:
+            vf = card_filter(req, layout, Path(font), Path(tmp))
+            await self.ffmpeg.run(
+                [
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"color=c=black@0.0:s={layout.width}x{layout.height}:d=1,format=rgba",
+                    "-vf",
+                    vf,
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                    str(out),
+                ],
+                timeout=60,
+            )
+        label = req.heading or (req.body[0] if req.body else "")
+        asset = await self.timeline.register_generated(
+            req.project_id, out, AssetKind.IMAGE, "ffmpeg", f"カード「{label[:20]}」"
         )
         return AssetRead.model_validate(asset)

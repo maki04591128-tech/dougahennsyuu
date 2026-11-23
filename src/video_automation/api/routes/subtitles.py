@@ -15,6 +15,7 @@ from video_automation.schemas.subtitle import (
     SubtitleExportRequest,
     SubtitleExportResult,
     SubtitleGenerateRequest,
+    SubtitleStyle,
     SubtitleSyncRequest,
 )
 
@@ -69,3 +70,16 @@ async def list_cues(script_id: str, c: AppContainer = Depends(get_container)):
 @router.post("/export", response_model=SubtitleExportResult)
 async def export(body: SubtitleExportRequest, c: AppContainer = Depends(get_container)):
     return await c.subtitles.export(body)
+
+
+@router.get("/style/{project_id}", response_model=SubtitleStyle)
+async def get_style(project_id: str, c: AppContainer = Depends(get_container)) -> Any:
+    """プロジェクトの字幕の見た目（焼き込み・ASS 出力に使う）。"""
+    return await c.subtitles.project_style(project_id)
+
+
+@router.put("/style/{project_id}", response_model=SubtitleStyle)
+async def put_style(
+    project_id: str, body: SubtitleStyle, c: AppContainer = Depends(get_container)
+) -> Any:
+    return await c.subtitles.set_project_style(project_id, body)
