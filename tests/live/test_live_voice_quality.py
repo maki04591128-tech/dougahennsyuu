@@ -105,6 +105,7 @@ async def test_live_reading_and_intonation(tmp_path):
                         {"speaker": "A", "text": LINES[2]},
                         {"speaker": "B", "text": LINES[2]},
                         {"speaker": "A", "text": LINES[1]},
+                        {"speaker": "A", "text": "強度は114ギガパスカルです。"},
                     ]
                 },
             )
@@ -129,7 +130,8 @@ async def test_live_reading_and_intonation(tmp_path):
             # 実際の合成クエリ（読み替え語をつないだ後）の句の区切り
             async with db.session_factory() as s:
                 q2 = (await s.get(AudioFile, by_text[LINES[1]][0]["id"])).query
-            report["synth_kana"] = {"line2": _kana(q2), "line3": _kana(expr_q)}
+                q6 = (await s.get(AudioFile, by_text["強度は114ギガパスカルです。"][0]["id"])).query
+            report["synth_kana"] = {"line2": _kana(q2), "line3": _kana(expr_q), "kata": _kana(q6)}
             # AI による読みの確認（実際の LLM。登録はしない）
             r = await c.post(f"/scripts/{sc['id']}/readings/check", json={"apply": False})
             report["ai_check"] = r.json() if r.status_code == 200 else {"error": r.text[:300]}
@@ -146,4 +148,5 @@ async def test_live_reading_and_intonation(tmp_path):
     # 読み替えた語が句の途中で切れていない
     synth = report["synth_kana"]
     assert "カゴ/ウブ" not in synth["line2"] and "ダブ/リュウ" not in synth["line3"]
+    assert "ギガ/パスカル" not in synth["kata"]
     assert report["pitch_spread"]["expressive"] > report["pitch_spread"]["plain"]

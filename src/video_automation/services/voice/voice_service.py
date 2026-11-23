@@ -303,17 +303,18 @@ class VoiceService:
         item: VoiceGenerateItem,
         phrases: list[AccentPhrase],
     ) -> list[AccentPhrase] | None:
-        """読み替えで入れたカタカナ語が句の途中で切れていたらつなぎ、音高を再計算する。"""
-        speech = item.reading_text
-        if not speech or speech == item.text:
-            return None
+        """カタカナ語が句の途中で切れていたらつなぎ、音高を再計算する。"""
+        speech = item.reading_text or item.text
         feats = info.status.features
         if not (
             feats.get(EngineFeature.ADJUST_MORA_PITCH.value, False)
             and feats.get(EngineFeature.ADJUST_PHONEME_LENGTH.value, False)
         ):
             return None
-        words = [w for w in dict.fromkeys(_KATA_WORD.findall(speech)) if w not in item.text]
+        # 読み替えで入れた語も、元からあるカタカナ語（ギガパスカル など）も対象にする
+        words = list(dict.fromkeys(_KATA_WORD.findall(speech)))
+        if not words:
+            return None
         kana: list[str] = []
         for w in words[:8]:
             try:
