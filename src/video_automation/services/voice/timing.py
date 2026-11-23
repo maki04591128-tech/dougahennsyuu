@@ -63,3 +63,27 @@ def wav_info(data: bytes) -> tuple[int, float, int]:
     with wave.open(io.BytesIO(data), "rb") as w:
         rate, frames, ch = w.getframerate(), w.getnframes(), w.getnchannels()
     return rate, round(frames / rate, 4), ch
+
+
+def mora_times(
+    query: AudioQuery, frame_rate: float = DEFAULT_FRAME_RATE
+) -> list[tuple[float, float]]:
+    """発話モーラ（句読点の無音を除く）ごとの (開始, 終了) 秒。phrase_timings と同じ丸め。"""
+    speed = query.speedScale if query.speedScale > 0 else 1.0
+
+    def f(sec: float | None) -> int:
+        return _frames((sec or 0.0) / speed, frame_rate)
+
+    cursor = f(query.prePhonemeLength)
+    out: list[tuple[float, float]] = []
+    for ap in query.accent_phrases:
+        for m in ap.moras:
+            start = cursor
+            cursor += f(m.consonant_length) + f(m.vowel_length)
+            out.append((start / frame_rate, cursor / frame_rate))
+        if ap.pause_mora is not None:
+            pause = (
+                query.pauseLength if query.pauseLength is not None else ap.pause_mora.vowel_length
+            )
+            cursor += f(pause * query.pauseLengthScale)
+    return out

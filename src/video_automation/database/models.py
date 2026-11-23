@@ -130,3 +130,79 @@ class PronunciationEntry(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
+
+
+# ---------------- Phase 4: 台本・字幕 ----------------
+
+
+class Script(Base):
+    """台本（仕様 §17.3）。mode: FULL_AI / USER_ONE_SIDE / MANUAL。"""
+
+    __tablename__ = "scripts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="MANUAL")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class ScriptSegment(Base):
+    """台本の発話単位。仕様 §17.3 の DialogueTurn を兼ねる（同じ発話を二重管理しない）。"""
+
+    __tablename__ = "script_segments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    scene_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    speaker: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    text: Mapped[str] = mapped_column(String(2000), nullable=False)
+    generation_source: Mapped[str] = mapped_column(String(10), nullable=False, default="USER")
+    reply_to_segment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voice_style_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    audio_file_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("audio_files.id", ondelete="SET NULL"), nullable=True
+    )
+    # 同期後のタイムライン上の位置（フレーム、半開区間）。Phase 5 の音声配置に使う
+    start_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class SubtitleStyleRow(Base):
+    __tablename__ = "subtitle_styles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class Subtitle(Base):
+    """字幕キュー。表示区間はフレーム整数の半開区間 [start_frame, end_frame)。"""
+
+    __tablename__ = "subtitles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    script_segment_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("script_segments.id", ondelete="CASCADE"), nullable=False
+    )
+    index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(String(500), nullable=False)  # 改行は \n
+    speaker: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    start_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
