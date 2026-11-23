@@ -104,8 +104,9 @@ def clip_filters(
     tt = f"(t+{num(k)})"
     rot = tr("rotation")
     if not is_static(rot, 0.0):
+        # c=none は前のフレームを消さず残像が積み重なるため、透明で塗りつぶす
         out.post.append(
-            f"rotate=a='({track_expr(rot, fps, tt, 0.0)})*PI/180':c=none:ow='hypot(iw,ih)':oh=ow"
+            f"rotate=a='({track_expr(rot, fps, tt, 0.0)})*PI/180':c=black@0:ow='hypot(iw,ih)':oh=ow"
         )
 
     tran = anim.transition_in

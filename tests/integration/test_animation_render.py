@@ -145,6 +145,57 @@ async def test_element_presets_move_scale_fade(mclient, imgs):
     )
     rot = bbox(await frame(c, pid, 10), RED)
     assert rot[3] - rot[2] > 130  # 45度回すと縦にも広がる
+    # 回転しながら戻る: 最後は元の範囲だけ（前のフレームの残像が残らない）
+    await anim(
+        c,
+        pid,
+        clip_id=cid,
+        animation={
+            "keyframes": [
+                {"frame": 0, "rotation": 90, "easing": "linear"},
+                {"frame": 20, "rotation": 0},
+            ]
+        },
+    )
+    await c.post("/render", json={"project_id": pid, "quality": 35, "external_subtitles": False})
+    r = await c.post(
+        "/render",
+        json={
+            "project_id": pid,
+            "quality": 35,
+            "external_subtitles": False,
+            "start_frame": 0,
+            "end_frame": 40,
+        },
+    )
+    job = await c.app.state.jobs.wait(r.json()["job_id"])
+    assert job.status == "SUCCEEDED", job.error
+    mp4 = c.app.state.container.settings.data_dir / job.result["output_path"]
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(mp4),
+            "-vf",
+            f"select=eq(n\\,35),scale={W}:{H}",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout
+    after = bbox(raw, RED)
+    assert (
+        after[1] - after[0] <= full[1] - full[0] + 4
+        and after[3] - after[2] <= full[3] - full[2] + 4
+    )
 
 
 async def test_camera_zoom_and_pan(mclient, imgs):
