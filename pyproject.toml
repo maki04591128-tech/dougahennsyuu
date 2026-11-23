@@ -1,6 +1,6 @@
 [project]
 name = "video-automation"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP対応 対話型動画編集自動化システム"
 readme = "README.md"
 requires-python = ">=3.12"
