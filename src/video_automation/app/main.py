@@ -22,8 +22,15 @@ def _start_api(host: str, port: int) -> uvicorn.Server:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="video-automation")
     parser.add_argument("--headless", action="store_true", help="UIなしでAPIのみ起動")
+    parser.add_argument("--doctor", action="store_true", help="動作環境を確認して終了")
+    parser.add_argument("--json", action="store_true", help="--doctor の結果を JSON で出力")
     args = parser.parse_args(argv)
     s = get_settings()
+
+    if args.doctor:
+        from video_automation.app.doctor import run
+
+        return run(s, as_json=args.json)
 
     if args.headless:
         uvicorn.run(create_app(s), host=s.host, port=s.port)

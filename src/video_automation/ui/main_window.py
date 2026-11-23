@@ -1,7 +1,7 @@
 """メインウィンドウ (P1-08)。
 
 タブ: プロジェクト / LLM設定 / 音声 / 台本作成（AI） / 台本・字幕 / 素材・BGM /
-編集・書き出し / AIアシスタント。"""
+編集・書き出し / AIアシスタント / 品質検査。"""
 
 from typing import Any
 
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from video_automation.ui.assets.widget import AssetsWidget
 from video_automation.ui.assistant.widget import AssistantWidget
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
+from video_automation.ui.qa.widget import QAWidget
 from video_automation.ui.script_studio.widget import ScriptStudioWidget
 from video_automation.ui.subtitle.widget import SubtitleWidget
 from video_automation.ui.timeline.widget import TimelineWidget
@@ -58,6 +59,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.timeline, "編集・書き出し")
         self.assistant = AssistantWidget(api)
         self.tabs.addTab(self.assistant, "AIアシスタント")
+        self.qa = QAWidget(api)
+        self.tabs.addTab(self.qa, "品質検査")
         self.setCentralWidget(self.tabs)
 
     def refresh(self) -> None:
@@ -84,3 +87,5 @@ class MainWindow(QMainWindow):
             self.timeline.refresh()
         if hasattr(self.api, "send_message"):
             self.assistant.refresh()
+        if hasattr(self.api, "run_qa"):
+            self.qa.refresh()

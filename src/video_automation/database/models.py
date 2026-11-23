@@ -577,3 +577,23 @@ class ConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
+
+
+# ---------------- Phase 9: 品質検査 ----------------
+
+
+class QAReportRow(Base):
+    __tablename__ = "qa_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    render_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    script_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    duration_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )

@@ -140,6 +140,9 @@ class ApiClient:
     def list_scripts(self, project_id: str) -> list[dict[str, Any]]:
         return self._json(self._http.get("/scripts", params={"project_id": project_id}))
 
+    def subtitle_cues(self, script_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get(f"/subtitles/{script_id}"))
+
     def timeline(self, project_id: str) -> dict[str, Any]:
         return self._json(self._http.get(f"/projects/{project_id}/timeline"))
 
@@ -404,6 +407,17 @@ class ApiClient:
     def revert_history(self, project_id: str, to_command_id: str | None) -> dict[str, Any]:
         url = f"/projects/{project_id}/history/revert"
         return self._json(self._http.post(url, json={"to_command_id": to_command_id}))
+
+    # ----- Phase 9: 品質検査 -----
+    def run_qa(self, project_id: str, render_id: str | None = None) -> dict[str, Any]:
+        body = {"render_id": render_id}
+        return self._json(self._http.post(f"/projects/{project_id}/qa", json=body))
+
+    def qa_reports(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get(f"/projects/{project_id}/qa"))
+
+    def qa_report(self, report_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/qa/{report_id}"))
 
     def close(self) -> None:
         self._http.close()

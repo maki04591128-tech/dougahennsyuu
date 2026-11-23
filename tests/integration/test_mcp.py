@@ -388,3 +388,37 @@ async def test_mcp_core_plan_edit_requires_approval(settings, fake):
     finally:
         _shared.set_container(None)
         await c.aclose()
+
+
+async def test_mcp_render_quality_tools(settings, fake):
+    from fakes import FakeProtector
+    from video_automation.app.bootstrap import build_container
+    from video_automation.database.models import Project
+    from video_automation.mcp_servers import _shared, render_server
+
+    names = {t.name for t in await render_server.mcp.list_tools()}
+    assert {"run_quality_check", "get_quality_report"} <= names
+    c = await build_container(
+        settings, http_transport=fake.transport, protector=FakeProtector(), configure_logs=False
+    )
+    _shared.set_container(c)
+    try:
+        async with c.db.session_factory() as s:
+            p = Project(name="q", width=320, height=180)
+            s.add(p)
+            await s.commit()
+            pid = p.id
+        r = await render_server.run_quality_check(pid)
+        job = await c.jobs.wait(r["job_id"])
+        rep = await render_server.get_quality_report(job.result["report_id"])
+        assert rep["status"] == "failed"  # 空のタイムライン
+        assert {s["name"] for s in rep["sections"]} == {
+            "project",
+            "audio",
+            "subtitle",
+            "video",
+            "license",
+        }
+    finally:
+        _shared.set_container(None)
+        await c.aclose()

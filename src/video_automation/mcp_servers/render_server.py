@@ -146,6 +146,37 @@ async def get_render_status(render_id: str) -> dict[str, Any]:
     return out
 
 
+async def run_quality_check(
+    project_id: str, render_id: str | None = None, script_id: str | None = None
+) -> dict[str, Any]:
+    """品質検査（音声・字幕・映像・ライセンス）を開始し Job ID を返す（読み取りのみ）。"""
+    from video_automation.schemas.qa import QARequest
+
+    c = await get_container()
+    await c.timeline.get_timeline(project_id)
+    job = c.qa.submit(project_id, QARequest(render_id=render_id, script_id=script_id))
+    return {"job_id": job.id, "status": job.status.value}
+
+
+async def get_quality_report(report_id: str) -> dict[str, Any]:
+    """品質検査の結果（項目ごとの error / warning / info）。"""
+    c = await get_container()
+    r = await c.qa.get(report_id)
+    return {
+        "report_id": r.id,
+        "status": r.status,
+        "sections": [
+            {
+                "name": s.name.value,
+                "status": s.status,
+                "metrics": s.metrics,
+                "checks": [x.model_dump(mode="json", exclude_none=True) for x in s.checks],
+            }
+            for s in r.sections
+        ],
+    }
+
+
 for fn, desc in (
     (inspect_timeline, "タイムラインを取得する"),
     (add_clip, "クリップ追加を提案（承認待ち）"),
@@ -156,6 +187,8 @@ for fn, desc in (
     (validate_project, "プロジェクトを検査する"),
     (render_project, "最終レンダリングを依頼（承認待ち）"),
     (get_render_status, "レンダリング状態を取得する"),
+    (run_quality_check, "品質検査（音声・字幕・映像・ライセンス）を開始する"),
+    (get_quality_report, "品質検査の結果を取得する"),
 ):
     mcp.tool(name=fn.__name__, description=desc)(fn)
 

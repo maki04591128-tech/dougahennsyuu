@@ -73,3 +73,33 @@ def test_subtitle_widget_flow():
     assert "s1.ass" in w.status_label.text()
     assert fmt_frame(None, 30) == "-" and fmt_frame(1830, 30) == "01:01.000"
     assert app is not None
+
+
+def test_subtitle_widget_selects_existing_script():
+    from PySide6.QtWidgets import QApplication
+
+    from video_automation.ui.subtitle.widget import SubtitleWidget
+
+    QApplication.instance() or QApplication([])
+    api = FakeApi()
+    api.list_scripts = lambda pid: [
+        {
+            "id": "s9",
+            "title": "AI台本",
+            "mode": "FULL_AI",
+            "segments": [{"audio_file_id": "a"}, {"audio_file_id": "b"}],
+        },
+        {"id": "s8", "title": "", "mode": "MANUAL", "segments": [{"audio_file_id": None}]},
+    ]
+    api.subtitle_cues = lambda sid: [
+        {"index": 0, "start_frame": 3, "end_frame": 30, "speaker": "A", "text": "あ"}
+    ]
+    w = SubtitleWidget(api)
+    w.refresh()
+    assert w.script_combo.count() == 3
+    w.script_combo.setCurrentIndex(1)
+    assert w.script_id == "s9" and w.ass_button.isEnabled() and w.cue_table.rowCount() == 1
+    w.script_combo.setCurrentIndex(2)
+    assert w.script_id == "s8" and w.voice_button.isEnabled() and not w.sync_button.isEnabled()
+    w.script_combo.setCurrentIndex(0)
+    assert w.script_id is None and not w.voice_button.isEnabled()

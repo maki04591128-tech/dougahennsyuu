@@ -107,3 +107,28 @@ async def aclient(media_settings, fake):
             c.app = app  # type: ignore[attr-defined]
             c.fake = fake  # type: ignore[attr-defined]
             yield c
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_qt_widgets():
+    """UI テストで作ったウィジェットをテストごとに破棄する。
+
+    親の無いウィジェットを終了時の GC に任せると、破棄の順序によって Qt が解放済みメモリに触れ、
+    プロセス終了時に異常終了することがある（malloc_consolidate）。"""
+    yield
+    qt = sys.modules.get("PySide6.QtWidgets")
+    if qt is None:
+        return
+    app = qt.QApplication.instance()
+    if app is None:
+        return
+    import gc
+
+    for w in app.topLevelWidgets():
+        w.close()
+        w.deleteLater()
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+    gc.collect()
