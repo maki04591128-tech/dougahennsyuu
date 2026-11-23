@@ -132,6 +132,8 @@ _VERTICAL = SafeArea(top=0.1, bottom=0.2, left=0.05, right=0.12)  # 1080x1920 �
 _MOTION = {Family.CALM: 0, Family.INFO: 1, Family.ENERGETIC: 3, Family.EXPRESSIVE: 4}
 _HUES = {Family.CALM: 3, Family.INFO: 3, Family.ENERGETIC: 4, Family.EXPRESSIVE: 4}
 _CONCURRENT = {Family.CALM: 1, Family.INFO: 3, Family.ENERGETIC: 3, Family.EXPRESSIVE: 2}
+# 背景だけの時間の上限（秒）。落ち着いた系・表現系は映像そのものが主役なので制限しない
+_EMPTY = {Family.CALM: None, Family.INFO: 10.0, Family.ENERGETIC: 5.0, Family.EXPRESSIVE: None}
 _UD = Typography(body_font="BIZ UDPGothic", heading_font="BIZ UDPGothic", max_fonts=1)
 _GOTHIC = Typography(body_font="Meiryo", heading_font="Meiryo", max_fonts=2)
 
@@ -232,6 +234,7 @@ def _make(
         safe_area=_VERTICAL if orientation == "vertical" else _LANDSCAPE,
         components=comps,
         keywords=keywords,
+        max_empty_sec=_EMPTY[family],
     )
 
 

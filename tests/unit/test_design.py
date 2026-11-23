@@ -186,3 +186,28 @@ def test_chart_unit_symbol():
     assert unit_symbol("ギガパスカル") == "GPa"
     assert unit_symbol("パーセント") == "%"
     assert unit_symbol("GPa") == "GPa"
+
+
+def test_guard_warns_long_background_only_time():
+    m = DesignManifest()
+    m.empty_spans = [(0.0, 3.0), (40.0, 55.0)]
+    r = check(PROFILES[Purpose.EXPLAINER], m)  # 情報系は 10 秒まで
+    v = [x for x in r.violations if x.code == "empty_screen"]
+    assert len(v) == 1 and v[0].severity == "warning" and "40" in v[0].message
+    # 字幕動画は背景だけでもよい
+    calm = check(PROFILES[Purpose.SUBTITLE], m)
+    assert not [x for x in calm.violations if x.code == "empty_screen"]
+
+
+def test_card_font_follows_profile(tmp_path, monkeypatch):
+    from video_automation.services.rendering import title_card as tc
+
+    ud = tmp_path / "BIZ-UDGothicB.ttc"
+    ud.write_bytes(b"x")
+    monkeypatch.setitem(tc.FONT_FILES, "bizudgothic", [str(ud)])
+    svc = object.__new__(tc.TitleCardService)
+    svc.settings = type("S", (), {"title_font_path": None})()
+    assert svc.font_path("BIZ UDPGothic") == str(ud)
+    assert font_key("BIZ UDPGothic") == font_key("BIZ-UDGothicB")
+    svc.settings.title_font_path = "/x/custom.ttf"  # 設定の指定が優先
+    assert svc.font_path("BIZ UDPGothic") == "/x/custom.ttf"

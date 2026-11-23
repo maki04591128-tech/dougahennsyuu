@@ -278,6 +278,7 @@ class DirectionService:
         ink = prof.palette.text if prof else "#FFFFFF"
         chart_colors = prof.palette.chart if prof else [accent, "#FFB74D", "#81C784", "#F06292"]
         muted = prof.palette.text_muted if prof else "#6F829E"
+        heading_font = prof.typography.heading_font if prof else None
         strip_top = max(STRIP_TOP, prof.safe_area.top) if prof else STRIP_TOP
         side = max(SIDE, prof.safe_area.left) if prof else SIDE
         used: dict[Component, int] = {}
@@ -370,6 +371,7 @@ class DirectionService:
                         accent_color=emphasis,
                         panel_color=panel,
                         text_color=ink,
+                        font=heading_font,
                         scale=0.62,
                     )
                 )
@@ -398,7 +400,11 @@ class DirectionService:
                 # 次の図・カードまで表示する。ただし説明している範囲（to_line）の
                 # 2 発話先までに留める（話題が変わった後に古い図を出し続けない）
                 hold = lines[min(len(lines), (s.to_line or s.from_line) + HOLD_LINES) - 1].end
-                end = min(lines[mains[i + 1].from_line - 1].start, hold)
+                nxt = lines[mains[i + 1].from_line - 1].start
+                if prof is not None and prof.max_empty_sec is not None:
+                    # 型に「背景だけの時間の上限」があれば、次までの空きがそれ以下になるよう延ばす
+                    hold = max(hold, nxt - frames(prof.max_empty_sec))
+                end = min(nxt, hold)
             else:
                 end = total
             end = max(end, title_end)
@@ -420,6 +426,7 @@ class DirectionService:
                         accent_color=accent,
                         panel_color=panel,
                         text_color=ink,
+                        font=heading_font,
                         scale=CARD_SCALE,
                     )
                 )
@@ -504,6 +511,7 @@ class DirectionService:
                     accent_color=emphasis,
                     panel_color=panel,
                     text_color=ink,
+                    font=heading_font,
                     scale=0.62,
                 )
             )
@@ -538,12 +546,24 @@ class DirectionService:
                 description="演出プランを適用",
             ),
         )
+        # 背景だけ（題名・図・カード・画像が無い）区間
+        covered = sorted([(0, title_end)] + [(w0, w1) for _, w0, w1 in windows])
+        empty: list[tuple[float, float]] = []
+        cur = 0
+        for w0, w1 in covered:
+            if w0 > cur:
+                empty.append((cur / fps, w0 / fps))
+            cur = max(cur, w1)
+        if cur < total:
+            empty.append((cur / fps, total / fps))
         if self.design is not None:  # 書き出し前の検査のために、作った要素を記録する
             colors = [accent, emphasis, panel, ink]
             if used.get(Component.CHART):
                 colors += chart_colors
-            fonts = [Path(f).stem for f in [self.titles.font_path()] if f]
-            await self.design.record(p.id, "direction", manifest_record(used, colors, fonts, boxes))
+            fonts = [Path(f).stem for f in [self.titles.font_path(heading_font)] if f]
+            await self.design.record(
+                p.id, "direction", manifest_record(used, colors, fonts, boxes, empty)
+            )
         log.info("direction_applied", project_id=p.id, clips=clips, skipped=len(skipped))
         return DirectionApplyResult(
             command_id=res.id, status=res.status, clips=clips, skipped=skipped
