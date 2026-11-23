@@ -124,6 +124,8 @@ class AddClip(BaseModel):
     clip_id: str | None = None
     transform: ClipTransform = Field(default_factory=ClipTransform)
     volume: float = Field(default=1.0, ge=0, le=4)
+    fade_in_frames: int = Field(default=0, ge=0)
+    fade_out_frames: int = Field(default=0, ge=0)
 
 
 class MoveClip(BaseModel):

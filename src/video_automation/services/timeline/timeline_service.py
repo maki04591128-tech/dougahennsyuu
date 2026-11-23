@@ -399,6 +399,8 @@ class TimelineService:
                 source_out_frame=c.source_in_frame + length,
                 transform=c.transform.model_dump(mode="json"),
                 volume=c.volume,
+                fade_in_frames=min(c.fade_in_frames, length),
+                fade_out_frames=min(c.fade_out_frames, length),
             )
             s.add(clip)
         else:

@@ -123,7 +123,11 @@ class ToolRouter:
         """スキーマ・権限・状態の検証。実行せずに問題点を ToolInputError で返す。"""
         try:
             if tool == "edit_timeline":
-                a: Any = EditTimelineArgs.model_validate(args)
+                norm = normalize_edit_args(args)
+                a: Any = EditTimelineArgs.model_validate(norm)
+                if extra := unknown_fields(norm.get("command"), a.command):
+                    # 知らない項目は黙って捨てず、指示が反映されない原因として修正させる
+                    raise ToolInputError("unknown fields: " + ", ".join(extra))
                 v = await self.timeline.validate_command(
                     project_id, CommandRequest(command=a.command, origin=CommandOrigin.LLM)
                 )
@@ -516,7 +520,7 @@ class Orchestrator:
         )
         plan = res.data
         results: list[ActionResult] = []
-        for act in plan.get("actions", [])[:10]:
+        for act in merge_timeline_actions(plan.get("actions", [])[:10]):
             results.append(await self._run_action(project_id, msgs, act, res.model_key, model_key))
         row = await self._add(
             conversation_id,
@@ -594,6 +598,75 @@ class Orchestrator:
             return ActionResult(
                 tool=tool, ok=False, summary="実行に失敗しました", error=str(exc)[:500]
             )
+
+
+def normalize_edit_args(args: dict[str, Any]) -> dict[str, Any]:
+    """命令を args 直下に書くモデル（実機の qwen3-swallow 等）向けに {command: ...} へ包み直す。
+    中身は通常どおりスキーマ検証する。"""
+    if "command" in args or not isinstance(args, dict):
+        return args
+    if "type" in args or "commands" in args:
+        rest = {k: v for k, v in args.items() if k != "description"}
+        if "type" not in rest:
+            rest["type"] = "batch"
+        return {"description": args.get("description", ""), "command": rest}
+    return args
+
+
+def unknown_fields(raw: Any, parsed: BaseModel) -> list[str]:
+    """命令の dict のうち、命令のモデルに無い項目（モデルが捏造した項目）を列挙する。"""
+    if not isinstance(raw, dict):
+        return []
+    out: list[str] = []
+    allowed = set(type(parsed).model_fields)
+    for k, v in raw.items():
+        if k not in allowed:
+            out.append(f"{raw.get('type', '?')}.{k}")
+            continue
+        sub = getattr(parsed, k, None)
+        if isinstance(sub, BaseModel):
+            out += unknown_fields(v, sub)
+        elif isinstance(sub, list) and isinstance(v, list):
+            for rv, pv in zip(v, sub, strict=False):
+                if isinstance(pv, BaseModel):
+                    out += unknown_fields(rv, pv)
+    return out
+
+
+def merge_timeline_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """1 回の計画に含まれるタイムライン変更を 1 つのバッチ命令にまとめる。
+
+    別々に承認待ちにすると、それぞれは今の状態で正しくても組み合わせると矛盾する（同じ位置への
+    二重配置など）。まとめて検証し、1 回の承認・1 回の Undo で扱う。"""
+    edits = [a for a in actions if a.get("tool") == "edit_timeline"]
+    if len(edits) < 2:
+        return actions
+    commands: list[Any] = []
+    descriptions: list[str] = []
+    for a in edits:
+        raw = a.get("args")
+        args: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        cmd = normalize_edit_args(args).get("command")
+        if isinstance(cmd, dict) and cmd.get("type") == "batch":
+            commands += list(cmd.get("commands") or [])
+        elif cmd is not None:
+            commands.append(cmd)
+        if args.get("description"):
+            descriptions.append(str(args["description"]))
+    merged = {
+        "tool": "edit_timeline",
+        "args": {
+            "description": " / ".join(descriptions)[:500],
+            "command": {"type": "batch", "commands": commands},
+        },
+    }
+    out: list[dict[str, Any]] = []
+    for a in actions:
+        if a.get("tool") != "edit_timeline":
+            out.append(a)
+        elif a is edits[0]:
+            out.append(merged)
+    return out
 
 
 def _msg(m: ConversationMessage) -> MessageRead:

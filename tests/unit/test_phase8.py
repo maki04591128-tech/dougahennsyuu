@@ -77,3 +77,72 @@ def test_timeline_diff_describes_changes():
     assert out == [
         "クリップ 「a」: 区間 00:00.00〜00:01.00 → 00:00.00〜00:01.50、フェードアウト 0f → 9f"
     ]
+
+
+def test_merge_timeline_actions_into_one_batch():
+    from video_automation.services.orchestrator.orchestrator import merge_timeline_actions
+
+    acts = [
+        {"tool": "search_assets", "args": {"query": "x"}},
+        {"tool": "edit_timeline", "args": {"description": "配置", "command": {"type": "add_clip"}}},
+        {
+            "tool": "edit_timeline",
+            "args": {
+                "description": "フェード",
+                "command": {"type": "batch", "commands": [{"type": "set_clip_props"}]},
+            },
+        },
+        {"tool": "render_project", "args": {}},
+    ]
+    out = merge_timeline_actions(acts)
+    assert [a["tool"] for a in out] == ["search_assets", "edit_timeline", "render_project"]
+    assert out[1]["args"] == {
+        "description": "配置 / フェード",
+        "command": {
+            "type": "batch",
+            "commands": [{"type": "add_clip"}, {"type": "set_clip_props"}],
+        },
+    }
+    single = acts[:2]
+    assert merge_timeline_actions(single) == single
+
+
+def test_normalize_edit_args_wraps_bare_commands():
+    from video_automation.services.orchestrator.orchestrator import normalize_edit_args
+
+    assert normalize_edit_args({"type": "delete_clip", "clip_id": "c", "description": "x"}) == {
+        "description": "x",
+        "command": {"type": "delete_clip", "clip_id": "c"},
+    }
+    assert normalize_edit_args({"commands": [{"type": "delete_clip", "clip_id": "c"}]}) == {
+        "description": "",
+        "command": {"type": "batch", "commands": [{"type": "delete_clip", "clip_id": "c"}]},
+    }
+    ok = {"description": "", "command": {"type": "delete_clip", "clip_id": "c"}}
+    assert normalize_edit_args(ok) is ok
+    assert normalize_edit_args({"foo": 1}) == {"foo": 1}
+
+
+def test_unknown_fields_detects_invented_keys():
+    from video_automation.services.orchestrator.orchestrator import (
+        EditTimelineArgs,
+        unknown_fields,
+    )
+
+    raw = {
+        "type": "batch",
+        "commands": [
+            {
+                "type": "add_clip",
+                "track_id": "t",
+                "asset_id": "a",
+                "start_frame": 0,
+                "fade_in_frames": 15,
+                "fade_in": 15,
+                "transform": {"x": 0, "blur": 3},
+            },
+            {"type": "delete_clip", "clip_id": "c"},
+        ],
+    }
+    a = EditTimelineArgs.model_validate({"command": raw})
+    assert unknown_fields(raw, a.command) == ["add_clip.fade_in", "?.blur"]
