@@ -57,6 +57,7 @@ class FakeServers:
         self.ollama_loaded: set[str] = set()
         self.lm_loaded: dict[str, str] = {"qwen/qwen3-8b": "inst-1"}
         self.requests: list[tuple[str, str, Any]] = []
+        self.nemo = FakeNemo()
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -64,6 +65,8 @@ class FakeServers:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         host = f"{request.url.host}:{request.url.port}"
+        if host == NEMO:
+            return self.nemo.handle(request)
         body = json.loads(request.content) if request.content else None
         self.requests.append((host, request.url.path, body))
         if host == OLLAMA and self.ollama_up:
@@ -270,3 +273,162 @@ class FakeProtector:
     def unprotect(self, blob: bytes) -> bytes:
         assert blob.startswith(b"ENC:")
         return bytes(b ^ 0x5A for b in blob[4:])
+
+
+# ---------------- VOICEVOX Nemo (port 50121) ----------------
+NEMO = "127.0.0.1:50121"
+_NEMO_SPEAKERS = json.loads(
+    (__import__("pathlib").Path(__file__).parent / "data" / "nemo_speakers.json").read_text(
+        encoding="utf-8"
+    )
+)
+NEMO_FEATURES = {
+    k: {"type": "bool", "value": v, "name": k}
+    for k, v in {
+        "adjust_mora_pitch": True,
+        "adjust_phoneme_length": True,
+        "adjust_speed_scale": True,
+        "adjust_pitch_scale": True,
+        "adjust_intonation_scale": True,
+        "adjust_volume_scale": True,
+        "adjust_pause_length": True,
+        "interrogative_upspeak": True,
+        "synthesis_morphing": True,
+        "sing": False,
+        "manage_library": False,
+        "streaming_synthesis": True,
+    }.items()
+}
+
+
+def _wav(seconds: float, rate: int = 24000) -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * round(seconds * rate))
+    return buf.getvalue()
+
+
+class FakeNemo:
+    """実機 Nemo 0.26.0 の API 形状を模した偽エンジン。1文字=1モーラの簡易解析。"""
+
+    def __init__(self) -> None:
+        self.up = True
+        self.features = dict(NEMO_FEATURES)
+        self.user_dict: dict[str, dict] = {}
+        self.synth_queries: list[dict] = []
+
+    def phrases(self, text: str) -> list[dict]:
+        out = []
+        for part in [p for p in text.replace("。", "、").split("、") if p]:
+            moras = [
+                {
+                    "text": ch,
+                    "consonant": "k",
+                    "consonant_length": 0.05,
+                    "vowel": "a",
+                    "vowel_length": 0.1,
+                    "pitch": 5.5,
+                }
+                for ch in part
+            ]
+            out.append(
+                {
+                    "moras": moras,
+                    "accent": 1,
+                    "pause_mora": {"text": "、", "vowel": "pau", "vowel_length": 0.3, "pitch": 0.0},
+                    "is_interrogative": False,
+                }
+            )
+        if out:
+            out[-1]["pause_mora"] = None
+        return out
+
+    def handle(self, req: httpx.Request) -> httpx.Response:
+        if not self.up:
+            raise httpx.ConnectError("refused", request=req)
+        p, q = req.url.path, dict(req.url.params)
+        body = json.loads(req.content) if req.content else None
+        valid_styles = {s["id"] for sp in _NEMO_SPEAKERS for s in sp["styles"]}
+        if "speaker" in q and int(q["speaker"]) not in valid_styles:
+            return httpx.Response(422, json={"detail": "該当する話者が見つかりません"})
+        if p == "/version":
+            return httpx.Response(200, json="0.26.0")
+        if p == "/engine_manifest":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "VOICEVOX Nemo Engine",
+                    "version": "0.26.0",
+                    "port": 50121,
+                    "default_sampling_rate": 24000,
+                    "frame_rate": 93.75,
+                    "supported_features": self.features,
+                },
+            )
+        if p == "/speakers":
+            return httpx.Response(200, json=_NEMO_SPEAKERS)
+        if p == "/supported_devices":
+            return httpx.Response(200, json={"cpu": True, "cuda": False, "dml": False})
+        if p in ("/audio_query", "/accent_phrases"):
+            if "@" in q["text"]:
+                return httpx.Response(400, json={"detail": "parse error"})
+            phrases = self.phrases(q["text"])
+            if p == "/accent_phrases":
+                return httpx.Response(200, json=phrases)
+            return httpx.Response(
+                200,
+                json={
+                    "accent_phrases": phrases,
+                    "speedScale": 1.0,
+                    "pitchScale": 0.0,
+                    "intonationScale": 1.0,
+                    "volumeScale": 1.0,
+                    "prePhonemeLength": 0.1,
+                    "postPhonemeLength": 0.1,
+                    "pauseLength": None,
+                    "pauseLengthScale": 1.0,
+                    "outputSamplingRate": 24000,
+                    "outputStereo": False,
+                    "kana": q["text"],
+                },
+            )
+        if p in ("/mora_data", "/mora_pitch", "/mora_length"):
+            for ap in body:
+                for i, m in enumerate(ap["moras"]):
+                    if p != "/mora_length":
+                        m["pitch"] = 6.0 if i < ap["accent"] else 5.0
+                    if p != "/mora_pitch":
+                        m["vowel_length"] = 0.12
+            return httpx.Response(200, json=body)
+        if p == "/synthesis":
+            from video_automation.schemas.voice import AudioQuery
+            from video_automation.services.voice.timing import estimated_duration
+
+            self.synth_queries.append(body)
+            return httpx.Response(
+                200,
+                content=_wav(estimated_duration(AudioQuery.model_validate(body))),
+                headers={"content-type": "audio/wav"},
+            )
+        if p == "/user_dict":
+            return httpx.Response(200, json=self.user_dict)
+        if p == "/user_dict_word" and req.method == "POST":
+            wid = f"w-{len(self.user_dict) + 1}"
+            self.user_dict[wid] = dict(q)
+            return httpx.Response(200, json=wid)
+        if p.startswith("/user_dict_word/"):
+            wid = p.rsplit("/", 1)[1]
+            if wid not in self.user_dict:
+                return httpx.Response(422, json={"detail": "not found"})
+            if req.method == "DELETE":
+                del self.user_dict[wid]
+            else:
+                self.user_dict[wid] = dict(q)
+            return httpx.Response(204)
+        return httpx.Response(404, json={"detail": "Not Found"})

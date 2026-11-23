@@ -7,20 +7,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from video_automation.app.bootstrap import AppContainer, build_container
-from video_automation.app.settings import APP_NAME, APP_VERSION, get_settings
+from video_automation.app.settings import APP_NAME, APP_VERSION
 from video_automation.database.repositories.llm import LlmRepository
+from video_automation.mcp_servers._shared import get_container as _get_container
 from video_automation.schemas.provider import TaskType
 
 mcp = FastMCP("mcp_core")
-_container: AppContainer | None = None
-
-
-async def _get_container() -> AppContainer:
-    global _container
-    if _container is None:
-        _container = await build_container(get_settings())
-    return _container
 
 
 def ping() -> dict[str, str]:

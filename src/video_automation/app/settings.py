@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     acestep_url: str = "http://127.0.0.1:8001"
     acestep_path: Path | None = None
 
+    # ---- Phase 3: 音声合成（VOICEVOX系。Nemo を優先）----
+    voicevox_nemo_url: str | None = "http://127.0.0.1:50121"
+    voicevox_url: str | None = "http://127.0.0.1:50021"
+
+    def voice_engine_urls(self) -> dict[str, str]:
+        urls = {"voicevox-nemo": self.voicevox_nemo_url, "voicevox": self.voicevox_url}
+        return {k: v for k, v in urls.items() if v}
+
     @property
     def database_path(self) -> Path:
         return self.data_dir / "database" / "app.db"

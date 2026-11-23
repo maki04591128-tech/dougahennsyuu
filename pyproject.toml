@@ -33,6 +33,7 @@ dev = [
 [project.scripts]
 video-automation = "video_automation.app.main:main"
 video-automation-mcp = "video_automation.mcp_servers.core_server:main"
+video-automation-mcp-media = "video_automation.mcp_servers.media_server:main"
 
 [build-system]
 requires = ["hatchling"]

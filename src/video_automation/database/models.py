@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -81,4 +81,52 @@ class SystemSetting(Base):
     value: Mapped[Any] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now, nullable=False
+    )
+
+
+# ---------------- Phase 3: 音声 ----------------
+
+
+class AudioFile(Base):
+    """生成音声のメタデータ（実体はファイル）。台本セグメントと共通IDで関連付ける。"""
+
+    __tablename__ = "audio_files"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    script_segment_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    engine_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    style_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(String(2000), nullable=False)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False)  # data_dir からの相対パス
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_sec: Mapped[float] = mapped_column(Float, nullable=False)
+    query: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)  # 合成に使ったAudioQuery
+    prosody: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    timings: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    credit: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class PronunciationEntry(Base):
+    """読み辞書。エンジンのユーザー辞書と同期し、エンジン再インストール時に復元できるよう保持する。"""
+
+    __tablename__ = "pronunciation_dictionary"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    engine_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine_word_uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    surface: Mapped[str] = mapped_column(String(100), nullable=False)
+    pronunciation: Mapped[str] = mapped_column(String(100), nullable=False)
+    accent_type: Mapped[int] = mapped_column(Integer, nullable=False)
+    word_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
     )

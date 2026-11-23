@@ -13,6 +13,7 @@ from video_automation.database.database import Database
 from video_automation.services.llm_tasks.task_router import TaskRouter
 from video_automation.services.model_discovery.inference_test import InferenceTester
 from video_automation.services.model_discovery.provider_manager import ProviderManager
+from video_automation.services.voice.voice_service import VoiceService
 
 
 @dataclass
@@ -24,9 +25,11 @@ class AppContainer:
     providers: ProviderManager
     tester: InferenceTester
     router: TaskRouter
+    voice: VoiceService
 
     async def aclose(self) -> None:
         await self.providers.aclose()
+        await self.voice.aclose()
         await self.db.dispose()
 
 
@@ -52,4 +55,5 @@ async def build_container(
         providers=providers,
         tester=InferenceTester(providers),
         router=TaskRouter(),
+        voice=VoiceService(settings, db, transport=http_transport),
     )
