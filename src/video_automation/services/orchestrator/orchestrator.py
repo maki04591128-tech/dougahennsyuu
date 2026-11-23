@@ -600,16 +600,30 @@ class Orchestrator:
             )
 
 
+def _drop_nulls(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {k: _drop_nulls(x) for k, x in v.items() if x is not None}
+    if isinstance(v, list):
+        return [_drop_nulls(x) for x in v]
+    return v
+
+
 def normalize_edit_args(args: dict[str, Any]) -> dict[str, Any]:
-    """命令を args 直下に書くモデル（実機の qwen3-swallow 等）向けに {command: ...} へ包み直す。
-    中身は通常どおりスキーマ検証する。"""
-    if "command" in args or not isinstance(args, dict):
+    """実機のモデルの書き方の揺れを吸収する（中身は通常どおりスキーマ検証する）。
+
+    - 命令を args 直下に書く（qwen3-swallow 等）→ {command: ...} へ包み直す
+    - 指定しない項目を null で埋める → 未指定（既定値）として扱う"""
+    if not isinstance(args, dict):
         return args
+    if "command" in args:
+        if not isinstance(args["command"], dict):
+            return args
+        return {**args, "command": _drop_nulls(args["command"])}
     if "type" in args or "commands" in args:
         rest = {k: v for k, v in args.items() if k != "description"}
         if "type" not in rest:
             rest["type"] = "batch"
-        return {"description": args.get("description", ""), "command": rest}
+        return {"description": args.get("description", ""), "command": _drop_nulls(rest)}
     return args
 
 

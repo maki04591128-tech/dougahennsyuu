@@ -119,7 +119,9 @@ def test_normalize_edit_args_wraps_bare_commands():
         "command": {"type": "batch", "commands": [{"type": "delete_clip", "clip_id": "c"}]},
     }
     ok = {"description": "", "command": {"type": "delete_clip", "clip_id": "c"}}
-    assert normalize_edit_args(ok) is ok
+    assert normalize_edit_args(ok) == ok
+    nulls = {"command": {"type": "add_clip", "volume": None, "transform": {"x": None, "y": 1}}}
+    assert normalize_edit_args(nulls) == {"command": {"type": "add_clip", "transform": {"y": 1}}}
     assert normalize_edit_args({"foo": 1}) == {"foo": 1}
 
 
