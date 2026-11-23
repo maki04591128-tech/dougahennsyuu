@@ -94,6 +94,13 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   （VRAM 節約、`VA_MUSIC_UNLOAD_LLM`）。プロンプト・条件・モデル・シードを `music_generations` に記録。
   `POST /projects/{id}/timeline/add_bgm` で BGM トラックを追加（短い曲は繰り返して埋め、端をフェード）。
 - MCP（mcp_media）: `search_assets`, `inspect_license`, `download_asset`, `generate_music`, `add_bgm`
+- ACE-Step を VRAM 8GB の Windows で起動する場合（実機 RTX 5050 で確認）:
+  ```powershell
+  $env:ACESTEP_INIT_LLM = "false"   # 補助LM(5Hz LM)を載せない。載せると VAE デコードで VRAM が尽きて停止した
+  $env:PYTHONUTF8 = "1"             # ログ出力を cp932 で書けず生成が失敗するのを防ぐ
+  uv run acestep-api --host 127.0.0.1 --port 8001
+  ```
+  この構成で 20秒の BGM を約100秒で生成（初回はモデル読み込みを含む）。本システムは `thinking` を使わない。
 
 ## セットアップ
 
