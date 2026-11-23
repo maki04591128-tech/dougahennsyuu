@@ -35,6 +35,21 @@ async def dclient(tmp_path, media_settings, fake):
             yield c
 
 
+def _full(plan):
+    """実際のモデルは構造化出力で全項目を書く（使わない項目は空）。"""
+    empty = {
+        "to_line": 0,
+        "heading": "",
+        "body": [],
+        "labels": [],
+        "values": [],
+        "unit": "",
+        "text": "",
+    }
+    plan["shots"] = [{**empty, **x} for x in plan["shots"]]
+    return plan
+
+
 async def _job(c, r):
     assert r.status_code == 202, r.text
     job = await c.app.state.jobs.wait(r.json()["id"])
@@ -80,33 +95,35 @@ async def test_plan_apply_and_reapply(dclient, fake):
         if "shots" not in props:
             return None
         seen["prompt"] = body["messages"][-1]["content"]
-        return {
-            "title": "w-BNは最強？",
-            "subtitle": "計算と実験の違い",
-            "shots": [
-                {"kind": "card", "from_line": 1, "heading": "疑問", "body": ["硬さの比べ方"]},
-                {
-                    "kind": "chart",
-                    "from_line": 2,
-                    "to_line": 3,
-                    "heading": "押し込み強度",
-                    "labels": ["w-BN", "ダイヤモンド"],
-                    "values": [114, 97],
-                    "unit": "GPa",
-                    "highlight": 0,
-                },
-                {"kind": "keyword", "from_line": 2, "text": "114GPa"},
-                {"kind": "keyword", "from_line": 3, "text": "500GPa"},  # 台本に無い → 外す
-                {"kind": "image", "from_line": 4, "query": "diamond crystal"},  # 素材なし
-                {
-                    "kind": "card",
-                    "from_line": 5,
-                    "heading": "まとめ",
-                    "style": "summary",
-                    "body": ["計算: w-BN が上", "実験: ダイヤモンドが上"],
-                },
-            ],
-        }
+        return _full(
+            {
+                "title": "w-BNは最強？",
+                "subtitle": "計算と実験の違い",
+                "shots": [
+                    {"kind": "card", "from_line": 1, "heading": "疑問", "body": ["硬さの比べ方"]},
+                    {
+                        "kind": "chart",
+                        "from_line": 2,
+                        "to_line": 3,
+                        "heading": "押し込み強度",
+                        "labels": ["w-BN", "ダイヤモンド"],
+                        "values": [114, 97],
+                        "unit": "GPa",
+                        "highlight": 0,
+                    },
+                    {"kind": "keyword", "from_line": 2, "text": "114GPa"},
+                    {"kind": "keyword", "from_line": 3, "text": "500GPa"},  # 台本に無い → 外す
+                    {"kind": "image", "from_line": 4, "query": "diamond crystal"},  # 素材なし
+                    {
+                        "kind": "card",
+                        "from_line": 5,
+                        "heading": "まとめ",
+                        "style": "summary",
+                        "body": ["計算: w-BN が上", "実験: ダイヤモンドが上"],
+                    },
+                ],
+            }
+        )
 
     fake.chat_responder = responder
     r = await c.post("/direction/plan", json={"script_id": sid, "model_key": QWEN})

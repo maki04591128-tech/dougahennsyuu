@@ -100,3 +100,16 @@ def test_from_llm_unwraps_nested_plan():
     assert p.title == "t" and len(p.shots) == 1
     empty = from_llm({"foo": 1})
     assert empty.shots == [] and "演出がありませんでした" in empty.notes[0]
+
+
+def test_from_llm_aliases():
+    p = from_llm(
+        {
+            "shots": [
+                {"kind": "card", "from_line": 1, "title": "見出し", "content": "a\nb"},
+                {"kind": "keyword", "start_line": 2, "keyword": "114GPa", "heading": ""},
+            ]
+        }
+    )
+    assert p.shots[0].heading == "見出し" and p.shots[0].body == ["a", "b"]
+    assert p.shots[1].from_line == 2 and p.shots[1].text == "114GPa"

@@ -39,7 +39,18 @@ PLAN_SCHEMA: dict[str, Any] = {
                     "text": {"type": "string"},
                     "query": {"type": "string"},
                 },
-                "required": ["kind", "from_line"],
+                # 小さなモデルは任意の項目を省くので、使わない項目も空で書かせる
+                "required": [
+                    "kind",
+                    "from_line",
+                    "to_line",
+                    "heading",
+                    "body",
+                    "labels",
+                    "values",
+                    "unit",
+                    "text",
+                ],
             },
         },
     },
@@ -63,6 +74,7 @@ SYSTEM = (
     "title は動画のタイトル(20文字以内)、subtitle は興味を引く一言(24文字以内)。"
     "card には必ず body を 1〜3 項目書く（見出しだけのカードは作らない）。"
     "台本で 2 つ以上の数値を比べている所には chart を置く。\n"
+    "使わない項目は空文字・空配列にする。\n"
     "例: 電池の劣化の話なら、card（見出し「劣化の原因」、body「高温」「満充電のまま放置」）、"
     "chart（labels「25℃」「40℃」、values 90 と 75、unit「%」）、keyword「40℃で75%」のようにする。"
 )
@@ -199,6 +211,19 @@ def prompt_lines(speakers: list[str], lines: list[str]) -> str:
     )
 
 
+_ALIASES = {
+    "title": "heading",
+    "header": "heading",
+    "points": "body",
+    "items": "body",
+    "content": "body",
+    "bullets": "body",
+    "keyword": "text",
+    "start_line": "from_line",
+    "end_line": "to_line",
+}
+
+
 def from_llm(data: dict[str, Any]) -> DirectionPlan:
     """LLM の出力を DirectionPlan に（型の合わない項目は捨てる）。"""
     shots: list[Shot] = []
@@ -213,6 +238,15 @@ def from_llm(data: dict[str, Any]) -> DirectionPlan:
             dropped += 1
             continue
         item = {k: v for k, v in raw.items() if v is not None}
+        for alias, key in _ALIASES.items():  # よくある別名を正しい項目名に
+            if alias in item and not item.get(key):
+                item[key] = item.pop(alias)
+        if not isinstance(item.get("to_line"), int) or item["to_line"] < 1:
+            item.pop("to_line", None)  # 0 や空は「from_line と同じ」
+        if isinstance(item.get("from_line"), int) and item["from_line"] < 1:
+            item["from_line"] = 1
+        if isinstance(item.get("body"), str):
+            item["body"] = [x for x in re.split(r"[\n／/]", item["body"]) if x.strip()]
         try:
             shots.append(Shot.model_validate(item))
         except ValueError:
