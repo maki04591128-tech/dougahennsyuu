@@ -198,8 +198,11 @@ def prompt_lines(speakers: list[str], lines: list[str]) -> str:
 def from_llm(data: dict[str, Any]) -> DirectionPlan:
     """LLM の出力を DirectionPlan に（型の合わない項目は捨てる）。"""
     shots: list[Shot] = []
-    for raw in data.get("shots", []) or []:
+    dropped = 0
+    items = data.get("shots", []) or []
+    for raw in items:
         if not isinstance(raw, dict):
+            dropped += 1
             continue
         item = {k: v for k, v in raw.items() if v is not None}
         try:
@@ -215,11 +218,15 @@ def from_llm(data: dict[str, Any]) -> DirectionPlan:
             try:
                 shots.append(Shot.model_validate(item))
             except ValueError:
-                continue
+                dropped += 1
+    notes = [f"AI の出力のうち {dropped} 件は形式が合わず外しました"] if dropped else []
+    if not items:
+        notes.append("AI の出力に演出がありませんでした")
     return DirectionPlan(
         title=str(data.get("title") or "")[:60],
         subtitle=str(data.get("subtitle") or "")[:60],
         shots=shots[:60],
+        notes=notes,
     )
 
 

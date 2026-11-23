@@ -101,7 +101,10 @@ async def test_live_direction_plan_apply_render(tmp_path):
             )
             lap("apply (cards/charts/title)", t0)
             report["apply"] = applied
-            assert applied["status"] == "APPLIED" and applied["clips"] >= 3
+            (out / "direction_report.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            assert applied["status"] == "APPLIED" and applied["clips"] >= 3, report["plan_text"]
 
             tl = (await c.get(f"/projects/{pid}/timeline")).json()
             segs = (await c.get(f"/scripts/{sid}")).json()["segments"]
