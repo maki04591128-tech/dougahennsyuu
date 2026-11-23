@@ -378,6 +378,7 @@ class FakeAceStep:
         self.released: list[dict[str, Any]] = []
         self.polls = 0
         self.fail = False
+        self.openai_models = False  # 実機の版は /v1/models を OpenAI 互換形式で返す
 
     @staticmethod
     def _env(data: Any) -> httpx.Response:
@@ -397,7 +398,17 @@ class FakeAceStep:
             raise httpx.ConnectError("refused", request=req)
         p = req.url.path
         if p == "/health":
-            return self._env({"status": "ok", "service": "ACE-Step API", "version": "1.0"})
+            return self._env(
+                {
+                    "status": "ok",
+                    "service": "ACE-Step API",
+                    "version": "1.0",
+                    "models_initialized": False,
+                    "loaded_model": "acestep-v15-turbo",
+                }
+            )
+        if p == "/v1/models" and self.openai_models:
+            return httpx.Response(200, json={"object": "list", "data": []})
         if p == "/v1/models":
             return self._env(
                 {

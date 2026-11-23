@@ -67,14 +67,20 @@ class MusicService:
             installed=self.engine._installed(),
         )
         try:
-            await self.engine.health()
+            h = await self.engine.health()
             m = await self.engine.models()
         except AceStepError as exc:
             st.error = str(exc)[:200]
             return st
         st.available = True
-        st.models = [x.get("name", "") for x in (m or {}).get("models") or []]
-        st.default_model = (m or {}).get("default_model")
+        m = m or {}
+        # 文書の形式 {models:[{name,is_default}], default_model} と、実機の版が返す
+        # OpenAI 互換の {object:"list", data:[{id}]} の両方に対応する
+        names = [x.get("name", "") for x in m.get("models") or [] if isinstance(x, dict)]
+        names += [x.get("id", "") for x in m.get("data") or [] if isinstance(x, dict)]
+        loaded = (h or {}).get("loaded_model") if isinstance(h, dict) else None
+        st.models = [n for n in names if n] or ([loaded] if loaded else [])
+        st.default_model = m.get("default_model") or loaded
         return st
 
     def _body(self, req: MusicGenerateRequest) -> dict[str, Any]:
