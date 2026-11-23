@@ -1,4 +1,4 @@
-"""メインウィンドウ (P1-08)。PySide6。Phase 2 で「LLM設定」タブを追加。"""
+"""メインウィンドウ (P1-08)。PySide6。Phase 2「LLM設定」/ Phase 3「音声」タブ。"""
 
 from typing import Any
 
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
+from video_automation.ui.voice.widget import VoiceWidget
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +38,8 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(project_tab, "プロジェクト")
         self.tabs.addTab(self.llm_settings, "LLM設定")
+        self.voice = VoiceWidget(api)
+        self.tabs.addTab(self.voice, "音声")
         self.setCentralWidget(self.tabs)
 
     def refresh(self) -> None:
@@ -51,3 +54,5 @@ class MainWindow(QMainWindow):
             return
         if hasattr(self.api, "list_providers"):
             self.llm_settings.refresh()
+        if hasattr(self.api, "voice_engines"):
+            self.voice.refresh()

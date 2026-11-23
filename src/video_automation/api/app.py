@@ -6,7 +6,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from video_automation.api.routes import health, jobs, models, projects, providers
+from video_automation.api.routes import health, jobs, models, projects, providers, voice
 from video_automation.api.websocket import events
 from video_automation.app.bootstrap import build_container
 from video_automation.app.logging import get_logger
@@ -14,6 +14,13 @@ from video_automation.app.secrets import SecretProtector, SecretStorageUnavailab
 from video_automation.app.settings import APP_NAME, APP_VERSION, Settings, get_settings
 from video_automation.providers.base import ModelNotFoundError, NotSupportedError, ProviderError
 from video_automation.services.model_discovery.provider_manager import ProviderNotFoundError
+from video_automation.services.voice.voice_service import (
+    EngineUnavailableError,
+    InvalidVoiceRequestError,
+    NotFoundError,
+    UnsupportedFeatureError,
+    VoiceError,
+)
 
 
 def create_app(
@@ -60,13 +67,25 @@ def create_app(
     async def secret_unavailable(_: Request, exc: SecretStorageUnavailableError) -> JSONResponse:
         return _err(400, "secret_storage_unavailable", "API key storage requires Windows DPAPI")
 
+    @app.exception_handler(VoiceError)
+    async def voice_error(_: Request, exc: VoiceError) -> JSONResponse:
+        status = {
+            NotFoundError: 404,
+            EngineUnavailableError: 503,
+            UnsupportedFeatureError: 400,
+            InvalidVoiceRequestError: 422,
+        }.get(type(exc), 502)
+        # エンジンの検証メッセージ（入力文字列の問題）は返すが、内部情報は返さない
+        message = str(exc)[:200] if status in (400, 404, 422) else "voice engine request failed"
+        return _err(status, exc.code, message)
+
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
         log.error("unhandled_exception", error_type=type(exc).__name__)
         return _err(500, "internal_error", "internal server error")
 
     prefix = "/api/v1"
-    for r in (health, projects, jobs, providers, models):
+    for r in (health, projects, jobs, providers, models, voice):
         app.include_router(r.router, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

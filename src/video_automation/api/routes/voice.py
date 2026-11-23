@@ -1,0 +1,107 @@
+"""音声API（仕様 §6: /voice/engines, /voice/speakers, /voice/generate, /voice/prosody,
+/voice/dictionary）＋ プレビュー・アクセント編集・音声ファイル取得。"""
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import FileResponse
+
+from video_automation.api.dependencies import get_container
+from video_automation.app.bootstrap import AppContainer
+from video_automation.schemas.common import JobRead
+from video_automation.schemas.voice import (
+    AccentPhrase,
+    AccentPhrasesRequest,
+    AudioFileRead,
+    DictionaryWordRead,
+    DictionaryWordRequest,
+    EngineStatus,
+    MoraEditRequest,
+    ProsodyRequest,
+    VoiceGenerateRequest,
+    VoicePreviewRequest,
+    VoiceSpeaker,
+)
+
+router = APIRouter(prefix="/voice", tags=["voice"])
+
+
+@router.get("/engines", response_model=list[EngineStatus])
+async def engines(c: AppContainer = Depends(get_container)):
+    return await c.voice.engines()
+
+
+@router.get("/speakers", response_model=list[VoiceSpeaker])
+async def speakers(engine_id: str | None = None, c: AppContainer = Depends(get_container)):
+    return await c.voice.speakers(engine_id)
+
+
+@router.post("/accent_phrases", response_model=list[AccentPhrase])
+async def accent_phrases(body: AccentPhrasesRequest, c: AppContainer = Depends(get_container)):
+    return await c.voice.accent_phrases(body)
+
+
+@router.post("/accent_phrases/recompute", response_model=list[AccentPhrase])
+async def recompute(body: MoraEditRequest, c: AppContainer = Depends(get_container)):
+    return await c.voice.recompute(body)
+
+
+@router.post("/preview", response_class=Response)
+async def preview(body: VoicePreviewRequest, c: AppContainer = Depends(get_container)):
+    """音声試作（保存しない・承認不要）。"""
+    return Response(content=await c.voice.preview(body), media_type="audio/wav")
+
+
+@router.post("/generate", response_model=JobRead, status_code=202)
+async def generate(body: VoiceGenerateRequest, c: AppContainer = Depends(get_container)):
+    await c.voice.engines(refresh=False)
+
+    async def run(progress: Any) -> list[dict[str, Any]]:
+        rows = await c.voice.generate(body, progress)
+        return [r.model_dump(mode="json") for r in rows]
+
+    return c.jobs.submit("voice_generate", run)
+
+
+@router.post("/prosody", response_model=AudioFileRead, status_code=201)
+async def prosody(body: ProsodyRequest, c: AppContainer = Depends(get_container)):
+    return await c.voice.regenerate_with_prosody(body)
+
+
+@router.get("/audio", response_model=list[AudioFileRead])
+async def list_audio(
+    project_id: str | None = Query(None), c: AppContainer = Depends(get_container)
+):
+    return await c.voice.list_audio(project_id)
+
+
+@router.get("/audio/{audio_id}/file")
+async def audio_file(audio_id: str, c: AppContainer = Depends(get_container)):
+    return FileResponse(await c.voice.audio_path(audio_id), media_type="audio/wav")
+
+
+@router.get("/dictionary", response_model=list[DictionaryWordRead])
+async def list_words(c: AppContainer = Depends(get_container)):
+    return await c.voice.list_words()
+
+
+@router.post("/dictionary", response_model=DictionaryWordRead, status_code=201)
+async def add_word(body: DictionaryWordRequest, c: AppContainer = Depends(get_container)):
+    return await c.voice.add_word(body)
+
+
+@router.put("/dictionary/{word_id}", response_model=DictionaryWordRead)
+async def update_word(
+    word_id: str, body: DictionaryWordRequest, c: AppContainer = Depends(get_container)
+):
+    return await c.voice.update_word(word_id, body)
+
+
+@router.delete("/dictionary/{word_id}", status_code=204)
+async def delete_word(word_id: str, c: AppContainer = Depends(get_container)) -> None:
+    await c.voice.delete_word(word_id)
+
+
+@router.post("/dictionary/restore")
+async def restore(engine_id: str | None = None, c: AppContainer = Depends(get_container)):
+    return {"restored": await c.voice.restore_dictionary(engine_id)}

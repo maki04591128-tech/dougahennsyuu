@@ -68,5 +68,47 @@ class ApiClient:
             self._http.put("/models/task-assignment", json={"task": task, "model_key": model_key})
         )
 
+    # ----- Phase 3: 音声 -----
+    def voice_engines(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/voice/engines"))
+
+    def voice_speakers(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/voice/speakers"))
+
+    def voice_preview(self, text: str, style_id: int, prosody: dict[str, Any]) -> bytes:
+        r = self._http.post(
+            "/voice/preview",
+            json={"text": text, "style_id": style_id, "prosody": prosody},
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        return r.content
+
+    def voice_generate(
+        self, text: str, style_id: int, prosody: dict[str, Any], project_id: str | None = None
+    ) -> dict[str, Any]:
+        body = {
+            "project_id": project_id,
+            "items": [{"text": text, "style_id": style_id, "prosody": prosody}],
+        }
+        return self._json(self._http.post("/voice/generate", json=body))
+
+    def voice_dictionary(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/voice/dictionary"))
+
+    def voice_add_word(
+        self, surface: str, pronunciation: str, accent_type: int, priority: int = 5
+    ) -> dict[str, Any]:
+        body = {
+            "surface": surface,
+            "pronunciation": pronunciation,
+            "accent_type": accent_type,
+            "priority": priority,
+        }
+        return self._json(self._http.post("/voice/dictionary", json=body))
+
+    def voice_delete_word(self, word_id: str) -> None:
+        self._json(self._http.delete(f"/voice/dictionary/{word_id}"))
+
     def close(self) -> None:
         self._http.close()
