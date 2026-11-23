@@ -59,6 +59,8 @@ SPEAKER_PALETTE = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFD5
 
 log = get_logger("subtitle")
 if TYPE_CHECKING:
+    from video_automation.schemas.design import DesignProfile
+    from video_automation.services.design.service import DesignService
     from video_automation.services.voice.reading_service import ReadingService
 
 ProgressFn = Callable[[float], Awaitable[None]]
@@ -80,6 +82,24 @@ def sec_to_frame(sec: float, fps: Fraction) -> int:
     return round(Fraction(sec).limit_denominator(1_000_000) * fps)
 
 
+def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
+    """用途の型から字幕の見た目を作る（書体・大きさ・帯の形・帯の色）。"""
+    spec = prof.subtitle
+    band = spec.band != "none"
+    surface = prof.palette.surface.lstrip("#")
+    return SubtitleStyle(
+        font_name=prof.typography.body_font,
+        font_size_ratio=spec.size_ratio,
+        band=band,
+        band_mode="fitted" if spec.band == "fitted" else "full",
+        band_color=f"#B8{surface}",  # 面の色を 72% の不透明度で
+        # 帯の無い型は縁取りを太くして背景から分離する
+        outline=2.0 if band else 4.0,
+        shadow=0.0 if band else 1.5,
+        primary_color=prof.palette.text,
+    )
+
+
 class SubtitleService:
     def __init__(
         self,
@@ -87,11 +107,13 @@ class SubtitleService:
         db: Database,
         voice: VoiceService,
         readings: "ReadingService | None" = None,
+        design: "DesignService | None" = None,
     ) -> None:
         self.settings = settings
         self.db = db
         self.voice = voice
         self.readings = readings
+        self.design = design
 
     async def _speech(self, project_id: str | None, text: str) -> str:
         """読み上げ用の文（読みのルール・略語・単位・括弧を整えたもの）。"""
@@ -208,6 +230,11 @@ class SubtitleService:
         async with self.db.session_factory() as s:
             script, project = await self._project_of(s, req.script_id)
             max_chars = req.max_chars_per_line or default_max_chars(project.width, project.height)
+            if req.max_chars_per_line is None and self.design and project.purpose:
+                # 用途の型の 1 行の文字数（読みやすさの上限）を超えない
+                prof = await self.design.profile_for(project.id)
+                if prof:
+                    max_chars = min(max_chars, prof.subtitle.max_chars_per_line)
             await s.execute(delete(Subtitle).where(Subtitle.script_id == script.id))
             idx = 0
             for seg in await self._segments(s, script.id):
@@ -312,11 +339,16 @@ class SubtitleService:
 
     # ---------- 見た目（P4-07 の拡張） ----------
     async def project_style(self, project_id: str) -> SubtitleStyle:
+        """保存した字幕の見た目。保存が無く用途（デザインの型）があれば、その型から作る。"""
         async with self.db.session_factory() as s:
             p = await s.get(Project, project_id)
             if p is None:
                 raise NotFoundError(f"project {project_id}")
-            return SubtitleStyle.model_validate(p.subtitle_style or {})
+            saved = p.subtitle_style
+        if saved:
+            return SubtitleStyle.model_validate(saved)
+        prof = await self.design.profile_for(project_id) if self.design else None
+        return style_from_profile(prof) if prof else SubtitleStyle()
 
     async def set_project_style(self, project_id: str, style: SubtitleStyle) -> SubtitleStyle:
         async with self.db.session_factory() as s:
@@ -330,7 +362,8 @@ class SubtitleService:
     async def speaker_accents(self, script_id: str) -> dict[str, str]:
         """話者の色。キャラクターに色があればそれを、無ければ登場順に既定の色を割り当てる。"""
         async with self.db.session_factory() as s:
-            await self._project_of(s, script_id)
+            _, proj = await self._project_of(s, script_id)
+            project_id = proj.id
             chars = list(
                 (
                     await s.execute(
@@ -353,11 +386,16 @@ class SubtitleService:
             )
         out: dict[str, str] = {c.name: c.color for c in chars if c.color}
         order = [c.name for c in chars] + [x for x in speakers if x]
+        palette = SPEAKER_PALETTE
+        if self.design:  # 用途の型があれば、その配色（メイン・アクセントの明暗違い）を使う
+            prof = await self.design.profile_for(project_id)
+            if prof:
+                palette = prof.palette.speakers
         i = 0
         for name in dict.fromkeys(order):
             if name in out:
                 continue
-            out[name] = SPEAKER_PALETTE[i % len(SPEAKER_PALETTE)]
+            out[name] = palette[i % len(palette)]
             i += 1
         return out
 
@@ -366,7 +404,6 @@ class SubtitleService:
         async with self.db.session_factory() as s:
             script, project = await self._project_of(s, req.script_id)
             fps = fps_of(project)
-            saved = project.subtitle_style
         cues = await self.cues(req.script_id)
         if not cues:
             raise SubtitleStateError("generate subtitles first")
@@ -379,7 +416,7 @@ class SubtitleService:
                 fps,
                 project.width,
                 project.height,
-                req.style or SubtitleStyle.model_validate(saved or {}),
+                req.style or await self.project_style(project.id),
                 req.speaker_colors,
                 title=script.title or "VideoAutomation",
                 speaker_accents=await self.speaker_accents(req.script_id),

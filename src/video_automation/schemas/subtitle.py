@@ -1,6 +1,7 @@
 """台本・字幕スキーマ (Phase 4)。"""
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -76,6 +77,8 @@ class SubtitleStyle(BaseModel):
     # 字幕の後ろに画面幅の半透明の帯を敷く（背景が明るくても読める）
     band: bool = True
     band_color: str = "#8C000000"
+    # 帯の形: full=画面幅で下端まで / fitted=字幕の文字の幅と高さだけ（画面を覆いすぎない）
+    band_mode: Literal["full", "fitted"] = "full"
 
     @field_validator("primary_color", "outline_color", "back_color", "band_color")
     @classmethod

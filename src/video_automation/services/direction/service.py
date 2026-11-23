@@ -11,6 +11,7 @@
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -22,10 +23,12 @@ from video_automation.database.database import Database
 from video_automation.database.models import Project, Script, ScriptSegment
 from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError
 from video_automation.schemas.animation import CardRequest, InfographicRequest
+from video_automation.schemas.design import Component, DesignProfile
 from video_automation.schemas.direction import (
     MAIN_KINDS,
     DirectionApplyRequest,
     DirectionApplyResult,
+    DirectionPlan,
     DirectionPlanRequest,
     DirectionPlanResult,
     Shot,
@@ -47,6 +50,8 @@ from video_automation.schemas.timeline import (
     TitleCardRequest,
     TrackKind,
 )
+from video_automation.services.design.guard import Placement
+from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction.plan import (
     PLAN_SCHEMA,
     SYSTEM,
@@ -97,6 +102,46 @@ def native_transform(
     return ClipTransform(fit=FitMode.FIT, scale=round(s * k, 4), x=cx - 0.5, y=cy - 0.5)
 
 
+def native_scale(aw: int, ah: int, cw: int, ch: int, max_h: float = 1.0) -> float:
+    """native_transform で置いたときの、素材の画素に対する表示の倍率。"""
+    return min(1.0, max_h * ch / ah, 0.92 * cw / aw)
+
+
+def fit_to_profile(
+    plan: DirectionPlan, prof: DesignProfile | None, extras: list[Component] | None = None
+) -> tuple[DirectionPlan, list[str]]:
+    """用途の型で使わない部品（題名・カード・図表・画像・テロップ）を外し、回数の上限で切る。"""
+    if prof is None:
+        return plan, []
+    extras = extras or []
+    kind_comp = {
+        ShotKind.CARD: Component.CARD,
+        ShotKind.CHART: Component.CHART,
+        ShotKind.IMAGE: Component.IMAGE,
+        ShotKind.KEYWORD: Component.KEYWORD,
+    }
+    notes: list[str] = []
+    count: dict[Component, int] = {}
+    shots = []
+    for s in plan.shots:
+        c = kind_comp[s.kind]
+        limit = -1 if c in extras else prof.allowance(c)
+        n = count.get(c, 0)
+        if limit == 0 or (limit > 0 and n >= limit):
+            why = "使いません" if limit == 0 else f"{limit} 回までです"
+            notes.append(
+                f"{s.from_line}: 「{prof.label}」では {s.kind.value} を{why}（外しました）"
+            )
+            continue
+        count[c] = n + 1
+        shots.append(s)
+    update: dict[str, object] = {"shots": shots}
+    if plan.title and not (prof.allows(Component.TITLE_CARD) or Component.TITLE_CARD in extras):
+        update.update(title="", subtitle="")
+        notes.append(f"「{prof.label}」では題名カードを使いません（外しました）")
+    return plan.model_copy(update=update), notes
+
+
 class DirectionService:
     def __init__(
         self,
@@ -106,7 +151,9 @@ class DirectionService:
         timeline: TimelineService,
         titles: TitleCardService,
         ffmpeg: FFmpeg,
+        design: DesignService | None = None,
     ) -> None:
+        self.design = design
         self.settings = settings
         self.db = db
         self.llm = llm
@@ -175,8 +222,14 @@ class DirectionService:
         return DirectionPlanResult(plan=plan, model_key=model_key, lines=len(texts))
 
     # ---------- 適用 ----------
-    async def _background(self, project_id: str, style: str, w: int, h: int) -> AssetRead:
+    async def _background(
+        self, project_id: str, style: str, w: int, h: int, prof: DesignProfile | None = None
+    ) -> AssetRead:
         c0, c1 = BACKGROUNDS.get(style, BACKGROUNDS["navy"])
+        if prof is not None:  # 用途の型の背景（暗い側→明るい側のグラデーション）
+            c0 = "0x" + prof.palette.base.lstrip("#")
+            c1 = "0x" + prof.palette.base2.lstrip("#")
+            style = f"{prof.purpose.value}"
         out_dir = self.settings.data_dir / "projects" / project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"bg_{style}_{w}x{h}.png"
@@ -214,12 +267,30 @@ class DirectionService:
         if not lines or any(x.end <= x.start for x in lines):
             raise CommandError("generate voices and synchronize subtitles first")
         plan = normalize(req.plan, [x.text for x in lines])
+        prof = await self.design.profile_for(p.id) if self.design else None
+        extras = (await self.design.get(p.id)).extras if self.design and prof else []
+        plan, dropped = fit_to_profile(plan, prof, extras)
         w, h = p.width, p.height
+        # 色・余白は用途の型から（型が無いときは従来の値）
+        accent = prof.palette.main if prof else plan.accent_color
+        emphasis = prof.palette.accent if prof else plan.accent_color
+        panel = prof.palette.surface if prof else "#0F1B2D"
+        ink = prof.palette.text if prof else "#FFFFFF"
+        chart_colors = prof.palette.chart if prof else [accent, "#FFB74D", "#81C784", "#F06292"]
+        muted = prof.palette.text_muted if prof else "#6F829E"
+        strip_top = max(STRIP_TOP, prof.safe_area.top) if prof else STRIP_TOP
+        side = max(SIDE, prof.safe_area.left) if prof else SIDE
+        used: dict[Component, int] = {}
+        boxes: list[Placement] = []
+
+        def use(c: Component, n: int = 1) -> None:
+            used[c] = used.get(c, 0) + n
+
         fps = p.fps_num / p.fps_den
         tl = await self.timeline.get_timeline(p.id)
         total = max(tl.duration_frames, lines[-1].end)
         assets = {a.id: a for a in tl.assets}
-        skipped: list[str] = list(plan.notes)
+        skipped: list[str] = list(plan.notes) + dropped
 
         def frames(sec: float) -> int:
             return round(sec * fps)
@@ -266,13 +337,16 @@ class DirectionService:
             return clip_id
 
         # 背景（ゆっくり寄る）
-        bg = await self._background(p.id, plan.background, w, h)
+        bg = await self._background(p.id, plan.background, w, h, prof)
         cid = add(bg_t, bg.id, 0, total)
-        cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
+        if prof is None or prof.allows(Component.BACKGROUND_MOTION):
+            cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
+            use(Component.BACKGROUND_MOTION)
 
         # タイトル（最初の発話の間。短すぎるときは 3 秒）
         title_end = 0
         if plan.title:
+            use(Component.TITLE_CARD)
             title_end = min(total, max(lines[0].end, frames(3.0)))
             dur = min(sec(title_end), 30.0)
             t_asset = await self.titles.create(
@@ -283,6 +357,7 @@ class DirectionService:
                     animation="pop",
                     size=0.9,
                     position="center",
+                    text_color=ink,
                 )
             )
             add(txt_t, t_asset.id, 0, min(title_end, media_frames(t_asset, title_end)))
@@ -292,7 +367,9 @@ class DirectionService:
                         project_id=p.id,
                         heading=plan.subtitle,
                         style="keyword",
-                        accent_color=plan.accent_color,
+                        accent_color=emphasis,
+                        panel_color=panel,
+                        text_color=ink,
                         scale=0.62,
                     )
                 )
@@ -333,13 +410,16 @@ class DirectionService:
             length = end - start
             fade = min(8, length // 4)
             if s.kind == ShotKind.CARD:
+                use(Component.CARD)
                 a = await self.titles.card(
                     CardRequest(
                         project_id=p.id,
                         heading=s.heading,
                         body=s.body,
                         style=s.style,
-                        accent_color=plan.accent_color,
+                        accent_color=accent,
+                        panel_color=panel,
+                        text_color=ink,
                         scale=CARD_SCALE,
                     )
                 )
@@ -356,6 +436,7 @@ class DirectionService:
                 )
                 cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
             elif s.kind == ShotKind.CHART:
+                use(Component.CHART)
                 a = await self.titles.infographic(
                     InfographicRequest(
                         project_id=p.id,
@@ -368,7 +449,10 @@ class DirectionService:
                         duration_sec=min(CHART_MAX_SEC, sec(length)),
                         animation_sec=1.2,
                         highlight=s.highlight,
-                        colors=[plan.accent_color, "#FFB74D", "#81C784", "#F06292"],
+                        colors=chart_colors,
+                        muted_color=muted,
+                        text_color=ink,
+                        box_color=panel,
                     )
                 )
                 media = media_frames(a, length)
@@ -386,6 +470,7 @@ class DirectionService:
                     q = f"（検索語: {s.query}）" if s.query else ""
                     skipped.append(f"{s.from_line}: 画像の素材が未選択のため外しました{q}")
                     continue
+                use(Component.IMAGE)
                 cid = add(
                     fig_t,
                     img.id,
@@ -410,24 +495,36 @@ class DirectionService:
         for s, start, end in spans:
             if end - start < frames(0.6):
                 continue
+            use(Component.KEYWORD)
             a = await self.titles.card(
                 CardRequest(
                     project_id=p.id,
                     heading=s.text,
                     style="keyword",
-                    accent_color=plan.accent_color,
+                    accent_color=emphasis,
+                    panel_color=panel,
+                    text_color=ink,
                     scale=0.62,
                 )
             )
             aw, ah = a.width or 1, a.height or 1
+            kx, ky = side + aw / 2 / w, strip_top + ah / 2 / h
+            k = native_scale(aw, ah, w, h)
+            boxes.append(
+                Placement(
+                    Component.KEYWORD,
+                    kx - aw * k / 2 / w,
+                    ky - ah * k / 2 / h,
+                    kx + aw * k / 2 / w,
+                    ky + ah * k / 2 / h,
+                )
+            )
             cid = add(
                 txt_t,
                 a.id,
                 start,
                 end - start,
-                transform=native_transform(
-                    aw, ah, w, h, cx=SIDE + aw / 2 / w, cy=STRIP_TOP + ah / 2 / h
-                ),
+                transform=native_transform(aw, ah, w, h, cx=kx, cy=ky),
                 fade_in_frames=min(6, (end - start) // 4),
                 fade_out_frames=min(6, (end - start) // 4),
             )
@@ -441,6 +538,12 @@ class DirectionService:
                 description="演出プランを適用",
             ),
         )
+        if self.design is not None:  # 書き出し前の検査のために、作った要素を記録する
+            colors = [accent, emphasis, panel, ink]
+            if used.get(Component.CHART):
+                colors += chart_colors
+            fonts = [Path(f).stem for f in [self.titles.font_path()] if f]
+            await self.design.record(p.id, "direction", manifest_record(used, colors, fonts, boxes))
         log.info("direction_applied", project_id=p.id, clips=clips, skipped=len(skipped))
         return DirectionApplyResult(
             command_id=res.id, status=res.status, clips=clips, skipped=skipped

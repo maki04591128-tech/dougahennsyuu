@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from video_automation.api.routes import (
     asset_sources,
     assistant,
+    design,
     direction,
     health,
     jobs,
@@ -51,6 +52,11 @@ from video_automation.services.assets.downloader import (
     DownloadError,
     DownloadRejectedError,
     Resolver,
+)
+from video_automation.services.design.service import (
+    DesignError,
+    DesignNotFoundError,
+    DesignViolationError,
 )
 from video_automation.services.llm_tasks.gateway import LLMError, NoModelError
 from video_automation.services.model_discovery.provider_manager import ProviderNotFoundError
@@ -223,6 +229,20 @@ def create_app(
         status = 503 if isinstance(exc, NoModelError) else 502
         return _err(status, exc.code, str(exc)[:300])
 
+    @app.exception_handler(DesignError)
+    async def design_error(_: Request, exc: DesignError) -> JSONResponse:
+        if isinstance(exc, DesignViolationError):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "code": exc.code,
+                    "message": str(exc)[:600],
+                    "check": exc.result.model_dump(mode="json"),
+                },
+            )
+        status = 404 if isinstance(exc, DesignNotFoundError) else 422
+        return _err(status, exc.code, str(exc)[:300])
+
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
         log.error("unhandled_exception", error_type=type(exc).__name__)
@@ -250,5 +270,7 @@ def create_app(
     app.include_router(motion.router, prefix=prefix)
     app.include_router(motion.visual, prefix=prefix)
     app.include_router(direction.router, prefix=prefix)
+    app.include_router(design.router, prefix=prefix)
+    app.include_router(design.projects, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

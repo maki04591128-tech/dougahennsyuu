@@ -109,6 +109,17 @@ def _trim(text: str, n: int) -> str:
 _KANA_UNITS = sorted(((v, k) for k, v in UNITS.items() if len(v) >= 3), key=lambda x: -len(x[0]))
 
 
+def unit_symbol(unit: str) -> str:
+    """図表の単位はカタカナを記号に戻す（ギガパスカル→GPa）。長い単位は図表の数値の横で読めない。"""
+    u = unicodedata.normalize("NFKC", unit).strip()
+    for kana, sym in _KANA_UNITS:
+        if u == kana:
+            return sym
+    if u in ("パーセント", "％"):
+        return "%"
+    return u
+
+
 def infer_unit(values: list[float], text: str) -> str:
     """台本で数値の直後に書かれている単位（カタカナは記号に戻す。例: ギガパスカル→GPa）。"""
     t = unicodedata.normalize("NFKC", text)
@@ -165,6 +176,7 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
             if not s.unit.strip():
                 s.unit = infer_unit(s.values, "".join(lines[s.from_line - 1 : s.to_line]))
                 s.unit = s.unit or infer_unit(s.values, "".join(lines))
+            s.unit = unit_symbol(s.unit)
         elif s.kind == ShotKind.KEYWORD:
             s.text = _trim(s.text or s.heading, 14)
             src = "".join(lines[s.from_line - 1 : s.to_line])

@@ -16,6 +16,7 @@ from video_automation.schemas.animation import (
     Transition,
     TransitionType,
 )
+from video_automation.schemas.design import ClassifyRequest, ProjectDesign, Purpose
 from video_automation.schemas.direction import (
     DirectionApplyRequest,
     DirectionPlan,
@@ -27,6 +28,7 @@ from video_automation.schemas.timeline import (
     Batch,
     CommandOrigin,
     CommandRequest,
+    RenderRequest,
     SetClipAnimation,
     TitleCardRequest,
     TrackKind,
@@ -225,6 +227,31 @@ async def apply_direction(script_id: str, plan: dict[str, Any]) -> dict[str, Any
     return {"job_id": job.id, "status": job.status.value}
 
 
+async def classify_purpose(text: str, vertical: bool | None = None) -> dict[str, Any]:
+    """指示文から動画の用途（デザインの型）を判定する。
+
+    needs_confirmation のときはユーザーに確認する。"""
+    c = await get_container()
+    return c.design.classify(ClassifyRequest(text=text, vertical=vertical)).model_dump(mode="json")
+
+
+async def set_project_purpose(project_id: str, purpose: str) -> dict[str, Any]:
+    """プロジェクトの用途を設定する。
+
+    型の外の部品の例外（extras）はユーザーだけが UI・API で設定する。"""
+    c = await get_container()
+    cur = await c.design.get(project_id)
+    d = ProjectDesign(purpose=Purpose(purpose), extras=cur.extras)
+    return (await c.design.set(project_id, d)).model_dump(mode="json")
+
+
+async def check_design(project_id: str, script_id: str | None = None) -> dict[str, Any]:
+    """書き出す前のデザインの検査（用途の型に反する部品・色・字幕）。書き出しはしない。"""
+    c = await get_container()
+    chk = await c.render.design_check(RenderRequest(project_id=project_id, script_id=script_id))
+    return chk.model_dump(mode="json") if chk else {"ok": True}
+
+
 async def get_job(job_id: str) -> dict[str, Any]:
     """Job の状態と結果。"""
     c = await get_container()
@@ -242,6 +269,9 @@ for _fn in (
     create_scene,
     plan_direction,
     apply_direction,
+    classify_purpose,
+    set_project_purpose,
+    check_design,
     get_job,
 ):
     mcp.tool(name=_fn.__name__, description=(_fn.__doc__ or "").strip().split("\n")[0])(_fn)

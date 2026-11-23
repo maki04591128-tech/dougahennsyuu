@@ -341,6 +341,8 @@ class RenderRequest(BaseModel):
     start_frame: int | None = Field(default=None, ge=0)
     end_frame: int | None = Field(default=None, gt=0)
     origin: CommandOrigin = CommandOrigin.USER
+    # デザインの検査で止まったものを、ユーザーの判断で書き出す（LLM 経由では無効）
+    allow_design_violations: bool = False
 
     @model_validator(mode="after")
     def _range(self) -> "RenderRequest":

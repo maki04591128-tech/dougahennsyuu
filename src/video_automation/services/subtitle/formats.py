@@ -71,20 +71,51 @@ def _style_line(
     )
 
 
-def _band(st: SubtitleStyle, width: int, height: int, lines: int, label: bool) -> str:
-    """字幕の後ろの半透明の帯（ベクター描画）。下揃えの字幕のときだけ。"""
+def text_width(text: str, size: float) -> float:
+    """推定の文字幅（全角=1、半角=0.6）。字幕の帯の幅を決めるのに使う。"""
+    return sum(size * (0.6 if ord(ch) < 0x2E80 else 1.0) for ch in text)
+
+
+def _band(
+    st: SubtitleStyle,
+    width: int,
+    height: int,
+    lines: int,
+    label: bool,
+    text: str = "",
+    label_text: str = "",
+) -> str:
+    """字幕の後ろの半透明の帯（ベクター描画）。下揃えの字幕のときだけ。
+
+    full: 画面幅で下端まで。fitted: 字幕の文字の幅と高さだけ（角を少し落とした形）。"""
     size = _font_size(st, width, height)
     mv = round(height * st.margin_v_ratio)
     text_h = lines * size * 1.2 + (size * LABEL_RATIO * 1.2 if label else 0)
     pad = size * 0.4
     top = max(0, round(height - mv - text_h - pad))
-    h = height - top  # 画面の下端まで
     alpha = ass_color(st.band_color)[2:4]
     color = ass_color(st.band_color)[4:]
-    return (
-        f"{{\\an7\\pos(0,{top})\\bord0\\shad0\\1c&H{color}&\\1a&H{alpha}&\\p1}}"
-        f"m 0 0 l {width} 0 l {width} {h} l 0 {h}{{\\p0}}"
-    )
+    head = f"{{\\an7\\pos(0,{top})\\bord0\\shad0\\1c&H{color}&\\1a&H{alpha}&\\p1}}"
+    if st.band_mode == "fitted" and text:
+        widths = [text_width(ln, size) for ln in text.split("\n")]
+        if label:
+            widths.append(text_width(label_text, size * LABEL_RATIO))
+        bw = min(width, round(max(widths) + size * 1.2))
+        x0 = round((width - bw) / 2)
+        mh = round(width * st.margin_h_ratio)
+        if st.alignment == 1:  # 左揃えの字幕は左の余白に寄せる
+            x0 = max(0, mh - round(size * 0.6))
+        elif st.alignment == 3:
+            x0 = min(width - bw, width - mh - bw + round(size * 0.6))
+        x1, y1 = x0 + bw, round(text_h + pad * 2)
+        r = round(size * 0.25)  # 角を落とす量
+        path = (
+            f"m {x0 + r} 0 l {x1 - r} 0 l {x1} {r} l {x1} {y1 - r} l {x1 - r} {y1} "
+            f"l {x0 + r} {y1} l {x0} {y1 - r} l {x0} {r}"
+        )
+        return head + path + "{\\p0}"
+    h = height - top  # 画面の下端まで
+    return head + f"m 0 0 l {width} 0 l {width} {h} l 0 {h}{{\\p0}}"
 
 
 def build_ass(
@@ -165,7 +196,7 @@ def build_ass(
                 f"{_ass_escape(spk)}{{\\r}}\\N"
             )
         if style.band and bottom:
-            band = _band(style, width, height, text.count("\n") + 1, bool(label))
+            band = _band(style, width, height, text.count("\n") + 1, bool(label), text, spk)
             lines.append(f"Dialogue: 0,{t0},{t1},{style.name},{name},0,0,0,,{fade}{band}")
         lines.append(
             f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{fade}{label}{_ass_escape(text)}"
