@@ -50,6 +50,7 @@ def manifest_record(
     colors: list[str],
     fonts: list[str],
     placements: list[Placement] | None = None,
+    empty_spans: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
     """演出の処理が保存する記録（JSON）。"""
     return {
@@ -60,6 +61,7 @@ def manifest_record(
             [p.component.value, round(p.x0, 4), round(p.y0, 4), round(p.x1, 4), round(p.y1, 4)]
             for p in placements or []
         ],
+        "empty_spans": [[round(a, 2), round(b, 2)] for a, b in empty_spans or []],
     }
 
 
@@ -146,6 +148,7 @@ class DesignService:
             m.fonts.update(rec.get("fonts") or [])
             for comp, x0, y0, x1, y1 in rec.get("placements") or []:
                 m.placements.append(Placement(Component(comp), x0, y0, x1, y1))
+            m.empty_spans.extend((a, b) for a, b in rec.get("empty_spans") or [])
         if rows and subtitle_style is not None:
             st = subtitle_style
             unit = min(w, h)

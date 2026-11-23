@@ -143,6 +143,8 @@ class DesignProfile(BaseModel):
     subtitle: SubtitleSpec
     safe_area: SafeArea
     components: dict[Component, int]  # 許可（DENY / ANY / 回数）
+    # 背景だけ（図・カード・画像・題名が無い）時間の上限（秒）。None は映像そのものが主役で制限なし
+    max_empty_sec: float | None = None
     keywords: list[str] = Field(default_factory=list)  # 指示文から用途を判定する語
 
     def allowance(self, c: Component) -> int:

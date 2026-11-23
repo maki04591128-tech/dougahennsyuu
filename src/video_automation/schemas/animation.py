@@ -215,6 +215,8 @@ class CardRequest(BaseModel):
     text_color: str = Field(default="#FFFFFF", pattern=_HEX)
     width_ratio: float = Field(default=0.62, ge=0.15, le=0.95)  # 画面幅に対する幅
     scale: float = Field(default=1.0, ge=0.5, le=2.0)  # 文字の大きさの倍率
+    # 書体（ファミリー名。用途の型の見出し書体）。None は既定の書体
+    font: str | None = Field(default=None, max_length=60)
 
     @field_validator("body")
     @classmethod

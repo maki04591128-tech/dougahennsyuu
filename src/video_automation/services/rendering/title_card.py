@@ -17,6 +17,7 @@ from video_automation.integrations.blender.runner import Blender
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds
 from video_automation.schemas.animation import CardRequest, InfographicRequest
 from video_automation.schemas.timeline import AssetKind, AssetRead, TitleCardRequest
+from video_automation.services.design.guard import font_key
 from video_automation.services.rendering.card import card_filter, card_layout
 from video_automation.services.timeline.timeline_service import (
     TimelineNotFoundError,
@@ -30,6 +31,17 @@ FONT_CANDIDATES = [
     r"C:\Windows\Fonts\msgothic.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
 ]
+
+# 書体のファミリー（font_key で揃えた名前）→ ファイル（太字を優先）
+FONT_FILES = {
+    "meiryo": [r"C:\Windows\Fonts\meiryob.ttc", r"C:\Windows\Fonts\meiryo.ttc"],
+    "bizudgothic": [
+        r"C:\Windows\Fonts\BIZ-UDGothicB.ttc",
+        r"C:\Windows\Fonts\BIZ-UDGothicR.ttc",
+    ],
+    "yugothic": [r"C:\Windows\Fonts\YuGothB.ttc", r"C:\Windows\Fonts\YuGothM.ttc"],
+    "notosansjp": ["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"],
+}
 
 log = get_logger("title_card")
 
@@ -54,9 +66,15 @@ class TitleCardService:
         self.ffmpeg = ffmpeg
         self.timeline = timeline
 
-    def font_path(self) -> str | None:
+    def font_path(self, family: str | None = None) -> str | None:
+        """書体のファイル。設定で指定があればそれを優先し、次に family（用途の型の書体）。"""
         if self.settings.title_font_path:
             return self.settings.title_font_path
+        if family:
+            key = font_key(family)
+            for f in FONT_FILES.get(key, []):
+                if Path(f).is_file():
+                    return f
         return next((f for f in FONT_CANDIDATES if Path(f).is_file()), None)
 
     async def _project(self, project_id: str) -> tuple[int, int, int, int]:
@@ -272,7 +290,7 @@ class TitleCardService:
     # ---------- 情報カード（FFmpeg で静止画を作る） ----------
     async def card(self, req: CardRequest) -> AssetRead:
         w, h, _, _ = await self._project(req.project_id)
-        font = self.font_path()
+        font = self.font_path(req.font)
         if font is None:
             raise RuntimeError("no Japanese font found (set title_font_path)")
         layout = card_layout(req, w, h)

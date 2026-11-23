@@ -71,6 +71,7 @@ class DesignManifest:
     subtitle: SubtitleUse | None = None
     placements: list[Placement] = field(default_factory=list)
     vertical: bool = False
+    empty_spans: list[tuple[float, float]] = field(default_factory=list)  # 背景だけの区間（秒）
 
     def add(self, c: Component, n: int = 1) -> None:
         self.used[c] = self.used.get(c, 0) + n
@@ -78,7 +79,7 @@ class DesignManifest:
 
 def font_key(name: str) -> str:
     """書体名・ファイル名を同じ書体の比較用に揃える（meiryob / Meiryo → meiryo）。"""
-    k = re.sub(r"[\s\-_]", "", name.lower())
+    k = re.sub(r"[\s\-_]", "", name.lower()).replace("udp", "ud")
     k2 = re.sub(r"(bold|regular|b|r)$", "", k)
     return k2 if len(k2) >= 4 else k
 
@@ -208,6 +209,20 @@ def check(
                     message=(
                         f"読む速さ（1 秒 {spec.chars_per_sec:g} 字）を超える字幕が"
                         f" {len(fast)} 件あります"
+                    ),
+                )
+            )
+    if profile.max_empty_sec is not None:
+        long_empty = [(a, b) for a, b in m.empty_spans if b - a > profile.max_empty_sec]
+        if long_empty:
+            where = "、".join(f"{a:.0f}〜{b:.0f} 秒" for a, b in long_empty[:4])
+            out.append(
+                Violation(
+                    code="empty_screen",
+                    severity="warning",
+                    message=(
+                        f"背景だけの時間が {profile.max_empty_sec:g} 秒を超える所が"
+                        f" {len(long_empty)} か所あります（{where}）"
                     ),
                 )
             )
