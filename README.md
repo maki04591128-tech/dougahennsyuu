@@ -20,6 +20,9 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   カメラ（ズーム・パン）の演出、シーン切替（ディゾルブ・暗転・スライド・ワイプ・ズーム）、
   Blender の文字アニメーション（ポップ・タイプライター・1文字ずつ跳ねる等）と図表、シーン作成、
   モーションプリセット、MCP（mcp_visual）、編集タブの演出・テロップ操作
+- **Phase 8（対話型編集）** — 対話型台本作成（全自動 / 片側入力・固定セリフ・1発話の再生成・検証・版と差分）、
+  会話による編集指示（計画 → 検証・修正 → 承認待ち）、承認の一元管理とポリシー、編集差分・履歴と取り消し、
+  モデルを替えた再実行、MCP（mcp_script・mcp_core の計画）、台本作成（AI）・AIアシスタントタブUI
 
 ## Phase 2 の要点
 
@@ -130,6 +133,39 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
 - MCP（mcp_visual, `uv run video-automation-mcp-visual`）: `create_scene`, `animate_image`, `animate_text`,
   `create_transition`, `create_infographic`, `set_camera_motion`, `list_motion_presets`, `get_job`
 - 既存の DB に後の Phase で増えた列（NULL 可）が無い場合は起動時に追加する。
+
+## Phase 8 の要点
+
+- LLM 呼び出しは `LLMGateway` に集約: タスク別割当（または指定モデル）を解決し、JSON Schema 付きで生成
+  （Ollama の `format`）→ `<think>` を除いて JSON を取り出し → jsonschema で検証 → 合わなければ誤りを
+  伝えて 1 回だけ再試行。VRAM 節約のため他のモデルはアンロードする（`single_loaded_model`）。
+- 台本作成（`/scripts/studio` ほか。旧形式の `POST /scripts` はそのまま）
+  - モード: `FULL_AI`（全員分を生成）/ `USER_ONE_SIDE`（ユーザー担当キャラクターのセリフを入力し、相手役を
+    生成）/ `MANUAL`。キャラクター（役割・性格・口調・話者 ID・抑揚）と設定（テーマ・目的・視聴者・目標尺・
+    必須語・禁止事項・参考資料・応答方針・AI 側の分量）を持つ。
+  - 固定セリフ: ユーザー入力（USER）・手修正（EDITED）・ロックしたセリフは AI の生成・再生成で変えない。
+    全体の再生成では本文で照合して元の行を残し、モデルが落とした行は元の位置へ戻す。
+  - 1 発話の再生成（`/dialogue/{turn}/regenerate`）は前後の会話を渡し、候補 1〜3 案。2 案以上は選んで採用。
+  - 検証（`/validate`）: 話者・長さ・重複・必須語・禁止語・推定尺（文字数 ÷ 7 字/秒）・ユーザー入力の改変・
+    AI 側の分量。`use_llm` で会話のつながり・口調の一貫性も LLM が指摘する。
+  - 変更ごとに版を保存し、差分（追加・削除・変更・並べ替え）と復元ができる。生成はプロンプトの版
+    （`script.full.v2` 等）・入力・出力を `generation_runs` に記録する。
+  - キャラクターの抑揚設定は音声生成（`/scripts/{id}/voice`）に反映する。
+- 対話型編集（`/conversations`）: 指示とプロジェクトの状態（ID・時間・素材・台本）を LLM に渡し、操作
+  （`edit_timeline` / `generate_script` / `render_project` / `search_assets` / `download_asset`）の計画を
+  JSON で受け取る。各操作をスキーマとタイムラインの dry-run で検証し、無効なら誤りを伝えて 1 回だけ修正
+  させる。変更を伴う操作はすべて承認待ちになり、自然言語の出力をそのまま実行しない。
+  `POST /conversations/messages/{id}/rerun` で別のモデルでやり直す（前の返答の未決定の提案は取り下げ）。
+- 承認（`GET /projects/{id}/approvals`, `POST /approvals/{kind}/{id}`）: タイムライン変更・最終レンダリング・
+  素材ダウンロード・台本修正案を一覧し、差分を見て承認/却下する。台本修正案は作成後に台本が変わっていれば
+  適用しない。ポリシー（`/approvals/policy`）は仕様 §10 で「設定可能」の項目（素材ダウンロード、
+  ライセンス不明素材の扱い）だけ変更できる。
+- 履歴（`GET /projects/{id}/history`）: 適用・取り消し済みの編集を人が読める差分つきで表示し、
+  `POST /projects/{id}/history/revert` で指定の時点まで戻す。
+- MCP: mcp_script（`uv run video-automation-mcp-script`）`create_script`, `generate_full_script`,
+  `set_user_script`, `generate_counterpart_dialogue`, `regenerate_dialogue`, `lock_dialogue_turn`,
+  `validate_script`, `get_script_versions`（生成・登録は承認待ちの修正案になる）。mcp_core に
+  `create_project`, `get_project_state`, `plan_edit`。
 
 ## セットアップ
 

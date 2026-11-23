@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from video_automation.api.routes import (
     asset_sources,
+    assistant,
     health,
     jobs,
     models,
@@ -15,6 +16,7 @@ from video_automation.api.routes import (
     projects,
     providers,
     render,
+    script_studio,
     subtitles,
     timeline,
     voice,
@@ -39,13 +41,28 @@ from video_automation.providers.audio_generation.acestep import (
     AceStepUnavailableError,
 )
 from video_automation.providers.base import ModelNotFoundError, NotSupportedError, ProviderError
-from video_automation.services.assets.asset_source_service import LicenseAckRequiredError
+from video_automation.services.assets.asset_source_service import (
+    LicenseAckRequiredError,
+    LicenseForbiddenError,
+)
 from video_automation.services.assets.downloader import (
     DownloadError,
     DownloadRejectedError,
     Resolver,
 )
+from video_automation.services.llm_tasks.gateway import LLMError, NoModelError
 from video_automation.services.model_discovery.provider_manager import ProviderNotFoundError
+from video_automation.services.orchestrator.approvals import ApprovalError
+from video_automation.services.orchestrator.orchestrator import (
+    ConversationNotFoundError,
+    OrchestratorError,
+)
+from video_automation.services.script.studio import (
+    FixedTurnError,
+    ProposalStateError,
+    ScriptNotFoundError,
+    ScriptStudioError,
+)
 from video_automation.services.subtitle.subtitle_service import SubtitleError
 from video_automation.services.timeline.timeline_service import (
     CommandError,
@@ -169,6 +186,10 @@ def create_app(
             },
         )
 
+    @app.exception_handler(LicenseForbiddenError)
+    async def license_forbidden(_: Request, exc: LicenseForbiddenError) -> JSONResponse:
+        return _err(403, exc.code, str(exc)[:200])
+
     @app.exception_handler(DownloadError)
     async def download_error(_: Request, exc: DownloadError) -> JSONResponse:
         status = 422 if isinstance(exc, DownloadRejectedError) else 502
@@ -178,6 +199,27 @@ def create_app(
     async def music_error(_: Request, exc: AceStepError) -> JSONResponse:
         status = 503 if isinstance(exc, AceStepUnavailableError) else 502
         return _err(status, exc.code, str(exc)[:200])
+
+    @app.exception_handler(ScriptStudioError)
+    async def studio_error(_: Request, exc: ScriptStudioError) -> JSONResponse:
+        status = {ScriptNotFoundError: 404, FixedTurnError: 409, ProposalStateError: 409}.get(
+            type(exc), 422
+        )
+        return _err(status, exc.code, str(exc)[:300])
+
+    @app.exception_handler(OrchestratorError)
+    async def orchestrator_error(_: Request, exc: OrchestratorError) -> JSONResponse:
+        status = 404 if isinstance(exc, ConversationNotFoundError) else 422
+        return _err(status, exc.code, str(exc)[:300])
+
+    @app.exception_handler(ApprovalError)
+    async def approval_error(_: Request, exc: ApprovalError) -> JSONResponse:
+        return _err(404 if "not found" in str(exc) else 422, exc.code, str(exc)[:300])
+
+    @app.exception_handler(LLMError)
+    async def llm_error(_: Request, exc: LLMError) -> JSONResponse:
+        status = 503 if isinstance(exc, NoModelError) else 502
+        return _err(status, exc.code, str(exc)[:300])
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
@@ -190,6 +232,10 @@ def create_app(
     app.include_router(timeline.router, prefix=prefix)
     app.include_router(timeline.assets, prefix=prefix)
     app.include_router(render.router, prefix=prefix)
+    app.include_router(script_studio.router, prefix=prefix)
+    app.include_router(assistant.conversations, prefix=prefix)
+    app.include_router(assistant.approvals, prefix=prefix)
+    app.include_router(assistant.projects, prefix=prefix)
     app.include_router(subtitles.scripts, prefix=prefix)
     app.include_router(subtitles.router, prefix=prefix)
     app.include_router(asset_sources.sources, prefix=prefix)

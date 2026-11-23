@@ -2,12 +2,13 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "VideoAutomation"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 
 
 class Settings(BaseSettings):
@@ -58,12 +59,14 @@ class Settings(BaseSettings):
     freesound_api_key: SecretStr | None = None
     # Wikimedia の利用規約で連絡先入りの User-Agent が求められる
     http_user_agent: str = (
-        "VideoAutomation/0.6 (+https://github.com/maki04591128-tech/dougahennsyuu)"
+        "VideoAutomation/0.8 (+https://github.com/maki04591128-tech/dougahennsyuu)"
     )
     asset_search_cache_hours: float = Field(default=24.0, ge=0)  # Pixabay は24時間キャッシュ必須
     asset_max_download_mb: int = Field(default=1024, ge=1)
     # LLM（MCP）からの素材ダウンロードはユーザー承認を必要とする（仕様 §10「設定可能」）
     llm_asset_download_requires_approval: bool = True
+    # ライセンス不明・要確認の素材: ack=明示承認で使用可 / forbidden=使用禁止（仕様 §10）
+    unknown_license_policy: Literal["ack", "forbidden"] = "ack"
     acestep_api_key: SecretStr | None = None  # acestep-api を --api-key 付きで起動した場合
     music_timeout_s: float = Field(default=1800.0, gt=0)
     music_poll_interval_s: float = Field(default=2.0, gt=0)

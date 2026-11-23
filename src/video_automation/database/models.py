@@ -151,6 +151,8 @@ class Script(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
+    # Phase 8: テーマ・目的・尺・応答方針など（schemas.script_studio.ScriptSettings）
+    settings: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class ScriptSegment(Base):
@@ -176,6 +178,9 @@ class ScriptSegment(Base):
     # 同期後のタイムライン上の位置（フレーム、半開区間）。Phase 5 の音声配置に使う
     start_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 8: ユーザー入力の原文（固定セリフが変わっていないことの検査用）と生成記録
+    original_text: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    generation_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class SubtitleStyleRow(Base):
@@ -443,6 +448,132 @@ class MotionPresetRow(Base):
     label: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     definition: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+# ---------------- Phase 8: 台本モード・対話型編集 ----------------
+
+
+class ScriptCharacter(Base):
+    """登場キャラクター（仕様 §17.3 Character）と音声設定（voice_settings）。"""
+
+    __tablename__ = "script_characters"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    personality: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    speaking_style: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    is_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    voice_style_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    voice: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # 抑揚など
+
+
+class ScriptScene(Base):
+    __tablename__ = "script_scenes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    estimated_duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class GenerationRun(Base):
+    """LLM による生成の記録（仕様 §17.3 GenerationRun）。"""
+
+    __tablename__ = "generation_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    model_key: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    output_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class ScriptVersionRow(Base):
+    """台本の変更履歴（変更ごとのスナップショット）。"""
+
+    __tablename__ = "script_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class ScriptProposal(Base):
+    """LLM 由来の台本修正案（仕様 §10: 台本修正案は承認が必要）。承認で snapshot を適用する。"""
+
+    __tablename__ = "script_proposals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    script_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scripts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    base_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    notes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING_APPROVAL")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class Conversation(Base):
+    """対話型編集の会話（P8-01）。"""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)  # user / assistant
+    content: Mapped[str] = mapped_column(String(20000), nullable=False, default="")
+    model_key: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    reply_to: Mapped[str | None] = mapped_column(String(36), nullable=True)  # assistant→user
+    # 計画・実行結果（schemas.orchestrator.AssistantTurn の plan / actions）
+    data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    superseded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )

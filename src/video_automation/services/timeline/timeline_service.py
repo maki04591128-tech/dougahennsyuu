@@ -399,6 +399,8 @@ class TimelineService:
                 source_out_frame=c.source_in_frame + length,
                 transform=c.transform.model_dump(mode="json"),
                 volume=c.volume,
+                fade_in_frames=min(c.fade_in_frames, length),
+                fade_out_frames=min(c.fade_out_frames, length),
             )
             s.add(clip)
         else:
@@ -584,9 +586,11 @@ class TimelineService:
             if req.origin == CommandOrigin.LLM:
                 # LLM 由来はタイムライン変更の承認が必要（仕様 §10）。検証だけ先に行う
                 try:
-                    await self._apply(s, p, cmd)
+                    preview = await self._apply(s, p, cmd)
                 finally:
                     await s.rollback()
+                # 承認画面の差分表示用（承認時は現在の状態で取り直す）
+                row.before, row.after = preview
                 s.add(row)
             else:
                 row.before, row.after = await self._apply(s, p, cmd)

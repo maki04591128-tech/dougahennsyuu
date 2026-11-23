@@ -19,6 +19,7 @@ from video_automation.database.models import (
     AudioFile,
     Project,
     Script,
+    ScriptCharacter,
     ScriptSegment,
     Subtitle,
 )
@@ -37,6 +38,7 @@ from video_automation.schemas.subtitle import (
 from video_automation.schemas.voice import (
     AccentPhrasesRequest,
     AudioQuery,
+    Prosody,
     VoiceGenerateItem,
     VoiceGenerateRequest,
 )
@@ -144,6 +146,12 @@ class SubtitleService:
             missing = [x.sequence for x in todo if x.voice_style_id is None]
             if missing:
                 raise SubtitleStateError(f"voice style not set for segments {missing[:10]}")
+            # 台本スタジオで設定したキャラクターごとの抑揚（話速・高さ等）
+            q = select(ScriptCharacter).where(ScriptCharacter.script_id == script_id)
+            prosody = {
+                c.name: Prosody.model_validate(c.voice or {})
+                for c in (await s.execute(q)).scalars()
+            }
             for i, seg in enumerate(todo):
                 audio = (
                     await self.voice.generate(
@@ -153,6 +161,7 @@ class SubtitleService:
                                 VoiceGenerateItem(
                                     text=seg.text,
                                     style_id=seg.voice_style_id or 0,
+                                    prosody=prosody.get(seg.speaker) or Prosody(),
                                     script_segment_id=seg.id,
                                 )
                             ],
