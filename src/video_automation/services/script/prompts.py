@@ -41,7 +41,7 @@ FULL_SCHEMA: dict[str, Any] = {
     "required": ["scenes"],
 }
 
-COUNTERPART_VERSION = "script.counterpart.v1"
+COUNTERPART_VERSION = "script.counterpart.v2"
 COUNTERPART_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
