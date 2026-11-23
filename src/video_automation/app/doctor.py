@@ -5,7 +5,6 @@
 """
 
 import json
-import os
 import platform
 import sys
 from typing import Any
@@ -98,8 +97,15 @@ def format_text(r: dict[str, Any]) -> str:
 
 def run(settings: Settings, as_json: bool = False) -> int:
     import asyncio
+    import logging
 
-    os.environ.setdefault("PYTHONUTF8", "1")
+    import structlog
+
+    # パイプ・ファイルへ出力するとき（インストーラーのログ等）は UTF-8 にする（既定は cp932）
+    if not sys.stdout.isatty() and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    # 結果だけを出す（内部の info ログは出さない）
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING))
     r = asyncio.run(diagnose(settings))
     print(json.dumps(r, ensure_ascii=False, indent=2) if as_json else format_text(r))
     return 0 if r["required_ok"] else 1
