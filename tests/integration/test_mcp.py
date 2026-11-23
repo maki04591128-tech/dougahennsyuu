@@ -133,3 +133,57 @@ async def test_mcp_render_tools_require_approval(media_settings, fake, media_dir
     finally:
         _shared.set_container(None)
         await c.aclose()
+
+
+async def test_mcp_media_asset_and_music_tools(media_settings, fake):
+    from fake_assets import PEXELS_KEY, fake_resolver, media
+    from fakes import FakeProtector
+    from video_automation.app.bootstrap import build_container
+    from video_automation.database.models import Project
+    from video_automation.mcp_servers import _shared, media_server
+    from video_automation.schemas.asset_source import SourceName
+
+    media()
+    names = {t.name for t in await media_server.mcp.list_tools()}
+    assert {
+        "search_assets",
+        "inspect_license",
+        "download_asset",
+        "generate_music",
+        "add_bgm",
+    } <= names
+    fake.acestep.up = True
+    s = media_settings.model_copy(update={"music_poll_interval_s": 0.01})
+    c = await build_container(
+        s,
+        http_transport=fake.transport,
+        protector=FakeProtector(),
+        configure_logs=False,
+        dns_resolver=fake_resolver,
+    )
+    _shared.set_container(c)
+    try:
+        await c.asset_sources.set_key(SourceName.PEXELS, PEXELS_KEY)
+        async with c.db.session_factory() as ses:
+            p = Project(name="m")
+            ses.add(p)
+            await ses.commit()
+            pid = p.id
+        r = await media_server.search_assets("夜景", "image", limit=3)
+        assert r["results"] and all(x["verdict"] == "allowed" for x in r["results"])
+        assert "freesound" in r["skipped"]
+        lic = await media_server.inspect_license("openverse", "ov-2", "image")
+        assert lic["verdict"] == "needs_ack"
+        d = await media_server.download_asset(pid, "pexels", "101", "image")
+        assert d["status"] == "PENDING_APPROVAL" and d["job_id"] is None
+        assert (await c.timeline.get_timeline(pid)).assets == []  # 承認前は取得しない
+        g = await media_server.generate_music(pid, "upbeat chiptune", duration_sec=20)
+        job = await c.jobs.wait(g["job_id"])
+        assert job.status == "SUCCEEDED", job.error
+        aid = job.result["assets"][0]["id"]
+        b = await media_server.add_bgm(pid, aid)
+        assert b["status"] == "PENDING_APPROVAL"
+        assert (await c.timeline.get_timeline(pid)).clips == []
+    finally:
+        _shared.set_container(None)
+        await c.aclose()

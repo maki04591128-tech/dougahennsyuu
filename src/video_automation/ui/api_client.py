@@ -189,5 +189,61 @@ class ApiClient:
         action = "approve" if approve else "reject"
         return self._json(self._http.post(f"/render/{render_id}/{action}"))
 
+    # ----- Phase 6: 素材・BGM -----
+    def asset_sources(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/asset_sources"))
+
+    def set_source_key(self, name: str, api_key: str) -> dict[str, Any]:
+        return self._json(self._http.put(f"/asset_sources/{name}/key", json={"api_key": api_key}))
+
+    def search_assets(self, query: str, media_type: str, **kw: Any) -> dict[str, Any]:
+        body = {"query": query, "media_type": media_type, **kw}
+        return self._json(self._http.post("/assets/search", json=body, timeout=60.0))
+
+    def asset_thumbnail(self, source: str, source_id: str, media_type: str) -> bytes:
+        body = {"source": source, "source_id": source_id, "media_type": media_type}
+        r = self._http.post("/assets/thumbnail", json=body, timeout=30.0)
+        r.raise_for_status()
+        return r.content
+
+    def download_asset(
+        self, project_id: str, source: str, source_id: str, media_type: str, acknowledge: bool
+    ) -> dict[str, Any]:
+        body = {
+            "project_id": project_id,
+            "source": source,
+            "source_id": source_id,
+            "media_type": media_type,
+            "acknowledge_license": acknowledge,
+        }
+        return self._json(self._http.post("/assets/download", json=body, timeout=60.0))
+
+    def asset_requests(self, project_id: str) -> list[dict[str, Any]]:
+        params = {"project_id": project_id, "status": "PENDING_APPROVAL"}
+        return self._json(self._http.get("/assets/requests", params=params))
+
+    def decide_asset_request(self, request_id: str, approve: bool) -> dict[str, Any]:
+        action = "approve" if approve else "reject"
+        return self._json(self._http.post(f"/assets/requests/{request_id}/{action}"))
+
+    def credits(self, project_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/projects/{project_id}/credits"))
+
+    def asset_file(self, asset_id: str) -> bytes:
+        r = self._http.get(f"/assets/{asset_id}/file", timeout=60.0)
+        r.raise_for_status()
+        return r.content
+
+    def music_engines(self) -> dict[str, Any]:
+        return self._json(self._http.get("/music/engines"))
+
+    def generate_music(self, project_id: str, prompt: str, **kw: Any) -> dict[str, Any]:
+        body = {"project_id": project_id, "prompt": prompt, **kw}
+        return self._json(self._http.post("/music/generate", json=body))
+
+    def add_bgm(self, project_id: str, asset_id: str, volume: float) -> dict[str, Any]:
+        body = {"asset_id": asset_id, "volume": volume}
+        return self._json(self._http.post(f"/projects/{project_id}/timeline/add_bgm", json=body))
+
     def close(self) -> None:
         self._http.close()

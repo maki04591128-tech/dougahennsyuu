@@ -1,5 +1,5 @@
 """テーブル定義。Phase 1: projects / Phase 2: llm_providers, llm_models,
-llm_task_assignments, system_settings。"""
+llm_task_assignments, system_settings。以降のPhaseのテーブルは末尾に追加。"""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -315,3 +315,114 @@ class RenderJob(Base):
         DateTime(timezone=True), default=_now, nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ---------------- Phase 6: 素材・ライセンス・音楽生成 ----------------
+
+
+class AssetLicenseRow(Base):
+    """素材の取得元・取得日時・ライセンス条件のスナップショット（仕様 §3, §5）。"""
+
+    __tablename__ = "asset_licenses"
+
+    asset_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    landing_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    download_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    creator: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    license_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    license: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attribution: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)  # 取得時の結果全体
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class AssetSourceKey(Base):
+    """素材サービスのAPIキー（DPAPIで暗号化。平文保存しない）。"""
+
+    __tablename__ = "asset_source_keys"
+
+    source: Mapped[str] = mapped_column(String(20), primary_key=True)
+    api_key_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now, nullable=False
+    )
+
+
+class SearchCacheRow(Base):
+    """検索結果キャッシュ（Pixabay は24時間キャッシュが利用条件）。"""
+
+    __tablename__ = "asset_search_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    results: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SearchResultRow(Base):
+    """検索で見つかった個々の素材（サムネイル表示・承認画面の表示用）。"""
+
+    __tablename__ = "asset_search_results"
+
+    source: Mapped[str] = mapped_column(String(20), primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(10), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AssetRequestRow(Base):
+    """LLM 由来の素材ダウンロード要求（ユーザー承認待ち）。"""
+
+    __tablename__ = "asset_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    license_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+class MusicGeneration(Base):
+    """ACE-Step による BGM 生成の記録（プロンプト・条件・モデル・出力）。"""
+
+    __tablename__ = "music_generations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    task_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt: Mapped[str] = mapped_column(String(1000), nullable=False)
+    lyrics: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    params: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    dit_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lm_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    seed: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )

@@ -48,7 +48,10 @@ class JobManager:
         except Exception as exc:
             log.error("job_failed", job_id=job.id, kind=job.kind, exc_info=True)
             job.status = JobStatus.FAILED
-            job.error = type(exc).__name__  # 詳細は返さない（機密保護）
+            # 詳細は返さない（機密保護）。利用者向けと明示された例外のみ本文を付ける
+            job.error = type(exc).__name__
+            if getattr(exc, "public_message", False):
+                job.error += f": {str(exc)[:300]}"
         await self._emit(job)
 
     def get(self, job_id: str) -> JobRead | None:

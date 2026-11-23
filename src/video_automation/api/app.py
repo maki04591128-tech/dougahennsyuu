@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from video_automation.api.routes import (
+    asset_sources,
     health,
     jobs,
     models,
@@ -24,7 +25,25 @@ from video_automation.app.secrets import SecretProtector, SecretStorageUnavailab
 from video_automation.app.settings import APP_NAME, APP_VERSION, Settings, get_settings
 from video_automation.integrations.blender.runner import BlenderError, BlenderNotFoundError
 from video_automation.integrations.ffmpeg.runner import FFmpegError, FFmpegNotFoundError
+from video_automation.providers.assets.base import (
+    AssetSourceError,
+    SourceAuthError,
+    SourceNotConfiguredError,
+    SourceNotFoundError,
+    SourceRateLimitedError,
+    UnsupportedMediaTypeError,
+)
+from video_automation.providers.audio_generation.acestep import (
+    AceStepError,
+    AceStepUnavailableError,
+)
 from video_automation.providers.base import ModelNotFoundError, NotSupportedError, ProviderError
+from video_automation.services.assets.asset_source_service import LicenseAckRequiredError
+from video_automation.services.assets.downloader import (
+    DownloadError,
+    DownloadRejectedError,
+    Resolver,
+)
 from video_automation.services.model_discovery.provider_manager import ProviderNotFoundError
 from video_automation.services.subtitle.subtitle_service import SubtitleError
 from video_automation.services.timeline.timeline_service import (
@@ -47,13 +66,16 @@ def create_app(
     *,
     http_transport: httpx.AsyncBaseTransport | None = None,
     protector: SecretProtector | None = None,
+    dns_resolver: Resolver | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     log = get_logger("api")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        c = await build_container(settings, http_transport=http_transport, protector=protector)
+        c = await build_container(
+            settings, http_transport=http_transport, protector=protector, dns_resolver=dns_resolver
+        )
         app.state.container = c
         app.state.db, app.state.bus, app.state.jobs = c.db, c.bus, c.jobs
         log.info("startup", version=APP_VERSION)
@@ -121,6 +143,41 @@ def create_app(
         log.error("tool_failed", error_type=type(exc).__name__, detail=str(exc)[-600:])
         return _err(502, "tool_failed", "external tool failed")
 
+    @app.exception_handler(AssetSourceError)
+    async def asset_source_error(_: Request, exc: AssetSourceError) -> JSONResponse:
+        status = {
+            SourceNotConfiguredError: 400,
+            SourceAuthError: 400,  # 登録したAPIキーが無効
+            SourceNotFoundError: 404,
+            UnsupportedMediaTypeError: 400,
+            SourceRateLimitedError: 429,
+        }.get(type(exc), 502)
+        resp = _err(status, exc.code, str(exc)[:200])
+        if isinstance(exc, SourceRateLimitedError) and exc.retry_after:
+            resp.headers["Retry-After"] = str(int(exc.retry_after))
+        return resp
+
+    @app.exception_handler(LicenseAckRequiredError)
+    async def license_ack(_: Request, exc: LicenseAckRequiredError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": exc.code,
+                "message": "ライセンス条件の確認が必要です（acknowledge_license=true で取得）",
+                "license": exc.check.model_dump(mode="json"),
+            },
+        )
+
+    @app.exception_handler(DownloadError)
+    async def download_error(_: Request, exc: DownloadError) -> JSONResponse:
+        status = 422 if isinstance(exc, DownloadRejectedError) else 502
+        return _err(status, exc.code, str(exc)[:200])
+
+    @app.exception_handler(AceStepError)
+    async def music_error(_: Request, exc: AceStepError) -> JSONResponse:
+        status = 503 if isinstance(exc, AceStepUnavailableError) else 502
+        return _err(status, exc.code, str(exc)[:200])
+
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
         log.error("unhandled_exception", error_type=type(exc).__name__)
@@ -134,5 +191,9 @@ def create_app(
     app.include_router(render.router, prefix=prefix)
     app.include_router(subtitles.scripts, prefix=prefix)
     app.include_router(subtitles.router, prefix=prefix)
+    app.include_router(asset_sources.sources, prefix=prefix)
+    app.include_router(asset_sources.assets, prefix=prefix)
+    app.include_router(asset_sources.projects, prefix=prefix)
+    app.include_router(asset_sources.music, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

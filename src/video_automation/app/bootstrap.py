@@ -12,9 +12,12 @@ from video_automation.core.jobs.job_manager import JobManager
 from video_automation.database.database import Database
 from video_automation.integrations.blender.runner import Blender
 from video_automation.integrations.ffmpeg.runner import FFmpeg
+from video_automation.services.assets.asset_source_service import AssetSourceService
+from video_automation.services.assets.downloader import Resolver
 from video_automation.services.llm_tasks.task_router import TaskRouter
 from video_automation.services.model_discovery.inference_test import InferenceTester
 from video_automation.services.model_discovery.provider_manager import ProviderManager
+from video_automation.services.music.music_service import MusicService
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.subtitle.subtitle_service import SubtitleService
@@ -38,8 +41,12 @@ class AppContainer:
     timeline: TimelineService
     render: RenderService
     titles: TitleCardService
+    asset_sources: AssetSourceService
+    music: MusicService
 
     async def aclose(self) -> None:
+        await self.asset_sources.aclose()
+        await self.music.aclose()
         await self.providers.aclose()
         await self.voice.aclose()
         await self.db.dispose()
@@ -51,6 +58,7 @@ async def build_container(
     http_transport: httpx.AsyncBaseTransport | None = None,
     protector: SecretProtector | None = None,
     configure_logs: bool = True,
+    dns_resolver: Resolver | None = None,
 ) -> AppContainer:
     settings.ensure_dirs()
     if configure_logs:
@@ -80,4 +88,14 @@ async def build_container(
         timeline=timeline,
         render=RenderService(settings, db, ffmpeg, timeline, subtitles, jobs),
         titles=TitleCardService(settings, db, blender, ffmpeg, timeline),
+        asset_sources=AssetSourceService(
+            settings,
+            db,
+            timeline,
+            jobs,
+            providers.protector,
+            transport=http_transport,
+            resolver=dns_resolver,
+        ),
+        music=MusicService(settings, db, timeline, providers, transport=http_transport),
     )

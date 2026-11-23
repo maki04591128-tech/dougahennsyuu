@@ -1,4 +1,6 @@
-"""メインウィンドウ (P1-08)。タブ: プロジェクト / LLM設定 / 音声 / 台本・字幕 / 編集・書き出し。"""
+"""メインウィンドウ (P1-08)。
+
+タブ: プロジェクト / LLM設定 / 音声 / 台本・字幕 / 素材・BGM / 編集・書き出し。"""
 
 from typing import Any
 
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from video_automation.ui.assets.widget import AssetsWidget
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
 from video_automation.ui.subtitle.widget import SubtitleWidget
 from video_automation.ui.timeline.widget import TimelineWidget
@@ -44,6 +47,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.voice, "音声")
         self.subtitles = SubtitleWidget(api)
         self.tabs.addTab(self.subtitles, "台本・字幕")
+        self.assets = AssetsWidget(api)
+        self.tabs.addTab(self.assets, "素材・BGM")
         self.timeline = TimelineWidget(api)
         self.tabs.addTab(self.timeline, "編集・書き出し")
         self.setCentralWidget(self.tabs)
@@ -64,5 +69,7 @@ class MainWindow(QMainWindow):
             self.voice.refresh()
         if hasattr(self.api, "create_script"):
             self.subtitles.refresh()
+        if hasattr(self.api, "asset_sources"):
+            self.assets.refresh()
         if hasattr(self.api, "timeline"):
             self.timeline.refresh()

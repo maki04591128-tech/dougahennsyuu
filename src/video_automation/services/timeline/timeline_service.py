@@ -19,6 +19,7 @@ from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import (
     Asset,
+    AssetLicenseRow,
     AudioFile,
     Clip,
     EditCommand,
@@ -28,6 +29,7 @@ from video_automation.database.models import (
     Track,
 )
 from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError
+from video_automation.schemas.asset_source import AddBgmRequest
 from video_automation.schemas.timeline import (
     AddClip,
     AddTrack,
@@ -61,6 +63,7 @@ _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 class TimelineError(Exception):
     code = "timeline_error"
+    public_message = True  # API でも本文を返している（入力・状態の問題のみ）
 
 
 class CommandError(TimelineError):
@@ -228,11 +231,11 @@ class TimelineService:
             name=name,
             path=path.resolve().relative_to(self.settings.data_dir.resolve()).as_posix(),
             sha256=h,
-            duration_sec=info.duration_sec,
+            duration_sec=None if kind == AssetKind.IMAGE else info.duration_sec,
             width=info.width,
             height=info.height,
-            fps=info.fps,
-            has_audio=info.has_audio,
+            fps=None if kind == AssetKind.IMAGE else info.fps,
+            has_audio=info.has_audio and kind != AssetKind.IMAGE,
             source=source,
             audio_file_id=audio_file_id,
         )
@@ -661,6 +664,55 @@ class TimelineService:
             ),
         )
 
+    async def add_bgm(
+        self, project_id: str, req: AddBgmRequest, origin: CommandOrigin = CommandOrigin.USER
+    ) -> CommandRead:
+        """BGM トラックを追加し、曲が短ければ繰り返して指定区間を埋める（端はフェード）。"""
+        tl = await self.get_timeline(project_id)
+        asset = next((a for a in tl.assets if a.id == req.asset_id), None)
+        if asset is None:
+            raise TimelineNotFoundError(f"asset {req.asset_id}")
+        if asset.kind != AssetKind.AUDIO.value:
+            raise CommandError("BGM must be an audio asset")
+        fps = tl.fps_num / tl.fps_den
+        length = int((asset.duration_sec or 0) * fps)
+        if length <= 0:
+            raise CommandError("audio asset has no duration")
+        end = req.end_frame or tl.duration_frames or (req.start_frame + length)
+        if end <= req.start_frame:
+            raise CommandError("end_frame must be after start_frame")
+        track_id = str(uuid4())
+        commands: list[Any] = [AddTrack(kind=TrackKind.AUDIO, name="BGM", track_id=track_id)]
+        clip_ids: list[str] = []
+        pos = req.start_frame
+        while pos < end:
+            dur = min(length, end - pos)
+            cid = str(uuid4())
+            clip_ids.append(cid)
+            commands.append(
+                AddClip(
+                    track_id=track_id,
+                    asset_id=asset.id,
+                    start_frame=pos,
+                    duration_frames=dur,
+                    clip_id=cid,
+                    volume=req.volume,
+                )
+            )
+            pos += dur
+            if not req.loop:
+                break
+        commands.append(SetClipProps(clip_id=clip_ids[0], fade_in_frames=req.fade_in_frames))
+        commands.append(SetClipProps(clip_id=clip_ids[-1], fade_out_frames=req.fade_out_frames))
+        return await self.submit(
+            project_id,
+            CommandRequest(
+                command=Batch(commands=commands),
+                origin=origin,
+                description=f"BGM「{asset.name}」を配置（音量 {req.volume:g}）",
+            ),
+        )
+
     # ---------- 検証 ----------
     async def validate_project(self, project_id: str) -> ValidationResult:
         tl = await self.get_timeline(project_id)
@@ -686,4 +738,21 @@ class TimelineService:
             for prev, nxt in zip(clips, clips[1:], strict=False):
                 if prev.end_frame > nxt.start_frame:
                     issues.append(ValidationIssue(level="error", message="overlap", clip_id=nxt.id))
+        used = {c.asset_id for c in tl.clips}
+        async with self.db.session_factory() as s:
+            lic = (
+                (await s.execute(select(AssetLicenseRow).where(AssetLicenseRow.asset_id.in_(used))))
+                .scalars()
+                .all()
+            )
+        for row in lic:
+            if row.verdict == "allowed":
+                continue
+            name = assets[row.asset_id].name if row.asset_id in assets else row.asset_id
+            if row.acknowledged:
+                msg = f"license needs care ({row.license_code}): {name}"
+                issues.append(ValidationIssue(level="warning", message=msg))
+            else:
+                msg = f"license not acknowledged ({row.license_code}): {name}"
+                issues.append(ValidationIssue(level="error", message=msg))
         return ValidationResult(valid=not any(i.level == "error" for i in issues), issues=issues)

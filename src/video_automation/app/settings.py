@@ -7,7 +7,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "VideoAutomation"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 
 
 class Settings(BaseSettings):
@@ -50,6 +50,25 @@ class Settings(BaseSettings):
         ]
     )
     title_font_path: str | None = None  # Blender タイトル用フォント（None=OS既定の日本語フォント）
+
+    # ---- Phase 6: 素材・音楽生成 ----
+    # 素材サービスのAPIキー（環境変数でも指定可。UIから登録した場合はDPAPIで暗号化してDB保存）
+    pexels_api_key: SecretStr | None = None
+    pixabay_api_key: SecretStr | None = None
+    freesound_api_key: SecretStr | None = None
+    # Wikimedia の利用規約で連絡先入りの User-Agent が求められる
+    http_user_agent: str = (
+        "VideoAutomation/0.6 (+https://github.com/maki04591128-tech/dougahennsyuu)"
+    )
+    asset_search_cache_hours: float = Field(default=24.0, ge=0)  # Pixabay は24時間キャッシュ必須
+    asset_max_download_mb: int = Field(default=1024, ge=1)
+    # LLM（MCP）からの素材ダウンロードはユーザー承認を必要とする（仕様 §10「設定可能」）
+    llm_asset_download_requires_approval: bool = True
+    acestep_api_key: SecretStr | None = None  # acestep-api を --api-key 付きで起動した場合
+    music_timeout_s: float = Field(default=1800.0, gt=0)
+    music_poll_interval_s: float = Field(default=2.0, gt=0)
+    # VRAM 8GB 環境のため、BGM生成前にロード中のLLMをアンロードする
+    music_unload_llm: bool = True
 
     def voice_engine_urls(self) -> dict[str, str]:
         urls = {"voicevox-nemo": self.voicevox_nemo_url, "voicevox": self.voicevox_url}
