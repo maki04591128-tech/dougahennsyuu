@@ -30,6 +30,7 @@ from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.script.studio import ScriptStudio
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import TimelineService
+from video_automation.services.voice.reading_service import ReadingService
 from video_automation.services.voice.voice_service import VoiceService
 
 
@@ -59,6 +60,7 @@ class AppContainer:
     history: HistoryService
     orchestrator: Orchestrator
     qa: QAService
+    readings: ReadingService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -84,14 +86,15 @@ async def build_container(
     bus = EventBus()
     providers = ProviderManager(settings, db, protector=protector, transport=http_transport)
     voice = VoiceService(settings, db, transport=http_transport)
-    subtitles = SubtitleService(settings, db, voice)
+    router = TaskRouter()
+    llm = LLMGateway(settings, db, providers, router)
+    readings = ReadingService(db, voice, llm)
+    subtitles = SubtitleService(settings, db, voice, readings)
     jobs = JobManager(bus)
     ffmpeg = FFmpeg(settings.ffmpeg_path)
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
     titles = TitleCardService(settings, db, blender, ffmpeg, timeline)
-    router = TaskRouter()
-    llm = LLMGateway(settings, db, providers, router)
     render = RenderService(settings, db, ffmpeg, timeline, subtitles, jobs)
     asset_sources = AssetSourceService(
         settings,
@@ -133,4 +136,5 @@ async def build_container(
         history=HistoryService(db, timeline, approvals),
         orchestrator=orchestrator,
         qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs),
+        readings=readings,
     )

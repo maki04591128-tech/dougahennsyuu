@@ -108,6 +108,23 @@ async def register_pronunciation(
     return {"id": row.id, "surface": row.surface, "pronunciation": row.pronunciation}
 
 
+async def check_readings(script_id: str, apply: bool = False) -> dict[str, Any]:
+    """台本の読み間違いを AI で確認する（apply=True で読みのルールに登録。字幕は変えない）。"""
+    from video_automation.schemas.voice import ReadingCheckRequest
+
+    c = await get_container()
+    r = await c.readings.check_script(script_id, ReadingCheckRequest(apply=apply))
+    return r.model_dump(mode="json")
+
+
+async def speech_text(text: str, project_id: str | None = None) -> dict[str, str]:
+    """字幕の文から、実際に読み上げに使う文（読みのルール・略語・単位を整えた文）を返す。"""
+    c = await get_container()
+    return {"text": text, "speech": await c.readings.speech_text(project_id, text)}
+
+
+mcp.tool(name="check_readings", description="台本の読み間違いを AI で確認する")(check_readings)
+mcp.tool(name="speech_text", description="読み上げに使う文を確認する")(speech_text)
 mcp.tool(name="list_speakers", description="音声合成の話者・スタイル一覧")(list_speakers)
 mcp.tool(name="generate_voice", description="テキストから音声を生成して保存する")(generate_voice)
 mcp.tool(name="adjust_prosody", description="既存音声の抑揚・話速を調整して再生成する")(

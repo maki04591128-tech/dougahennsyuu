@@ -153,6 +153,11 @@ class MoraEditRequest(BaseModel):
 class VoiceGenerateItem(_TextReq):
     style_id: int
     prosody: Prosody = Field(default_factory=Prosody)
+    # 合成に使う読み（読み間違い対策で正規化した文）。None なら text をそのまま読む
+    reading_text: str | None = Field(default=None, max_length=2000)
+    # 抑揚づけの強さ（0〜2）。None は行わない（手で直したアクセントを尊重する）
+    expressiveness: float | None = Field(default=None, ge=0, le=2)
+    emphasis: list[str] = Field(default_factory=list, max_length=10)  # 強調する語（元の表記）
     # 読み・アクセントを手動修正した場合に渡す（テキストからの再解析を行わない）
     accent_phrases: list[AccentPhrase] | None = None
     script_segment_id: str | None = None
@@ -240,3 +245,50 @@ class AudioFileRead(BaseModel):
     created_at: datetime
     timings: list[PhraseTiming] = Field(default_factory=list)
     prosody: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------- 読みのルール（読み間違い対策） ----------------
+
+
+class ReadingRuleIn(BaseModel):
+    surface: str = Field(min_length=1, max_length=100)
+    reading: str = Field(min_length=1, max_length=100)
+    project_id: str | None = None  # None は全プロジェクト共通
+    enabled: bool = True
+    note: str = Field(default="", max_length=300)
+
+    @field_validator("reading")
+    @classmethod
+    def _katakana(cls, v: str) -> str:
+        v = v.strip()
+        if not _KATAKANA.match(v):
+            raise ValueError("reading must be katakana")
+        return v
+
+
+class ReadingRuleRead(ReadingRuleIn):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    source: str  # user / llm
+    created_at: datetime
+
+
+class ReadingCheckRequest(BaseModel):
+    model_key: str | None = None
+    apply: bool = True  # AI が見つけた誤りを読みのルールとして登録する
+
+
+class ReadingIssue(BaseModel):
+    segment_id: str
+    text: str
+    surface: str
+    wrong: str  # エンジンの読み（該当部分を含む文全体のカナ）
+    reading: str
+    rule_id: str | None = None
+
+
+class ReadingCheckResult(BaseModel):
+    checked: int
+    issues: list[ReadingIssue]
+    model_key: str | None = None

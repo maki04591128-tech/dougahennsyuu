@@ -93,3 +93,66 @@ def test_voice_widget_flow(monkeypatch):
     w.delete_word()
     assert w.dict_table.rowCount() == 0
     assert app is not None
+
+
+class RuleApi(FakeVoiceApi):
+    def __init__(self):
+        super().__init__()
+        self.rules = []
+
+    def voice_preview(self, text, style_id, prosody, **kw):
+        self.preview_args = (text, style_id, prosody, kw)
+        return b"RIFF....WAVE"
+
+    def readings(self, project_id=None):
+        return list(self.rules)
+
+    def add_reading(self, surface, reading, project_id=None):
+        self.rules.append(
+            {
+                "id": f"r{len(self.rules)}",
+                "surface": surface,
+                "reading": reading,
+                "project_id": None,
+                "source": "user",
+                "enabled": True,
+            }
+        )
+
+    def update_reading(self, rule, **kw):
+        rule.update(kw)
+
+    def delete_reading(self, rid):
+        self.rules = [r for r in self.rules if r["id"] != rid]
+
+    def speech_text(self, text, project_id=None):
+        return text.replace("六方晶", "ロッポウショウ")
+
+
+def test_voice_widget_reading_rules_and_natural_preview():
+    from PySide6.QtWidgets import QApplication
+
+    from video_automation.ui.voice.widget import VoiceWidget
+
+    QApplication.instance() or QApplication([])
+    api = RuleApi()
+    w = VoiceWidget(api)
+    w._play = lambda wav: None
+    w.refresh()
+    w.rule_surface.setText("相")
+    w.rule_reading.setText("ソウ")
+    w.add_rule()
+    assert w.rule_table.rowCount() == 1 and w.rule_table.item(0, 4).text() == "○"
+    w.rule_table.setCurrentCell(0, 0)
+    w.toggle_rule()
+    assert w.rule_table.item(0, 4).text() == "－"
+    w.text_edit.setPlainText("六方晶の結晶")
+    w.preview()
+    assert api.preview_args[3] == {"reading_text": "ロッポウショウの結晶", "expressiveness": 1.0}
+    assert "ロッポウショウ" in w.speech_label.text()
+    w.natural_check.setChecked(False)
+    w.preview()
+    assert api.preview_args[3] == {}
+    w.rule_table.setCurrentCell(0, 0)
+    w.delete_rule()
+    assert w.rule_table.rowCount() == 0

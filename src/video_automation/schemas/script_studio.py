@@ -29,6 +29,8 @@ class VoiceSettings(BaseModel):
     pitch_scale: float | None = Field(default=None, ge=-0.15, le=0.15)
     intonation_scale: float | None = Field(default=None, ge=0.0, le=2.0)
     volume_scale: float | None = Field(default=None, ge=0.0, le=2.0)
+    # 抑揚づけの強さ（0=エンジンのまま、1=標準、2=強め）。None は設定の既定値
+    expressiveness: float | None = Field(default=None, ge=0.0, le=2.0)
 
 
 class CharacterIn(BaseModel):

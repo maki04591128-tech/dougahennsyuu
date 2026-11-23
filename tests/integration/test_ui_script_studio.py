@@ -224,6 +224,19 @@ def test_script_studio_widget_flow():
     w.save_settings()
     upd = next(c for c in reversed(api.calls) if c[0] == "update")[1]
     assert upd["characters"][0]["voice"] == {"style_id": 3, "speed_scale": 1.2}
+    # 抑揚の強さ（列 6）
+    w.char_table.item(1, 6).setText("1.5")
+    w.save_settings()
+    upd = next(c for c in reversed(api.calls) if c[0] == "update")[1]
+    assert upd["characters"][1]["voice"]["expressiveness"] == 1.5
+    # 読みチェック（AI）
+    api.check_readings = lambda sid: {
+        "checked": 2,
+        "issues": [{"surface": "六方晶", "reading": "ロッポウショウ", "text": "六方晶の結晶"}],
+    }
+    w.check_readings()
+    assert "六方晶 → ロッポウショウ" in w.issue_list.item(0).text()
+    assert "1 件" in w.status_label.text()
 
 
 def test_script_studio_async_runner_reports_errors():

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # ---- Phase 3: 音声合成（VOICEVOX系。Nemo を優先）----
     voicevox_nemo_url: str | None = "http://127.0.0.1:50121"
     voicevox_url: str | None = "http://127.0.0.1:50021"
+    # 台本の読み上げ: 抑揚の強さ（0=エンジンのまま、1=標準、2=強め）と、未指定時の抑揚スケール
+    voice_expressiveness: float = Field(default=1.0, ge=0, le=2)
+    voice_default_intonation: float = Field(default=1.15, ge=0, le=2)
 
     # ---- Phase 5: 編集・レンダリング ----
     ffmpeg_path: str | None = None  # None=PATH から検出

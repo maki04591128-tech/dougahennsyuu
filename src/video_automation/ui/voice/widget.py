@@ -7,6 +7,7 @@ from typing import Any
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -60,6 +61,10 @@ class VoiceWidget(QWidget):
             self.prosody_inputs[key] = sb
             pro_form.addRow(label, sb)
 
+        self.natural_check = QCheckBox("読みの整形と抑揚づけを使う（台本の音声生成と同じ）")
+        self.natural_check.setChecked(True)
+        self.speech_label = QLabel("")
+        self.speech_label.setWordWrap(True)
         self.preview_button = QPushButton("試聴（保存しない）")
         self.preview_button.clicked.connect(self.preview)
         self.generate_button = QPushButton("音声を生成して保存")
@@ -82,7 +87,40 @@ class VoiceWidget(QWidget):
         self.add_word_button.clicked.connect(self.add_word)
         self.del_word_button = QPushButton("選択を削除")
         self.del_word_button.clicked.connect(self.delete_word)
-        dict_box = QGroupBox("読み辞書")
+        # 読みのルール（字幕は変えず、読み上げる文だけ置き換える）
+        self.rule_table = QTableWidget(0, 5)
+        self.rule_table.setHorizontalHeaderLabels(["表記", "読み", "範囲", "登録元", "有効"])
+        self.rule_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.rule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.rule_surface = QLineEdit()
+        self.rule_reading = QLineEdit()
+        self.add_rule_button = QPushButton("ルールを追加")
+        self.add_rule_button.clicked.connect(self.add_rule)
+        self.toggle_rule_button = QPushButton("有効／無効")
+        self.toggle_rule_button.clicked.connect(self.toggle_rule)
+        self.del_rule_button = QPushButton("削除")
+        self.del_rule_button.clicked.connect(self.delete_rule)
+        self.rules: list[dict[str, Any]] = []
+        rule_box = QGroupBox(
+            "読みのルール（字幕は元のまま、読み上げだけ置き換え。AI の読み確認もここに登録）"
+        )
+        rl = QVBoxLayout(rule_box)
+        rl.addWidget(self.rule_table)
+        rrow = QHBoxLayout()
+        rule_widgets: tuple[QWidget, ...] = (
+            QLabel("表記"),
+            self.rule_surface,
+            QLabel("読み（カタカナ）"),
+            self.rule_reading,
+            self.add_rule_button,
+            self.toggle_rule_button,
+            self.del_rule_button,
+        )
+        for rw in rule_widgets:
+            rrow.addWidget(rw)
+        rl.addLayout(rrow)
+
+        dict_box = QGroupBox("読み辞書（エンジンの辞書。アクセントも指定できる）")
         dl = QVBoxLayout(dict_box)
         dl.addWidget(self.dict_table)
         row = QHBoxLayout()
@@ -109,9 +147,12 @@ class VoiceWidget(QWidget):
         form.addRow("話者", self.style_combo)
         layout.addLayout(form)
         layout.addWidget(self.text_edit)
+        layout.addWidget(self.natural_check)
+        layout.addWidget(self.speech_label)
         layout.addWidget(pro_box)
         layout.addLayout(btns)
         layout.addWidget(self.status_label)
+        layout.addWidget(rule_box)
         layout.addWidget(dict_box)
 
         self._poll = QTimer(self)
@@ -149,8 +190,70 @@ class VoiceWidget(QWidget):
                 for st in sp["styles"]:
                     self.style_combo.addItem(f"{sp['name']}（{st['name']}）", st["id"])
             self._fill_dict(self.api.voice_dictionary())
+            if hasattr(self.api, "readings"):
+                self._fill_rules(self.api.readings())
         except Exception as exc:
             self._error("音声エンジン情報の取得", exc)
+
+    # ---------- 読みのルール ----------
+    def _fill_rules(self, rules: list[dict[str, Any]]) -> None:
+        self.rules = rules
+        t = self.rule_table
+        t.setRowCount(len(rules))
+        for r, x in enumerate(rules):
+            vals = [
+                x["surface"],
+                x["reading"],
+                "全体" if x.get("project_id") is None else "プロジェクト",
+                "AI" if x.get("source") == "llm" else "手動",
+                "○" if x.get("enabled", True) else "－",
+            ]
+            for col, v in enumerate(vals):
+                t.setItem(r, col, QTableWidgetItem(str(v)))
+
+    def _rule(self) -> dict[str, Any] | None:
+        row = self.rule_table.currentRow()
+        return self.rules[row] if 0 <= row < len(self.rules) else None
+
+    def add_rule(self) -> None:
+        try:
+            self.api.add_reading(self.rule_surface.text().strip(), self.rule_reading.text().strip())
+            self._fill_rules(self.api.readings())
+        except Exception as exc:
+            self._error("読みのルールの追加", exc)
+            return
+        self.rule_surface.clear()
+        self.rule_reading.clear()
+        self.status_label.setText("読みのルールを追加しました（次の音声生成から使います）")
+
+    def toggle_rule(self) -> None:
+        rule = self._rule()
+        if rule is None:
+            return
+        try:
+            self.api.update_reading(rule, enabled=not rule.get("enabled", True))
+            self._fill_rules(self.api.readings())
+        except Exception as exc:
+            self._error("読みのルールの変更", exc)
+
+    def delete_rule(self) -> None:
+        rule = self._rule()
+        if rule is None:
+            return
+        try:
+            self.api.delete_reading(rule["id"])
+            self._fill_rules(self.api.readings())
+        except Exception as exc:
+            self._error("読みのルールの削除", exc)
+
+    def _speech_kwargs(self, text: str) -> dict[str, Any]:
+        """台本の音声生成と同じ「読みの整形・抑揚づけ」を試聴にも使う。"""
+        if not self.natural_check.isChecked() or not hasattr(self.api, "speech_text"):
+            self.speech_label.setText("")
+            return {}
+        speech = self.api.speech_text(text)
+        self.speech_label.setText(f"読み上げる文: {speech}" if speech != text else "")
+        return {"reading_text": speech, "expressiveness": 1.0}
 
     def _fill_dict(self, words: list[dict[str, Any]]) -> None:
         t = self.dict_table
@@ -176,7 +279,8 @@ class VoiceWidget(QWidget):
         if inp is None:
             return
         try:
-            self.last_preview = self.api.voice_preview(inp[0], inp[1], self.prosody())
+            kw = self._speech_kwargs(inp[0])
+            self.last_preview = self.api.voice_preview(inp[0], inp[1], self.prosody(), **kw)
         except Exception as exc:
             self._error("試聴", exc)
             return

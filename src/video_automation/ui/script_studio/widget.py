@@ -40,7 +40,7 @@ MODES = [
 POLICIES = ["おまかせ", "補足", "質問", "ツッコミ", "解説"]
 SOURCE_LABEL = {"USER": "ユーザー", "AI": "AI", "EDITED": "手修正"}
 SOURCE_COLOR = {"USER": "#dbe9ff", "AI": "#ffffff", "EDITED": "#fff3c4"}
-CHAR_COLS = ["名前", "役割", "性格", "口調", "ユーザー担当", "話者ID"]
+CHAR_COLS = ["名前", "役割", "性格", "口調", "ユーザー担当", "話者ID", "抑揚の強さ(0-2)"]
 TURN_COLS = ["#", "シーン", "話者", "セリフ", "生成元", "固定", "推定秒"]
 
 
@@ -162,6 +162,8 @@ class ScriptStudioWidget(QWidget):
         self.validate_button.clicked.connect(lambda: self.validate(False))
         self.validate_llm_button = QPushButton("検証（LLMで整合性も）")
         self.validate_llm_button.clicked.connect(lambda: self.validate(True))
+        self.reading_button = QPushButton("読みチェック（AI）")
+        self.reading_button.clicked.connect(self.check_readings)
         self.issue_list = QListWidget()
         self.version_combo = QComboBox()
         self.diff_button = QPushButton("最新版との差分")
@@ -198,6 +200,7 @@ class ScriptStudioWidget(QWidget):
         vb = QHBoxLayout()
         vb.addWidget(self.validate_button)
         vb.addWidget(self.validate_llm_button)
+        vb.addWidget(self.reading_button)
         vb.addWidget(QLabel("版"))
         vb.addWidget(self.version_combo)
         vb.addWidget(self.diff_button)
@@ -243,7 +246,12 @@ class ScriptStudioWidget(QWidget):
         self.runner.run_now(fn, done)
 
     def _set_busy(self, busy: bool) -> None:
-        for b in (self.generate_button, self.regen_button, self.validate_llm_button):
+        for b in (
+            self.generate_button,
+            self.regen_button,
+            self.validate_llm_button,
+            self.reading_button,
+        ):
             b.setEnabled(not busy)
 
     def _error(self, exc: BaseException) -> None:
@@ -272,6 +280,8 @@ class ScriptStudioWidget(QWidget):
         self.char_table.setItem(r, 4, chk)
         sid = voice.get("style_id")
         self.char_table.setItem(r, 5, QTableWidgetItem("" if sid is None else str(sid)))
+        ex = voice.get("expressiveness")
+        self.char_table.setItem(r, 6, QTableWidgetItem("" if ex is None else f"{ex:g}"))
 
     def characters(self) -> list[dict[str, Any]]:
         out = []
@@ -282,12 +292,21 @@ class ScriptStudioWidget(QWidget):
                 continue
             sid_text = (cell[5].text() if cell[5] else "").strip()
             voice: dict[str, Any] = {"style_id": int(sid_text)} if sid_text.isdigit() else {}
-            if self.detail:  # 抑揚など UI で編集しない項目は保持する
+            ex_text = (cell[6].text() if len(cell) > 6 and cell[6] else "").strip()
+            try:
+                ex_val: float | None = max(0.0, min(2.0, float(ex_text))) if ex_text else None
+            except ValueError:
+                ex_val = None
+            if ex_val is not None:
+                voice["expressiveness"] = ex_val
+            if self.detail:  # 話速など UI で編集しない項目は保持する
                 prev = next((c for c in self.detail["characters"] if c["name"] == name), None)
                 if prev:
                     voice = {**prev["voice"], **voice}
                     if not sid_text:
                         voice["style_id"] = None
+                    if not ex_text:
+                        voice.pop("expressiveness", None)
             out.append(
                 {
                     "name": name,
@@ -499,6 +518,26 @@ class ScriptStudioWidget(QWidget):
             self._call(lambda: self.api.studio_validate(sid, True), done, "LLMで検査中…")
         else:
             self._finish(lambda: self.api.studio_validate(sid, False), done)
+
+    def check_readings(self) -> None:
+        """エンジンの読みを AI が確認し、読み間違いを読みのルールに登録する（字幕は変えない）。"""
+        if not self._require():
+            return
+        sid = self.script_id
+
+        def done(r: dict[str, Any]) -> None:
+            self.issue_list.clear()
+            for i in r["issues"]:
+                self.issue_list.addItem(
+                    f"読み: {i['surface']} → {i['reading']}（{i['text'][:24]}）"
+                )
+            n = len(r["issues"])
+            self.status_label.setText(
+                f"{r['checked']} 発話の読みを確認し、{n} 件を読みのルールに登録しました"
+                + ("（音声を作り直すと反映されます）" if n else "")
+            )
+
+        self._call(lambda: self.api.check_readings(sid), done, "読みを確認中…")
 
     def show_diff(self) -> None:
         v = self.version_combo.currentData()
