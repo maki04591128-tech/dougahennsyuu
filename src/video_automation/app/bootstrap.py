@@ -16,6 +16,7 @@ from video_automation.services.animation.preset_service import PresetService
 from video_automation.services.animation.scene_service import SceneService
 from video_automation.services.assets.asset_source_service import AssetSourceService
 from video_automation.services.assets.downloader import Resolver
+from video_automation.services.design.service import DesignService
 from video_automation.services.direction.service import DirectionService
 from video_automation.services.llm_tasks.gateway import LLMGateway
 from video_automation.services.llm_tasks.task_router import TaskRouter
@@ -63,6 +64,7 @@ class AppContainer:
     qa: QAService
     readings: ReadingService
     direction: DirectionService
+    design: DesignService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -91,13 +93,14 @@ async def build_container(
     router = TaskRouter()
     llm = LLMGateway(settings, db, providers, router)
     readings = ReadingService(db, voice, llm)
-    subtitles = SubtitleService(settings, db, voice, readings)
+    design = DesignService(db)
+    subtitles = SubtitleService(settings, db, voice, readings, design)
     jobs = JobManager(bus)
     ffmpeg = FFmpeg(settings.ffmpeg_path)
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
     titles = TitleCardService(settings, db, blender, ffmpeg, timeline)
-    render = RenderService(settings, db, ffmpeg, timeline, subtitles, jobs)
+    render = RenderService(settings, db, ffmpeg, timeline, subtitles, jobs, design)
     asset_sources = AssetSourceService(
         settings,
         db,
@@ -139,5 +142,6 @@ async def build_container(
         orchestrator=orchestrator,
         qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs),
         readings=readings,
-        direction=DirectionService(settings, db, llm, timeline, titles, ffmpeg),
+        direction=DirectionService(settings, db, llm, timeline, titles, ffmpeg, design),
+        design=design,
     )

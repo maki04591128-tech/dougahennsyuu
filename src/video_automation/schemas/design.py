@@ -1,0 +1,208 @@
+"""動画の用途とデザインの型（色・書体・文字の大きさ・使ってよい部品・動きの強さ）。
+
+用途ごとに「使ってよい部品」を決め、別の用途の部品（例: 字幕動画にモーショングラフィックスの
+演出）が混ざったら書き出す前に止める。混ぜる指示が明示されたときだけ extras で例外を許す。
+"""
+
+from enum import StrEnum
+
+from pydantic import BaseModel, Field, field_validator
+
+_HEX = r"^#[0-9A-Fa-f]{6}$"
+
+
+class Purpose(StrEnum):
+    # 落ち着いた系（文字は読ませるためだけ・動きは最小）
+    SUBTITLE = "subtitle"  # 字幕動画（会話・朗読以外の一般的な字幕付け）
+    INTERVIEW = "interview"  # インタビュー・対談
+    DOCUMENTARY = "documentary"  # ドキュメンタリー
+    STORY = "story"  # 朗読・物語・オーディオドラマ
+    PODCAST = "podcast"  # ラジオ・ポッドキャストの動画化
+    # 情報系（図・要点で整理して伝える）
+    EXPLAINER = "explainer"  # 解説（キャラの掛け合い・教養）
+    LECTURE = "lecture"  # 講義・スライド
+    TUTORIAL = "tutorial"  # 操作説明・ハウツー・画面録画
+    RECIPE = "recipe"  # 料理・手順もの
+    NEWS = "news"  # ニュース・情報番組風
+    CORPORATE = "corporate"  # 会社紹介・採用・IR
+    # 勢い系（テンポと強弱）
+    SHORT = "short"  # 縦型ショート
+    GAME = "game"  # ゲーム実況
+    VLOG = "vlog"  # Vlog・日常
+    RANKING = "ranking"  # ランキング・まとめ
+    PRODUCT = "product"  # 商品紹介・レビュー
+    PROMO = "promo"  # PR・CM・告知
+    EVENT = "event"  # イベント・旅行のハイライト
+    KIDS = "kids"  # 子ども向け
+    # 表現系（世界観が主役）
+    MV = "mv"  # ミュージックビデオ
+    LYRIC = "lyric"  # リリックビデオ
+    TRAILER = "trailer"  # 予告編・ティザー
+
+
+class Family(StrEnum):
+    CALM = "calm"
+    INFO = "info"
+    ENERGETIC = "energetic"
+    EXPRESSIVE = "expressive"
+
+
+class Component(StrEnum):
+    """画面に出す部品・演出の種類。生成した要素にはこのどれかを付けて記録する。"""
+
+    SUBTITLE = "subtitle"  # 発話の字幕
+    SPEAKER_LABEL = "speaker_label"  # 字幕の上の話者名
+    TITLE_CARD = "title_card"  # 冒頭の題名
+    CARD = "card"  # 要点カード（見出し＋箇条書き）
+    CHART = "chart"  # 図表・グラフ
+    IMAGE = "image"  # 説明用の画像
+    KEYWORD = "keyword"  # 画面上部の短い要点テロップ
+    CHAPTER_LABEL = "chapter_label"  # 章ラベル
+    LOWER_THIRD = "lower_third"  # 名前・肩書きの帯
+    EMPHASIS_TEXT = "emphasis_text"  # 大きな一言の強調テロップ
+    KINETIC_TEXT = "kinetic_text"  # 1 文字ずつ動く文字
+    LYRIC_TEXT = "lyric_text"  # 歌詞
+    BACKGROUND_MOTION = "background_motion"  # 背景がゆっくり動く・寄る
+    TRANSITION_CUT = "transition_cut"  # カット・クロスフェード
+    TRANSITION_SHAPE = "transition_shape"  # 図形・パネルの転換
+    TRANSITION_WHIP = "transition_whip"  # ウィップパン・ズームブラー
+    SHAKE_PUNCH = "shake_punch"  # 揺れ・ズームパンチ
+    FLASH = "flash"  # フラッシュ
+    GLITCH = "glitch"  # グリッチ・RGB ずらし・色収差
+    BLOOM = "bloom"  # 光のにじみ・ディフュージョン
+    LETTERBOX = "letterbox"  # 黒帯
+    BEAT_CUT = "beat_cut"  # 拍に合わせたカット
+    SFX = "sfx"  # 演出の効果音
+    CHARACTER = "character"  # 立ち絵・キャラ
+
+
+# 部品の許可: 0=使わない、-1=制限なし、n>0=1 本の動画で n 回まで
+DENY, ANY = 0, -1
+
+
+class Palette(BaseModel):
+    """役割で決めた色。ベース 70%・メイン 25%・アクセント 5% を目安に使う。"""
+
+    base: str = Field(pattern=_HEX)  # 背景（暗い側）
+    base2: str = Field(pattern=_HEX)  # 背景のグラデーションの明るい側
+    surface: str = Field(pattern=_HEX)  # カード・帯の面
+    main: str = Field(pattern=_HEX)  # 見出し・線・主役の色
+    accent: str = Field(pattern=_HEX)  # 強調（数値・結論）だけ
+    text: str = Field(pattern=_HEX)
+    text_muted: str = Field(pattern=_HEX)
+    speakers: list[str] = Field(min_length=1, max_length=6)  # 話者の色（main / accent の明暗違い）
+    chart: list[str] = Field(min_length=2, max_length=6)  # 図表の色（1 つ目が強調）
+
+    @field_validator("speakers", "chart")
+    @classmethod
+    def _hexes(cls, v: list[str]) -> list[str]:
+        for c in v:
+            h = c.lstrip("#")
+            if len(h) != 6 or any(x not in "0123456789abcdefABCDEF" for x in h):
+                raise ValueError(f"bad color {c}")
+        return [c.upper() for c in v]
+
+
+class Typography(BaseModel):
+    body_font: str = "Meiryo"  # 字幕・本文（ASS のフォント名）
+    heading_font: str = "Meiryo"  # 見出し
+    max_fonts: int = Field(default=2, ge=1, le=4)
+    # 文字の大きさの段（本文 1 に対する比）。見出し・題名・注記はこの段だけを使う
+    scale_ratio: float = Field(default=1.5, ge=1.1, le=2.0)
+
+
+class SubtitleSpec(BaseModel):
+    size_ratio: float = Field(ge=0.03, le=0.1)  # 文字の高さ（短辺比）
+    size_range: tuple[float, float]  # 許す範囲
+    band: str = Field(pattern=r"^(none|fitted|full)$")  # 帯: 無し / 文字の幅だけ / 画面幅
+    max_chars_per_line: int = Field(ge=8, le=30)
+    max_lines: int = Field(ge=1, le=3)
+    chars_per_sec: float = Field(gt=0, le=12)  # 読める速さ（これより速い字幕は警告）
+
+
+class SafeArea(BaseModel):
+    """文字を置いてはいけない外周（画面比）。縦動画は UI の位置で上下右が広い。"""
+
+    top: float = Field(ge=0, le=0.4)
+    bottom: float = Field(ge=0, le=0.4)
+    left: float = Field(ge=0, le=0.3)
+    right: float = Field(ge=0, le=0.3)
+
+
+class DesignProfile(BaseModel):
+    purpose: Purpose
+    family: Family
+    label: str  # 日本語の名前
+    summary: str  # 主役・雰囲気
+    orientation: str = Field(pattern=r"^(landscape|vertical|any)$")
+    motion_level: int = Field(ge=0, le=4)  # 0=フェードのみ … 4=拍に同期・強い演出
+    max_hues: int = Field(ge=1, le=6)  # 1 本の動画で使ってよい色相の数
+    max_concurrent: int = Field(ge=1, le=6)  # 同時に出してよい要素（字幕を除く）
+    palette: Palette
+    typography: Typography
+    subtitle: SubtitleSpec
+    safe_area: SafeArea
+    components: dict[Component, int]  # 許可（DENY / ANY / 回数）
+    keywords: list[str] = Field(default_factory=list)  # 指示文から用途を判定する語
+
+    def allowance(self, c: Component) -> int:
+        return self.components.get(c, DENY)
+
+    def allows(self, c: Component) -> bool:
+        return self.allowance(c) != DENY
+
+
+class ProfileSummary(BaseModel):
+    purpose: Purpose
+    family: Family
+    label: str
+    summary: str
+    orientation: str
+    motion_level: int
+    allowed: list[Component]
+    limited: dict[Component, int]
+    denied: list[Component]
+
+
+class ClassifyRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    has_music: bool | None = None  # 素材のヒント（分からなければ None）
+    has_script: bool | None = None
+    vertical: bool | None = None
+
+
+class PurposeCandidate(BaseModel):
+    purpose: Purpose
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ClassifyResult(BaseModel):
+    purpose: Purpose
+    confidence: float = Field(ge=0, le=1)
+    candidates: list[PurposeCandidate]
+    needs_confirmation: bool  # 確信が持てない。ユーザーに尋ねる
+    # 「解説だけど MV っぽく」のように混ぜる指示が明示されたとき、許す部品の候補
+    mixed_from: list[Purpose] = Field(default_factory=list)
+    suggested_extras: list[Component] = Field(default_factory=list)
+    note: str = ""
+
+
+class ProjectDesign(BaseModel):
+    purpose: Purpose | None = None  # None は未設定（書き出し前に決める）
+    # 混ぜる指示が明示されたときだけ使う、用途の型では使わない部品の例外
+    extras: list[Component] = Field(default_factory=list, max_length=12)
+
+
+class Violation(BaseModel):
+    code: str  # denied_component / over_limit / hue_count / font_count / subtitle_size / ...
+    component: Component | None = None
+    message: str
+    severity: str = Field(default="error", pattern=r"^(error|warning)$")
+
+
+class DesignCheck(BaseModel):
+    purpose: Purpose | None
+    ok: bool  # error が無い
+    violations: list[Violation]
+    used: dict[Component, int]  # 実際に使った部品と回数

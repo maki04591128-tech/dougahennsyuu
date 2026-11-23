@@ -192,3 +192,55 @@ async def test_rule_plan_without_llm_and_errors(dclient):
         ("keyword", 3),
     ]
     assert (await c.post("/direction/plan", json={"script_id": "nope"})).status_code == 404
+
+
+async def test_design_purpose_shapes_direction_and_guards_render(dclient):
+    c = dclient
+    pid, sid = await _ready_script(c)
+    profiles = (await c.get("/design/profiles")).json()
+    assert len(profiles) >= 20 and {p["purpose"] for p in profiles} >= {"subtitle", "mv"}
+    r = (await c.post("/design/classify", json={"text": "解説動画だけどMVっぽく"})).json()
+    assert r["purpose"] == "explainer" and r["mixed_from"] == ["mv"]
+    assert (await c.get(f"/projects/{pid}/design")).json() == {"purpose": None, "extras": []}
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    plan["shots"].append({"kind": "card", "from_line": 4, "heading": "まとめ", "body": ["要点"]})
+
+    # 字幕動画: カード・テロップは使わない（外したことを返す）。題名と背景だけ
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "subtitle"})
+    assert r.status_code == 200
+    out = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    assert sum("「字幕動画」では" in x for x in out["skipped"]) == 3
+    chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
+    assert chk["ok"], chk
+    assert chk["used"].get("card") is None and chk["used"]["title_card"] == 1
+    assert chk["used"]["subtitle"] >= 5
+    # 字幕の見た目は型から（帯は文字の幅だけ・型の大きさ）
+    style = (await c.get(f"/subtitles/style/{pid}")).json()
+    assert style["band_mode"] == "fitted" and style["font_size_ratio"] == 0.058
+
+    # 別の用途の演出が混ざったら書き出す前に止める
+    await c.app.state.container.design.record(pid, "rich", {"used": {"shake_punch": 2}})
+    chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
+    assert not chk["ok"] and chk["violations"][0]["code"] == "denied_component"
+    body = {"project_id": pid, "script_id": sid, "quality": 35}
+    r = await c.post("/render", json=body)
+    assert r.status_code == 422 and r.json()["code"] == "design_violation"
+    assert "揺れ" in r.json()["message"]
+    # LLM 経由では例外にできない
+    r = await c.post("/render", json={**body, "allow_design_violations": True, "origin": "llm"})
+    assert r.status_code == 422
+    # 混ぜる指示が明示されたとき（extras）は通る
+    await c.put(f"/projects/{pid}/design", json={"purpose": "subtitle", "extras": ["shake_punch"]})
+    assert (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()["ok"]
+    await c.app.state.container.design.record(pid, "rich", None)
+
+    # 解説: カード・テロップを使い、色は型の配色
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    out = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
+    assert chk["ok"], chk
+    assert chk["used"]["keyword"] == 2 and chk["used"]["card"] == 1
+    rec = (await c.app.state.container.design.manifest(pid)).colors
+    assert "#4CB3E6" in rec and "#F2B544" in rec

@@ -194,6 +194,7 @@ async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
     from video_automation.app.bootstrap import build_container
     from video_automation.database.models import Project
     from video_automation.mcp_servers import _shared, visual_server
+    from video_automation.schemas.design import Component, ProjectDesign, Purpose
     from video_automation.schemas.timeline import (
         AddClip,
         AddTrack,
@@ -211,6 +212,9 @@ async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
         "create_infographic",
         "set_camera_motion",
         "list_motion_presets",
+        "classify_purpose",
+        "set_project_purpose",
+        "check_design",
     } <= names
     s = media_settings.model_copy(update={"blender_path": fake_blender(tmp_path)})
     c = await build_container(
@@ -266,6 +270,13 @@ async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
         assert job.status == "SUCCEEDED", job.error
         assert job.result["command"]["status"] == "PENDING_APPROVAL"
         assert (await visual_server.get_job(j["job_id"]))["status"] == "SUCCEEDED"
+        # 用途（デザインの型）: 判定・設定（例外の extras は LLM からは変えない）・検査
+        r = await visual_server.classify_purpose("ゲーム実況の切り抜き")
+        assert r["purpose"] == "game"
+        await c.design.set(pid, ProjectDesign(purpose=Purpose.SUBTITLE, extras=[Component.SFX]))
+        r = await visual_server.set_project_purpose(pid, "explainer")
+        assert r == {"purpose": "explainer", "extras": ["sfx"]}
+        assert (await visual_server.check_design(pid))["purpose"] == "explainer"
     finally:
         _shared.set_container(None)
         await c.aclose()

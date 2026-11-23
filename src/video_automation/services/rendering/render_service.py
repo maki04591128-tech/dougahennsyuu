@@ -23,7 +23,8 @@ from video_automation.database.database import Database
 from video_automation.database.models import Asset, Clip, Project, RenderJob, Script, Track
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
 from video_automation.schemas.animation import ClipAnimation, TransitionType
-from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat, SubtitleStyle
+from video_automation.schemas.design import DesignCheck
+from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat
 from video_automation.schemas.timeline import (
     RENDER_PROFILES,
     AssetKind,
@@ -43,6 +44,7 @@ from video_automation.services.animation.render_anim import (
     clip_filters,
     defaults_only,
 )
+from video_automation.services.design.service import DesignService, DesignViolationError
 from video_automation.services.subtitle.formats import build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import (
@@ -96,7 +98,9 @@ class RenderService:
         timeline: TimelineService,
         subtitles: SubtitleService,
         jobs: JobManager,
+        design: DesignService | None = None,
     ) -> None:
+        self.design = design
         self.settings = settings
         self.db = db
         self.ffmpeg = ffmpeg
@@ -142,7 +146,7 @@ class RenderService:
             for c in cues
             if (c.end_frame or 0) > offset_frames
         ]
-        style = SubtitleStyle.model_validate(p.subtitle_style or {})
+        style = await self.subtitles.project_style(p.id)
         if not fade:
             style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
         content = build_ass(
@@ -505,11 +509,36 @@ class RenderService:
         return out.relative_to(self.settings.data_dir).as_posix()
 
     # ---------- 本番レンダリング ----------
+    async def design_check(self, req: RenderRequest) -> DesignCheck | None:
+        """書き出す前のデザインの検査（用途の型に反する部品・色・字幕）。"""
+        if self.design is None:
+            return None
+        style = await self.subtitles.project_style(req.project_id)
+        colors: list[str] = []
+        if req.script_id and req.burn_subtitles:
+            colors = list((await self.subtitles.speaker_accents(req.script_id)).values())
+        return await self.design.check(
+            req.project_id,
+            req.script_id,
+            style,
+            colors,
+            burn_subtitles=req.burn_subtitles,
+        )
+
     async def request(self, req: RenderRequest) -> RenderJobRead:
-        """origin=llm の場合は承認待ち（最終レンダリングは承認が必要：仕様 §10）。"""
+        """origin=llm の場合は承認待ち（最終レンダリングは承認が必要：仕様 §10）。
+
+        書き出す前にデザインを検査し、用途の型に反する部品があれば止める。例外にできるのは
+        ユーザー自身の指示（allow_design_violations）だけで、LLM 経由では例外にしない。"""
         async with self.db.session_factory() as s:
             if await s.get(Project, req.project_id) is None:
                 raise TimelineNotFoundError(f"project {req.project_id}")
+        chk = await self.design_check(req)
+        if chk is not None and not chk.ok:
+            override = req.allow_design_violations and req.origin != CommandOrigin.LLM
+            if not override:
+                raise DesignViolationError(chk)
+        async with self.db.session_factory() as s:
             row = RenderJob(
                 project_id=req.project_id,
                 profile=req.profile.value,

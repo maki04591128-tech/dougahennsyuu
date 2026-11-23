@@ -28,6 +28,12 @@ class Project(Base):
     fps_den: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # 字幕の見た目（SubtitleStyle）。None は既定値
     subtitle_style: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 動画の用途（デザインの型）。None は未設定
+    purpose: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 混ぜる指示が明示されたときだけ使う、型の外の部品（Component の値の一覧）
+    design_extras: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # 演出で作った要素の記録（作った処理ごと。書き出し前の検査に使う）
+    design_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
