@@ -145,7 +145,7 @@ class DirectionService:
             body = f"タイトル案: {title or '（なし）'}\n台本:\n" + prompt_lines(
                 [x.speaker for x in lines], texts
             )
-            res = await self.llm.complete_json(
+            res = await self.llm.complete_json(  # 形式が合わないときは 2 回まで直させる
                 TaskType.EDIT_PLAN,
                 [
                     ChatMessage(role="system", content=SYSTEM),
@@ -154,9 +154,12 @@ class DirectionService:
                 PLAN_SCHEMA,
                 model_key=req.model_key,
                 temperature=0.3,
+                retries=2,
             )
             model_key = res.model_key
             raw = from_llm(res.data)
+            if not raw.shots:  # AI が何も出さなかったときは規則の演出（数値のテロップ）で補う
+                raw.shots = rule_plan(texts, title).shots
         else:
             raw = rule_plan(texts, title)
         plan = normalize(raw, texts, title)

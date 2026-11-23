@@ -43,7 +43,6 @@ PLAN_SCHEMA: dict[str, Any] = {
             },
         },
     },
-    "required": ["shots"],
 }
 
 SYSTEM = (
@@ -210,6 +209,10 @@ def from_llm(data: dict[str, Any]) -> DirectionPlan:
     """LLM の出力を DirectionPlan に（型の合わない項目は捨てる）。"""
     shots: list[Shot] = []
     dropped = 0
+    # 小さなモデルは {"plan": {...}} のように一段包むことがある
+    if "shots" not in data:
+        inner = next((v for v in data.values() if isinstance(v, dict) and "shots" in v), None)
+        data = inner or data
     items = data.get("shots", []) or []
     for raw in items:
         if not isinstance(raw, dict):

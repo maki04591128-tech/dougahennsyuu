@@ -91,3 +91,12 @@ def test_infer_unit_and_whitespace():
     )
     out = normalize(plan, LINES)
     assert out.shots[0].unit == "GPa" and out.shots[1].text == "約46 ギガパスカル"
+
+
+def test_from_llm_unwraps_nested_plan():
+    p = from_llm(
+        {"plan": {"title": "t", "shots": [{"kind": "keyword", "from_line": 1, "text": "x"}]}}
+    )
+    assert p.title == "t" and len(p.shots) == 1
+    empty = from_llm({"foo": 1})
+    assert empty.shots == [] and "演出がありませんでした" in empty.notes[0]
