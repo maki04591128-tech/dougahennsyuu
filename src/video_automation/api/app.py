@@ -12,7 +12,9 @@ from video_automation.api.routes import (
     models,
     projects,
     providers,
+    render,
     subtitles,
+    timeline,
     voice,
 )
 from video_automation.api.websocket import events
@@ -20,9 +22,17 @@ from video_automation.app.bootstrap import build_container
 from video_automation.app.logging import get_logger
 from video_automation.app.secrets import SecretProtector, SecretStorageUnavailableError
 from video_automation.app.settings import APP_NAME, APP_VERSION, Settings, get_settings
+from video_automation.integrations.blender.runner import BlenderError, BlenderNotFoundError
+from video_automation.integrations.ffmpeg.runner import FFmpegError, FFmpegNotFoundError
 from video_automation.providers.base import ModelNotFoundError, NotSupportedError, ProviderError
 from video_automation.services.model_discovery.provider_manager import ProviderNotFoundError
 from video_automation.services.subtitle.subtitle_service import SubtitleError
+from video_automation.services.timeline.timeline_service import (
+    CommandError,
+    ForbiddenPathError,
+    TimelineError,
+    TimelineNotFoundError,
+)
 from video_automation.services.voice.voice_service import (
     EngineUnavailableError,
     InvalidVoiceRequestError,
@@ -93,6 +103,24 @@ def create_app(
         # 手順の前提（音声未生成・未同期等）を満たしていない
         return _err(409, exc.code, str(exc)[:200])
 
+    @app.exception_handler(TimelineError)
+    async def timeline_error(_: Request, exc: TimelineError) -> JSONResponse:
+        status = {TimelineNotFoundError: 404, ForbiddenPathError: 403, CommandError: 422}.get(
+            type(exc), 400
+        )
+        return _err(status, exc.code, str(exc)[:300])
+
+    @app.exception_handler(FFmpegNotFoundError)
+    @app.exception_handler(BlenderNotFoundError)
+    async def tool_missing(_: Request, exc: Exception) -> JSONResponse:
+        return _err(503, "tool_not_found", str(exc)[:200])
+
+    @app.exception_handler(FFmpegError)
+    @app.exception_handler(BlenderError)
+    async def tool_failed(_: Request, exc: Exception) -> JSONResponse:
+        log.error("tool_failed", error_type=type(exc).__name__, detail=str(exc)[-600:])
+        return _err(502, "tool_failed", "external tool failed")
+
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:
         log.error("unhandled_exception", error_type=type(exc).__name__)
@@ -101,6 +129,9 @@ def create_app(
     prefix = "/api/v1"
     for r in (health, projects, jobs, providers, models, voice):
         app.include_router(r.router, prefix=prefix)
+    app.include_router(timeline.router, prefix=prefix)
+    app.include_router(timeline.assets, prefix=prefix)
+    app.include_router(render.router, prefix=prefix)
     app.include_router(subtitles.scripts, prefix=prefix)
     app.include_router(subtitles.router, prefix=prefix)
     app.include_router(events.router, prefix=prefix)

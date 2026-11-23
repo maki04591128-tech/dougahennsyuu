@@ -1,6 +1,6 @@
 [project]
 name = "video-automation"
-version = "0.2.0"
+version = "0.5.0"
 description = "MCP対応 対話型動画編集自動化システム"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -34,6 +34,7 @@ dev = [
 video-automation = "video_automation.app.main:main"
 video-automation-mcp = "video_automation.mcp_servers.core_server:main"
 video-automation-mcp-media = "video_automation.mcp_servers.media_server:main"
+video-automation-mcp-render = "video_automation.mcp_servers.render_server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -53,6 +54,13 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
+
+[tool.mypy]
+exclude = ["integrations/blender/scripts/"]
+ignore_missing_imports = true
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends"]

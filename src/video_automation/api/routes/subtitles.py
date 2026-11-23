@@ -27,6 +27,11 @@ async def create_script(body: ScriptCreate, c: AppContainer = Depends(get_contai
     return await c.subtitles.create_script(body)
 
 
+@scripts.get("", response_model=list[ScriptRead])
+async def list_scripts(project_id: str, c: AppContainer = Depends(get_container)):
+    return await c.subtitles.list_scripts(project_id)
+
+
 @scripts.get("/{script_id}", response_model=ScriptRead)
 async def get_script(script_id: str, c: AppContainer = Depends(get_container)):
     return await c.subtitles.get_script(script_id)

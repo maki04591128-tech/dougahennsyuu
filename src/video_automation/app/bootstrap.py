@@ -10,10 +10,15 @@ from video_automation.app.settings import Settings
 from video_automation.core.events.event_bus import EventBus
 from video_automation.core.jobs.job_manager import JobManager
 from video_automation.database.database import Database
+from video_automation.integrations.blender.runner import Blender
+from video_automation.integrations.ffmpeg.runner import FFmpeg
 from video_automation.services.llm_tasks.task_router import TaskRouter
 from video_automation.services.model_discovery.inference_test import InferenceTester
 from video_automation.services.model_discovery.provider_manager import ProviderManager
+from video_automation.services.rendering.render_service import RenderService
+from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.subtitle.subtitle_service import SubtitleService
+from video_automation.services.timeline.timeline_service import TimelineService
 from video_automation.services.voice.voice_service import VoiceService
 
 
@@ -28,6 +33,11 @@ class AppContainer:
     router: TaskRouter
     voice: VoiceService
     subtitles: SubtitleService
+    ffmpeg: FFmpeg
+    blender: Blender
+    timeline: TimelineService
+    render: RenderService
+    titles: TitleCardService
 
     async def aclose(self) -> None:
         await self.providers.aclose()
@@ -50,14 +60,24 @@ async def build_container(
     bus = EventBus()
     providers = ProviderManager(settings, db, protector=protector, transport=http_transport)
     voice = VoiceService(settings, db, transport=http_transport)
+    subtitles = SubtitleService(settings, db, voice)
+    jobs = JobManager(bus)
+    ffmpeg = FFmpeg(settings.ffmpeg_path)
+    blender = Blender(settings.blender_path)
+    timeline = TimelineService(settings, db, ffmpeg)
     return AppContainer(
         settings=settings,
         db=db,
         bus=bus,
-        jobs=JobManager(bus),
+        jobs=jobs,
         providers=providers,
         tester=InferenceTester(providers),
         router=TaskRouter(),
         voice=voice,
-        subtitles=SubtitleService(settings, db, voice),
+        subtitles=subtitles,
+        ffmpeg=ffmpeg,
+        blender=blender,
+        timeline=timeline,
+        render=RenderService(settings, db, ffmpeg, timeline, subtitles, jobs),
+        titles=TitleCardService(settings, db, blender, ffmpeg, timeline),
     )

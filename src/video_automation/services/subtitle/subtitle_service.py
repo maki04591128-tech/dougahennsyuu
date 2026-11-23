@@ -114,6 +114,12 @@ class SubtitleService:
             r.segments = [ScriptSegmentRead.model_validate(x) for x in segs]
             return r
 
+    async def list_scripts(self, project_id: str) -> list[ScriptRead]:
+        async with self.db.session_factory() as s:
+            q = select(Script).where(Script.project_id == project_id).order_by(Script.created_at)
+            ids = [x.id for x in (await s.execute(q)).scalars()]
+        return [await self.get_script(i) for i in ids]
+
     @staticmethod
     async def _segments(s: AsyncSession, script_id: str) -> list[ScriptSegment]:
         q = select(ScriptSegment).where(ScriptSegment.script_id == script_id)

@@ -10,6 +10,9 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   音声生成・保存（WAV・ハッシュ・区間時刻）、読み・アクセント編集、抑揚調整、辞書（DB同期・復元）、試聴、音声タブUI
 - **Phase 4（字幕）** — 台本分割（話者・シーン）、日本語改行（句読点・助詞境界・行頭禁則）、
   音声のモーラ時刻への整列、フレーム境界への正規化（半開区間）、ASS / SRT 出力、字幕スタイル、台本・字幕タブUI
+- **Phase 5（編集・書き出し）** — 素材取り込み、タイムライン（トラック・クリップ）、編集命令（Undo/Redo・LLM承認）、
+  FFmpeg 書き出し（NVENC自動判定・縦横/4K・字幕焼き込み・ラウドネス正規化）、フレーム/動画プレビュー、
+  Blender タイトルカード、MCP（mcp_render）、編集・書き出しタブUI
 
 ## Phase 2 の要点
 
@@ -48,6 +51,24 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
 - 1行の文字数は既定で横長 22 / 縦長 14、最大2行。ASS は解像度に合わせた PlayRes・セーフエリア余白・
   フェード・話者別色に対応。焼き込み（Phase 5）と外部字幕は同じ字幕データから生成する。
 - MCP（mcp_media）: `generate_subtitles`, `export_subtitles`
+
+## Phase 5 の要点
+
+- 流れ: `POST /assets/import`（素材をプロジェクトにコピー・SHA-256・ffprobe）→ `POST /projects/{id}/timeline/from_script`
+  （台本の音声を区間どおり配置）→ `POST /projects/{id}/commands`（編集命令）→ `POST /projects/{id}/preview`
+  → `POST /render`（Job）
+- 取り込めるのは `VA_IMPORT_DIRS`（既定: ビデオ・ピクチャ・ミュージック・ダウンロード・デスクトップ）配下の絶対パスのみ。
+- 編集命令は判別共用体（`add_track` / `add_clip` / `move_clip` / `trim_clip` / `split_clip` / `delete_clip` /
+  `set_clip_props` / `batch`）。適用前に検証（dry-run）し、前後のスナップショットで Undo/Redo する。
+  `idempotency_key` で同じ命令の二重適用を防ぐ。
+- LLM（MCP）由来の編集・最終書き出しは `PENDING_APPROVAL` になり、UI か `.../approve` で承認するまで反映しない。
+- 書き出しプロファイル: FHD 横 / FHD 縦 / 4K 横 / 4K 縦。素材の縦横比が違う場合は fill（切り抜き）/ fit（余白）/
+  blur（ぼかし背景）を選べる。エンコーダは `auto` で NVENC が実際に使えるか1フレーム符号化して判定し、
+  使えなければ libx264。音声は -14 LUFS に正規化（任意）。字幕は焼き込みと SRT/ASS を同じデータから出力。
+- Blender はバックグラウンド起動で、同梱の固定スクリプト（`title_card`）だけを実行する（任意コードは受け付けない）。
+  透過付き MOV（PNG コーデック）を素材として登録する。
+- MCP（mcp_render, `uv run video-automation-mcp-render`）: `inspect_timeline`, `add_clip`, `trim_clip`,
+  `move_clip`, `apply_edit`, `preview_timeline`, `validate_project`, `render_project`, `get_render_status`
 
 ## セットアップ
 
