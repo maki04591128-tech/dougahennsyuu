@@ -118,7 +118,8 @@ async def test_ai_reading_check_registers_rules(client, fake):
     assert "[1] 文: この相は準安定です。" in seen["prompt"] and "読み:" in seen["prompt"]
     rules = (await c.get("/voice/readings", params={"project_id": pid})).json()
     assert [(x["surface"], x["source"]) for x in rules] == [("相", "llm")]
-    # apply=false は登録しない
+    # 登録後はすでにその読みになっているので、同じ指摘は出さない（apply=false も登録しない）
     r = await c.post(f"/scripts/{sid}/readings/check", json={"apply": False})
-    assert r.json()["issues"][0]["rule_id"] is None
+    assert r.json()["issues"] == []
+    assert len((await c.get("/voice/readings", params={"project_id": pid})).json()) == 1
     assert (await c.post("/scripts/nope/readings/check", json={})).status_code == 404

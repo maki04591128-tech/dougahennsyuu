@@ -135,6 +135,14 @@ class ReadingService:
             "".join(m.text for m in ap.moras) + ("、" if ap.pause_mora else "/") for ap in aps
         )
 
+    async def _already_read(self, reading: str, kana: str, style_id: int) -> bool:
+        flat = kana.replace("/", "").replace("、", "")
+        try:
+            want = (await self._kana(reading, style_id)).replace("/", "").replace("、", "")
+        except Exception:  # noqa: BLE001 - 判定できないときは候補として残す
+            return False
+        return bool(want) and want in flat
+
     async def check_script(self, script_id: str, req: ReadingCheckRequest) -> ReadingCheckResult:
         async with self.db.session_factory() as s:
             sc = await s.get(Script, script_id)
@@ -186,6 +194,9 @@ class ReadingService:
                 if surface == reading or len(surface) > 30:
                     continue
                 if any(x.surface == surface for x in issues):
+                    continue
+                # すでにその読みで読めているもの（モデルの勘違い）は採用しない
+                if await self._already_read(reading, kana, seg.voice_style_id or 0):
                     continue
                 issue = ReadingIssue(
                     segment_id=seg.id, text=seg.text, surface=surface, wrong=kana, reading=reading

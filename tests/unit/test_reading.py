@@ -69,3 +69,26 @@ def test_shape_declines_emphasizes_and_keeps_unvoiced():
     assert shape(aps, strength=0) is aps
     ex = shape([_ap("スゴイ")], strength=1.0, exclaim=True)
     assert sum(m.pitch for m in ex[0].moras) > 5.5 * 3
+
+
+def test_join_split_words() -> None:
+    from video_automation.schemas.voice import AccentPhrase, Mora
+    from video_automation.services.voice.expressive import join_split_words
+
+    def ap(kana: str, accent: int = 1, pause: bool = False) -> AccentPhrase:
+        return AccentPhrase(
+            moras=[Mora(text=k, vowel="a", vowel_length=0.1, pitch=5.5) for k in kana],
+            accent=accent,
+            pause_mora=Mora(text="、", vowel="pau", vowel_length=0.2, pitch=0) if pause else None,
+        )
+
+    phrases = [ap("シタ", 2), ap("カゴ", 1), ap("ウブ", 2), ap("ツデス", 1)]
+    out, changed = join_split_words(phrases, ["カゴウブツ"])
+    assert changed
+    assert ["".join(m.text for m in p.moras) for p in out] == ["シタ", "カゴウブツデス"]
+    assert out[1].accent == 1
+    # 息継ぎを挟む場合はつながない
+    same, changed2 = join_split_words([ap("カゴ", 1, pause=True), ap("ウブツ")], ["カゴウブツ"])
+    assert not changed2 and len(same) == 2
+    # 元の句は変えない
+    assert len(phrases) == 4

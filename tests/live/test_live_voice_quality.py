@@ -104,6 +104,7 @@ async def test_live_reading_and_intonation(tmp_path):
                     "lines": [
                         {"speaker": "A", "text": LINES[2]},
                         {"speaker": "B", "text": LINES[2]},
+                        {"speaker": "A", "text": LINES[1]},
                     ]
                 },
             )
@@ -125,15 +126,24 @@ async def test_live_reading_and_intonation(tmp_path):
             expr_q = next(q for q in qs if q is not plain_q)
             report["pitch_spread"] = {"plain": _spread(plain_q), "expressive": _spread(expr_q)}
             report["intonation_scale"] = expr_q.get("intonationScale")
+            # 実際の合成クエリ（読み替え語をつないだ後）の句の区切り
+            async with db.session_factory() as s:
+                q2 = (await s.get(AudioFile, by_text[LINES[1]][0]["id"])).query
+            report["synth_kana"] = {"line2": _kana(q2), "line3": _kana(expr_q)}
             # AI による読みの確認（実際の LLM。登録はしない）
             r = await c.post(f"/scripts/{sc['id']}/readings/check", json={"apply": False})
             report["ai_check"] = r.json() if r.status_code == 200 else {"error": r.text[:300]}
     (out / "voice_quality_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    kana = [x["kana_after"] for x in report["lines"]]
+    # 句の区切り（/）と息継ぎ（、）を除いた読みで判定する
+    raw = [x["kana_after"] for x in report["lines"]]
+    kana = [k.replace("/", "").replace("、", "") for k in raw]
     assert "アキラ" not in kana[0] and "ロッポ" in kana[0]
     assert "カゴオモノ" not in kana[1]
-    assert "ダブリュウ、" not in kana[2] and "ギガパスカル" in kana[2]
-    assert "カタイ、ワ" not in kana[3]
+    assert "ダブリュウ、" not in raw[2] and "ギガパスカル" in kana[2]
+    assert "カタイ、ワ" not in raw[3]
+    # 読み替えた語が句の途中で切れていない
+    synth = report["synth_kana"]
+    assert "カゴ/ウブ" not in synth["line2"] and "ダブ/リュウ" not in synth["line3"]
     assert report["pitch_spread"]["expressive"] > report["pitch_spread"]["plain"]

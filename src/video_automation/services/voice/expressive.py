@@ -84,3 +84,53 @@ def shape(
 
 def kana_of(phrases: list[AccentPhrase]) -> str:
     return "".join(m.text for ap in phrases for m in ap.moras)
+
+
+def join_split_words(
+    phrases: list[AccentPhrase], word_kana: list[str]
+) -> tuple[list[AccentPhrase], bool]:
+    """読み替えたカタカナ語がアクセント句の途中で切れていたら、その句をつなげる。
+
+    例: 「カゴ/ウブ/ツデス」→「カゴウブツデス」。エンジンは見慣れないカタカナ語を
+    細かく切ることがあり、そのままだと語の途中で音が下がり不自然になる。
+    つないだ句のアクセント位置は先頭の句のものを使う（音高はエンジンで再計算する）。
+    戻り値の 2 番目は、つないだ句があったかどうか。
+    """
+    if not phrases:
+        return phrases, False
+    flat = [(i, m.text) for i, ap in enumerate(phrases) for m in ap.moras]
+    text = "".join(t for _, t in flat)
+    starts, pos = [], 0
+    for _, t in flat:
+        starts.append(pos)
+        pos += len(t)
+    # parent[i] = i の句をどの句につなげるか（つなげる範囲の先頭）
+    group = list(range(len(phrases)))
+    for word in word_kana:
+        if len(word) < 2:
+            continue
+        k = text.find(word)
+        while k >= 0:
+            idx = {flat[n][0] for n, st in enumerate(starts) if k <= st < k + len(word)}
+            if len(idx) > 1:
+                lo, hi = min(idx), max(idx)
+                # 句の間に息継ぎ（pause_mora）があるときはつなげない
+                if all(phrases[i].pause_mora is None for i in range(lo, hi)):
+                    root = group[lo]
+                    for i in range(lo, hi + 1):
+                        group[i] = root
+            k = text.find(word, k + len(word))
+    if group == list(range(len(phrases))):
+        return phrases, False
+    out: list[AccentPhrase] = []
+    for i, ap in enumerate(phrases):
+        if out and group[i] != i and group[i] == group[i - 1]:
+            last = out[-1]
+            last.moras.extend(m.model_copy(deep=True) for m in ap.moras)
+            last.pause_mora = ap.pause_mora.model_copy(deep=True) if ap.pause_mora else None
+            last.is_interrogative = ap.is_interrogative
+        else:
+            out.append(ap.model_copy(deep=True))
+    for ap in out:
+        ap.accent = max(1, min(ap.accent, len(ap.moras)))
+    return out, True
