@@ -11,7 +11,7 @@ foreach ($t in @(
     if ($lnk.TargetPath -like "$Dir*") { Remove-Item -Force $t; Write-Host "削除: $t" }
   }
 }
-foreach ($item in 'src', 'pyproject.toml', 'uv.lock', 'README.md', 'docs', '.env.example', '.venv', 'uninstall.bat') {
+foreach ($item in 'src', 'pyproject.toml', 'uv.lock', 'README.md', 'docs', '.env.example', '.venv') {
   $p = Join-Path $Dir $item
   if (Test-Path $p) { Remove-Item -Recurse -Force $p }
 }
