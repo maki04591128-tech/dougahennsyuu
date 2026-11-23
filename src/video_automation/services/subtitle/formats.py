@@ -96,6 +96,7 @@ def build_ass(
     speaker_colors: dict[str, str] | None = None,
     title: str = "VideoAutomation",
     speaker_accents: dict[str, str] | None = None,
+    multi_speaker: bool | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
 
@@ -125,7 +126,11 @@ def build_ass(
         if style.fade_in_ms or style.fade_out_ms
         else ""
     )
-    multi = len({spk for _, _, spk, _ in cues if spk}) >= 2
+    multi = (
+        multi_speaker
+        if multi_speaker is not None
+        else len({spk for _, _, spk, _ in cues if spk}) >= 2
+    )
     size = _font_size(style, width, height)
     bottom = style.alignment in (1, 2, 3)
     lines = [

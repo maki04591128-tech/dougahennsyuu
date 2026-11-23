@@ -9,6 +9,7 @@
 適用は 1 つの編集（Batch）としてまとめ、元に戻せる。LLM 経由（MCP）の適用は承認が必要。
 """
 
+import math
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -222,6 +223,12 @@ class DirectionService:
         def frames(sec: float) -> int:
             return round(sec * fps)
 
+        def media_frames(a: AssetRead, fallback: int) -> int:
+            """素材の長さ（フレーム）。タイムラインの判定と同じく切り捨て。"""
+            if not a.duration_sec:
+                return fallback
+            return max(1, math.floor(a.duration_sec * fps + 1e-6))
+
         def sec(n: int) -> float:
             return n / fps
 
@@ -277,7 +284,7 @@ class DirectionService:
                     position="center",
                 )
             )
-            add(txt_t, t_asset.id, 0, min(title_end, frames(t_asset.duration_sec or dur)))
+            add(txt_t, t_asset.id, 0, min(title_end, media_frames(t_asset, title_end)))
             if plan.subtitle:
                 sub = await self.titles.card(
                     CardRequest(
@@ -295,7 +302,7 @@ class DirectionService:
                     st,
                     max(1, title_end - st),
                     transform=native_transform(
-                        sub.width or 1, sub.height or 1, w, h, cx=0.5, cy=0.68
+                        sub.width or 1, sub.height or 1, w, h, cx=0.5, cy=0.6
                     ),
                     fade_in_frames=8,
                     fade_out_frames=8,
@@ -362,7 +369,7 @@ class DirectionService:
                         colors=[plan.accent_color, "#FFB74D", "#81C784", "#F06292"],
                     )
                 )
-                media = frames(a.duration_sec or 0) or length
+                media = media_frames(a, length)
                 add(
                     fig_t,
                     a.id,

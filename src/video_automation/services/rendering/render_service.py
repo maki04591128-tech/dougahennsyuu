@@ -152,6 +152,8 @@ class RenderService:
             height,
             style,
             speaker_accents=await self.subtitles.speaker_accents(script_id),
+            # 範囲を切り出しても、話者名を出すかどうかは台本全体で決める
+            multi_speaker=len({c.speaker for c in cues if c.speaker}) >= 2,
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out

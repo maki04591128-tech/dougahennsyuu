@@ -79,3 +79,12 @@ def test_build_ass_and_srt():
     assert "{\\r}" not in one
     srt = build_srt(cues, fps)
     assert srt.startswith("1\r\n00:00:00,000 --> 00:00:01,001\r\n一行目\r\n二行目\r\n\r\n2\r\n")
+
+
+def test_build_ass_multi_speaker_override():
+    fps = Fraction(30, 1)
+    cues = [(0, 30, "A", "一行目")]
+    ass = build_ass(
+        cues, fps, 1920, 1080, SubtitleStyle(), speaker_accents={"A": "#4FC3F7"}, multi_speaker=True
+    )
+    assert "A{\\r}\\N一行目" in ass
