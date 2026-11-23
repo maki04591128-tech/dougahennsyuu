@@ -76,6 +76,7 @@ BACKGROUNDS = {
     "plum": ("0x1F0F2E", "0x5A2D6E"),
 }
 CHART_MAX_SEC = 30.0
+CARD_SCALE = 1.25  # 図・カード領域のカードの文字の大きさ（字幕より少し小さい程度）
 HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発話数の上限
 
 
@@ -339,6 +340,7 @@ class DirectionService:
                         body=s.body,
                         style=s.style,
                         accent_color=plan.accent_color,
+                        scale=CARD_SCALE,
                     )
                 )
                 cid = add(
