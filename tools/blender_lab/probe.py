@@ -108,21 +108,60 @@ safe(
     "light_related_shader_nodes",
     lambda: [n for n in _node_types("ShaderNode") if "Light" in n or "Shadow" in n],
 )
-safe("anim_utils", lambda: [n for n in dir(__import__("bpy_extras.anim_utils", fromlist=["x"])) if "channelbag" in n or "action" in n])
+safe(
+    "anim_utils",
+    lambda: [
+        n
+        for n in dir(__import__("bpy_extras.anim_utils", fromlist=["x"]))
+        if "channelbag" in n or "action" in n
+    ],
+)
 safe("action_props", lambda: sorted(p.identifier for p in bpy.types.Action.bl_rna.properties))
-safe("text_curve_props", lambda: sorted(p.identifier for p in bpy.types.TextCurve.bl_rna.properties))
+safe(
+    "text_curve_props", lambda: sorted(p.identifier for p in bpy.types.TextCurve.bl_rna.properties)
+)
 safe("mesh_methods", lambda: [m for m in dir(bpy.types.Mesh) if "shade" in m or "smooth" in m])
 safe("material_has_use_nodes", lambda: "use_nodes" in bpy.types.Material.bl_rna.properties)
 safe("world_has_use_nodes", lambda: "use_nodes" in bpy.types.World.bl_rna.properties)
-safe("data_collections", lambda: [n for n in dir(bpy.data) if n in ("grease_pencils", "annotations", "grease_pencils_v3", "node_groups", "fonts")])
+safe(
+    "data_collections",
+    lambda: [
+        n
+        for n in dir(bpy.data)
+        if n in ("grease_pencils", "annotations", "grease_pencils_v3", "node_groups", "fonts")
+    ],
+)
 safe("gp_types", lambda: [n for n in dir(bpy.types) if n.startswith("GreasePencil")][:40])
-safe("seq_editor_props", lambda: sorted(p.identifier for p in bpy.types.SequenceEditor.bl_rna.properties))
-safe("keyframe_interpolations", lambda: [i.identifier for i in bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items])
-safe("keyframe_easing", lambda: [i.identifier for i in bpy.types.Keyframe.bl_rna.properties["easing"].enum_items])
-safe("camera_dof_props", lambda: sorted(p.identifier for p in bpy.types.CameraDOFSettings.bl_rna.properties))
-safe("light_types", lambda: [i.identifier for i in bpy.types.Light.bl_rna.properties["type"].enum_items])
-safe("modifier_types", lambda: [i.identifier for i in bpy.types.Modifier.bl_rna.properties["type"].enum_items])
-safe("gpu_backend", lambda: getattr(bpy.app, "gpu_backend", None) if hasattr(bpy.app, "gpu_backend") else None)
+safe(
+    "seq_editor_props",
+    lambda: sorted(p.identifier for p in bpy.types.SequenceEditor.bl_rna.properties),
+)
+safe(
+    "keyframe_interpolations",
+    lambda: [
+        i.identifier for i in bpy.types.Keyframe.bl_rna.properties["interpolation"].enum_items
+    ],
+)
+safe(
+    "keyframe_easing",
+    lambda: [i.identifier for i in bpy.types.Keyframe.bl_rna.properties["easing"].enum_items],
+)
+safe(
+    "camera_dof_props",
+    lambda: sorted(p.identifier for p in bpy.types.CameraDOFSettings.bl_rna.properties),
+)
+safe(
+    "light_types",
+    lambda: [i.identifier for i in bpy.types.Light.bl_rna.properties["type"].enum_items],
+)
+safe(
+    "modifier_types",
+    lambda: [i.identifier for i in bpy.types.Modifier.bl_rna.properties["type"].enum_items],
+)
+safe(
+    "gpu_backend",
+    lambda: getattr(bpy.app, "gpu_backend", None) if hasattr(bpy.app, "gpu_backend") else None,
+)
 
 (OUT / "probe.json").write_text(json.dumps(R, ensure_ascii=False, indent=1), encoding="utf-8")
 print("probe done", len(R))

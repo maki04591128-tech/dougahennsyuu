@@ -212,10 +212,14 @@ def r_title_3d():
     world((0.01, 0.015, 0.04))
     three_point()
     cam, _ = camera((0, -9, 0.6), (0, 0, -0.2), 50, dof=2.8)
-    t = text("ウルツァイト窒化ホウ素", 0.9, 0.12, 0.02, material("Title", (0.9, 0.95, 1.0), 0.8, 0.25))
+    t = text(
+        "ウルツァイト窒化ホウ素", 0.9, 0.12, 0.02, material("Title", (0.9, 0.95, 1.0), 0.8, 0.25)
+    )
     t.rotation_euler = (math.radians(90), 0, 0)
     k = fit_width(t, cam, 0.8)
-    sub = text("w-BN", 0.6, 0.06, 0.01, material("Accent", (0.3, 0.8, 1.0), 0, 0.3, (0.3, 0.8, 1.0), 6))
+    sub = text(
+        "w-BN", 0.6, 0.06, 0.01, material("Accent", (0.3, 0.8, 1.0), 0, 0.3, (0.3, 0.8, 1.0), 6)
+    )
     sub.rotation_euler = (math.radians(90), 0, 0)
     sub.location = (0, 0, -1.0)
     t.scale = (0.01,) * 3
@@ -229,7 +233,9 @@ def r_title_3d():
     sub.keyframe_insert("location", frame=26)
     ease(sub, "EXPO", "EASE_OUT")
     floor = bpy.data.meshes.new("Floor")
-    floor.from_pydata([(-20, -20, -1.6), (20, -20, -1.6), (20, 20, -1.6), (-20, 20, -1.6)], [], [(0, 1, 2, 3)])
+    floor.from_pydata(
+        [(-20, -20, -1.6), (20, -20, -1.6), (20, 20, -1.6), (-20, 20, -1.6)], [], [(0, 1, 2, 3)]
+    )
     fo = link(bpy.data.objects.new("Floor", floor))
     fo.data.materials.append(material("Floor", (0.03, 0.04, 0.08), 0.0, 0.15))
     bloom(0.8, 0.9)
@@ -270,7 +276,9 @@ def r_gn_grid():
     mul.operation = "MULTIPLY"
     mul.inputs[1].default_value = 3.0
     setmat = N.new("GeometryNodeSetMaterial")
-    setmat.inputs["Material"].default_value = material("Bars", (0.2, 0.6, 1.0), 0.3, 0.3, (0.1, 0.4, 1.0), 1.5)
+    setmat.inputs["Material"].default_value = material(
+        "Bars", (0.2, 0.6, 1.0), 0.3, 0.3, (0.1, 0.4, 1.0), 1.5
+    )
     L.new(grid.outputs["Mesh"], inst.inputs["Points"])
     L.new(cube.outputs["Mesh"], inst.inputs["Instance"])
     L.new(pos.outputs["Position"], noise.inputs["Vector"])
@@ -379,10 +387,10 @@ def r_bar3d():
 
 def r_grease_pencil():
     """Grease Pencil v3: 手書き風の矢印をコードで描く（drawing.add_strokes と points）。"""
-    sc = new_scene()
+    new_scene()
     world((0.95, 0.95, 0.93))
     gp = bpy.data.grease_pencils.new("GP")
-    ob = link(bpy.data.objects.new("GP", gp))
+    link(bpy.data.objects.new("GP", gp))
     mat = bpy.data.materials.new("Ink")
     bpy.data.materials.create_gpencil_data(mat)
     mat.grease_pencil.color = (0.85, 0.1, 0.1, 1)
@@ -398,7 +406,11 @@ def r_grease_pencil():
         p.radius = 0.04
     head = dr.strokes[1]
     end = Vector(pts[-1])
-    for p, co in zip(head.points, [end + Vector((-0.4, 0, 0.35)), end, end + Vector((-0.45, 0, -0.3))], strict=True):
+    for p, co in zip(
+        head.points,
+        [end + Vector((-0.4, 0, 0.35)), end, end + Vector((-0.45, 0, -0.3))],
+        strict=True,
+    ):
         p.position = co
         p.radius = 0.04
     camera((0, -10, 0), (0, 0, 0), 35)
@@ -410,7 +422,9 @@ def r_transparent_overlay():
     """背景を透明にして RGBA PNG で出す（動画編集で重ねる用の素材）。"""
     new_scene(transparent=True)
     three_point()
-    t = text("114 GPa", 1.2, 0.15, 0.02, material("Num", (0.3, 0.8, 1.0), 0.3, 0.3, (0.3, 0.8, 1.0), 2))
+    t = text(
+        "114 GPa", 1.2, 0.15, 0.02, material("Num", (0.3, 0.8, 1.0), 0.3, 0.3, (0.3, 0.8, 1.0), 2)
+    )
     t.rotation_euler = (math.radians(90), math.radians(-8), 0)
     camera((0, -8, 0.4), (0, 0, 0), 50)
     return {"f1": render_still("overlay_rgba", 1)}
@@ -445,11 +459,13 @@ def r_video_out():
 
 def r_perf_1080():
     """1080p・64 サンプルで立体文字＋グロー 1 フレームの時間（書き出し時間の見積もり用）。"""
-    sc = new_scene(1920, 1080, 64)
+    new_scene(1920, 1080, 64)
     world((0.01, 0.015, 0.04))
     three_point()
     cam, _ = camera((0, -9, 0.6), (0, 0, -0.2), 50, dof=2.8)
-    t = text("ウルツァイト窒化ホウ素", 0.9, 0.12, 0.02, material("Title", (0.9, 0.95, 1.0), 0.8, 0.25))
+    t = text(
+        "ウルツァイト窒化ホウ素", 0.9, 0.12, 0.02, material("Title", (0.9, 0.95, 1.0), 0.8, 0.25)
+    )
     t.rotation_euler = (math.radians(90), 0, 0)
     fit_width(t, cam, 0.8)
     bloom(0.8, 0.9)
@@ -613,7 +629,7 @@ def r_camera_shake():
 
 
 def r_vse():
-    """動画編集（シーケンサー）: 動画を置き、文字ストリップを重ねて MP4 に書き出す（5.x は strips）。"""
+    """シーケンサー: 動画を置き、文字ストリップを重ねて MP4 に書き出す（5.x は strips）。"""
     sc = new_scene(640, 360, 8)
     se = sc.sequence_editor_create()
     src = OUT / "video_out.mp4"
@@ -632,8 +648,11 @@ def r_vse():
     sc.render.ffmpeg.codec = "H264"
     sc.render.filepath = str(OUT / "vse_out.mp4")
     bpy.ops.render.render(animation=True)
-    return {"strips": [x.name for x in se.strips], "duration": mv.frame_final_duration,
-            "out": (OUT / "vse_out.mp4").is_file()}
+    return {
+        "strips": [x.name for x in se.strips],
+        "duration": mv.frame_final_duration,
+        "out": (OUT / "vse_out.mp4").is_file(),
+    }
 
 
 RECIPES = [
@@ -664,5 +683,7 @@ for fn in RECIPES:
             "error": f"{type(e).__name__}: {e}",
             "tb": traceback.format_exc()[-1500:],
         }
-    (OUT / "recipes.json").write_text(json.dumps(RES, ensure_ascii=False, indent=1), encoding="utf-8")
+    (OUT / "recipes.json").write_text(
+        json.dumps(RES, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
 print("recipes done")
