@@ -8,6 +8,8 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   Capability判定（実測プローブ）、推論テスト、モデル設定UI、タスク別割当、ACE-Step（音楽生成Provider）検出
 - **Phase 3（音声合成）** — VOICEVOX Nemo / VOICEVOX Engine 対応（エンジン機能を manifest で判定）、話者取得、
   音声生成・保存（WAV・ハッシュ・区間時刻）、読み・アクセント編集、抑揚調整、辞書（DB同期・復元）、試聴、音声タブUI
+- **Phase 4（字幕）** — 台本分割（話者・シーン）、日本語改行（句読点・助詞境界・行頭禁則）、
+  音声のモーラ時刻への整列、フレーム境界への正規化（半開区間）、ASS / SRT 出力、字幕スタイル、台本・字幕タブUI
 
 ## Phase 2 の要点
 
@@ -34,6 +36,18 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   `GET|POST|PUT|DELETE /voice/dictionary`, `POST /voice/dictionary/restore`
 - MCP（mcp_media, `uv run video-automation-mcp-media`）: `list_speakers`, `generate_voice`,
   `adjust_prosody`, `register_pronunciation`
+
+## Phase 4 の要点
+
+- 流れ: `POST /scripts`（台本→セグメント）→ `POST /scripts/{id}/voice`（Job）→ `POST /subtitles/generate`
+  → `POST /subtitles/synchronize` → `POST /subtitles/export`（`ass` / `srt`）
+- 台本の表記と音声の読みは1対1に対応しないため、字幕各行の読み（モーラ数）を `accent_phrases` で取得し、
+  保存済み AudioQuery から求めたモーラ時刻表に整列して表示区間を決める。
+- 表示区間はプロジェクト fps のフレーム整数・半開区間 `[start, end)` に正規化し、重なりを除去する。
+  セグメントのタイムライン位置（`script_segments.start_frame/end_frame`）は Phase 5 の音声配置に使う。
+- 1行の文字数は既定で横長 22 / 縦長 14、最大2行。ASS は解像度に合わせた PlayRes・セーフエリア余白・
+  フェード・話者別色に対応。焼き込み（Phase 5）と外部字幕は同じ字幕データから生成する。
+- MCP（mcp_media）: `generate_subtitles`, `export_subtitles`
 
 ## セットアップ
 

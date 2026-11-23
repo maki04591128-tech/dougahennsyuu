@@ -1,6 +1,6 @@
 """mcp_media サーバー（Phase 3: 音声）。内部の VoiceService を呼ぶアダプター。
 
-素材・字幕・音楽生成のツールは Phase 4 / 6 で追加する。
+Phase 4: generate_subtitles / export_subtitles。素材・音楽生成は Phase 6 で追加する。
 """
 
 from typing import Any
@@ -8,6 +8,12 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from video_automation.mcp_servers._shared import get_container
+from video_automation.schemas.subtitle import (
+    SubtitleExportRequest,
+    SubtitleFormat,
+    SubtitleGenerateRequest,
+    SubtitleSyncRequest,
+)
 from video_automation.schemas.voice import (
     DictionaryWordRequest,
     Prosody,
@@ -96,6 +102,36 @@ mcp.tool(name="adjust_prosody", description="既存音声の抑揚・話速を�
 mcp.tool(name="register_pronunciation", description="読み辞書に単語を登録する")(
     register_pronunciation
 )
+
+
+# ---------------- Phase 4: 字幕 ----------------
+async def generate_subtitles(
+    script_id: str, max_chars_per_line: int | None = None, max_lines: int = 2
+) -> list[dict[str, Any]]:
+    """台本から字幕を作り、音声の実時間で同期する（音声生成済みであること）。"""
+    c = await get_container()
+    await c.subtitles.generate(
+        SubtitleGenerateRequest(
+            script_id=script_id, max_chars_per_line=max_chars_per_line, max_lines=max_lines
+        )
+    )
+    cues = await c.subtitles.synchronize(SubtitleSyncRequest(script_id=script_id))
+    return [q.model_dump() for q in cues]
+
+
+async def export_subtitles(script_id: str, format: str = "ass") -> dict[str, Any]:
+    """同期済み字幕を ASS または SRT で書き出す。"""
+    c = await get_container()
+    r = await c.subtitles.export(
+        SubtitleExportRequest(script_id=script_id, format=SubtitleFormat(format))
+    )
+    return {"path": r.path, "format": r.format.value, "cue_count": r.cue_count}
+
+
+mcp.tool(name="generate_subtitles", description="台本から字幕を生成し音声に同期する")(
+    generate_subtitles
+)
+mcp.tool(name="export_subtitles", description="字幕をASS/SRTで書き出す")(export_subtitles)
 
 
 def main() -> None:

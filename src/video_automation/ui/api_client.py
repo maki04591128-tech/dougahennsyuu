@@ -110,5 +110,31 @@ class ApiClient:
     def voice_delete_word(self, word_id: str) -> None:
         self._json(self._http.delete(f"/voice/dictionary/{word_id}"))
 
+    # ----- Phase 4: 台本・字幕 -----
+    def create_script(
+        self, project_id: str, text: str, default_style_id: int | None, title: str = ""
+    ) -> dict[str, Any]:
+        body = {
+            "project_id": project_id,
+            "text": text,
+            "default_style_id": default_style_id,
+            "title": title,
+        }
+        return self._json(self._http.post("/scripts", json=body))
+
+    def script_voice(self, script_id: str) -> dict[str, Any]:
+        return self._json(self._http.post(f"/scripts/{script_id}/voice"))
+
+    def subtitles_generate(self, script_id: str, max_chars: int | None = None) -> list[Any]:
+        body = {"script_id": script_id, "max_chars_per_line": max_chars}
+        return self._json(self._http.post("/subtitles/generate", json=body))
+
+    def subtitles_sync(self, script_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.post("/subtitles/synchronize", json={"script_id": script_id}))
+
+    def subtitles_export(self, script_id: str, fmt: str) -> dict[str, Any]:
+        body = {"script_id": script_id, "format": fmt}
+        return self._json(self._http.post("/subtitles/export", json=body, timeout=60.0))
+
     def close(self) -> None:
         self._http.close()

@@ -1,4 +1,4 @@
-"""メインウィンドウ (P1-08)。PySide6。Phase 2「LLM設定」/ Phase 3「音声」タブ。"""
+"""メインウィンドウ (P1-08)。タブ: プロジェクト / LLM設定 / 音声 / 台本・字幕。"""
 
 from typing import Any
 
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
+from video_automation.ui.subtitle.widget import SubtitleWidget
 from video_automation.ui.voice.widget import VoiceWidget
 
 
@@ -40,6 +41,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.llm_settings, "LLM設定")
         self.voice = VoiceWidget(api)
         self.tabs.addTab(self.voice, "音声")
+        self.subtitles = SubtitleWidget(api)
+        self.tabs.addTab(self.subtitles, "台本・字幕")
         self.setCentralWidget(self.tabs)
 
     def refresh(self) -> None:
@@ -56,3 +59,5 @@ class MainWindow(QMainWindow):
             self.llm_settings.refresh()
         if hasattr(self.api, "voice_engines"):
             self.voice.refresh()
+        if hasattr(self.api, "create_script"):
+            self.subtitles.refresh()

@@ -49,3 +49,31 @@ async def test_mcp_media_voice_tools(settings, fake):
     finally:
         _shared.set_container(None)
         await c.aclose()
+
+
+async def test_mcp_media_subtitle_tools(settings, fake):
+    from video_automation.app.bootstrap import build_container
+    from video_automation.mcp_servers import _shared, media_server
+    from video_automation.schemas.subtitle import ScriptCreate
+
+    c = await build_container(settings, http_transport=fake.transport, configure_logs=False)
+    _shared.set_container(c)
+    try:
+        from video_automation.database.models import Project
+
+        async with c.db.session_factory() as s:
+            p = Project(name="m")
+            s.add(p)
+            await s.commit()
+            pid = p.id
+        sc = await c.subtitles.create_script(
+            ScriptCreate(project_id=pid, text="こんにちは。", default_style_id=10005)
+        )
+        await c.subtitles.generate_voices(sc.id)
+        cues = await media_server.generate_subtitles(sc.id)
+        assert cues[0]["start_frame"] is not None
+        out = await media_server.export_subtitles(sc.id, "srt")
+        assert out["format"] == "srt" and out["cue_count"] == 1
+    finally:
+        _shared.set_container(None)
+        await c.aclose()

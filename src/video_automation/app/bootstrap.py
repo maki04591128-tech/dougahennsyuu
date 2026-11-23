@@ -13,6 +13,7 @@ from video_automation.database.database import Database
 from video_automation.services.llm_tasks.task_router import TaskRouter
 from video_automation.services.model_discovery.inference_test import InferenceTester
 from video_automation.services.model_discovery.provider_manager import ProviderManager
+from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.voice.voice_service import VoiceService
 
 
@@ -26,6 +27,7 @@ class AppContainer:
     tester: InferenceTester
     router: TaskRouter
     voice: VoiceService
+    subtitles: SubtitleService
 
     async def aclose(self) -> None:
         await self.providers.aclose()
@@ -47,6 +49,7 @@ async def build_container(
     await db.create_all()  # TODO: Alembic migration に置換
     bus = EventBus()
     providers = ProviderManager(settings, db, protector=protector, transport=http_transport)
+    voice = VoiceService(settings, db, transport=http_transport)
     return AppContainer(
         settings=settings,
         db=db,
@@ -55,5 +58,6 @@ async def build_container(
         providers=providers,
         tester=InferenceTester(providers),
         router=TaskRouter(),
-        voice=VoiceService(settings, db, transport=http_transport),
+        voice=voice,
+        subtitles=SubtitleService(settings, db, voice),
     )
