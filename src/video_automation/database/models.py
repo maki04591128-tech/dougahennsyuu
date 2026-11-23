@@ -272,6 +272,8 @@ class Clip(Base):
     volume: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     fade_in_frames: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     fade_out_frames: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Phase 7: キーフレーム・入りのトランジション（schemas.animation.ClipAnimation）
+    animation: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class EditCommand(Base):
@@ -423,6 +425,24 @@ class MusicGeneration(Base):
     seed: Mapped[str | None] = mapped_column(String(100), nullable=True)
     duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
+# ---------------- Phase 7: アニメーション ----------------
+
+
+class MotionPresetRow(Base):
+    """ユーザー定義のモーションプリセット（組み込みはコード側に持つ）。"""
+
+    __tablename__ = "motion_presets"
+
+    name: Mapped[str] = mapped_column(String(60), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    definition: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )

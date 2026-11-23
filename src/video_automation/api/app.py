@@ -11,6 +11,7 @@ from video_automation.api.routes import (
     health,
     jobs,
     models,
+    motion,
     projects,
     providers,
     render,
@@ -195,5 +196,7 @@ def create_app(
     app.include_router(asset_sources.assets, prefix=prefix)
     app.include_router(asset_sources.projects, prefix=prefix)
     app.include_router(asset_sources.music, prefix=prefix)
+    app.include_router(motion.router, prefix=prefix)
+    app.include_router(motion.visual, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

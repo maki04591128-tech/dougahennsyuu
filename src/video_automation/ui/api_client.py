@@ -245,5 +245,48 @@ class ApiClient:
         body = {"asset_id": asset_id, "volume": volume}
         return self._json(self._http.post(f"/projects/{project_id}/timeline/add_bgm", json=body))
 
+    # ----- Phase 7: アニメーション -----
+    def motion_presets(self, kind: str | None = None) -> list[dict[str, Any]]:
+        params = {"kind": kind} if kind else None
+        return self._json(self._http.get("/motion/presets", params=params))
+
+    def submit_command(self, project_id: str, command: dict[str, Any]) -> dict[str, Any]:
+        return self._json(
+            self._http.post(f"/projects/{project_id}/commands", json={"command": command})
+        )
+
+    def set_clip_animation(self, project_id: str, clip_id: str, **kw: Any) -> dict[str, Any]:
+        return self.submit_command(
+            project_id, {"type": "set_clip_animation", "clip_id": clip_id, **kw}
+        )
+
+    def title_card(self, project_id: str, text: str, **kw: Any) -> dict[str, Any]:
+        body = {"project_id": project_id, "text": text, **kw}
+        return self._json(self._http.post("/assets/title_card", json=body))
+
+    def place_on_track(
+        self, project_id: str, asset_id: str, start_frame: int, track_name: str
+    ) -> dict[str, Any]:
+        """名前のトラック（無ければ作る）に素材を置く。"""
+        import uuid
+
+        tl = self.timeline(project_id)
+        track = next((t["id"] for t in tl["tracks"] if t["name"] == track_name), None)
+        cmds: list[dict[str, Any]] = []
+        if track is None:
+            track = str(uuid.uuid4())
+            cmds.append(
+                {"type": "add_track", "kind": "video", "name": track_name, "track_id": track}
+            )
+        cmds.append(
+            {
+                "type": "add_clip",
+                "track_id": track,
+                "asset_id": asset_id,
+                "start_frame": start_frame,
+            }
+        )
+        return self.submit_command(project_id, {"type": "batch", "commands": cmds})
+
     def close(self) -> None:
         self._http.close()

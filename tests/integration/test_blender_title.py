@@ -2,49 +2,18 @@
 
 import os
 import shutil
-import stat
-import sys
-import textwrap
 
 import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from fakes import FakeProtector
+from fakes import FakeProtector, fake_blender
 from video_automation.api.app import create_app
 from video_automation.integrations.blender.runner import Blender, BlenderError
 
 
 def _fake_blender(tmp_path):
-    ff = shutil.which("ffmpeg")
-    script = tmp_path / "fake_blender.py"
-    script.write_text(
-        textwrap.dedent(f"""\
-        import json, subprocess, sys
-        from pathlib import Path
-        if "--version" in sys.argv:
-            print("Blender 5.3.0"); sys.exit(0)
-        a = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
-        assert sys.argv[sys.argv.index("--python") + 1].endswith("title_card.py")
-        out = Path(a["output_dir"])
-        subprocess.run([{ff!r}, "-v", "error", "-y", "-f", "lavfi", "-i",
-            f"color=c=white@0.5:s={{a['width']}}x{{a['height']}}:r={{a['fps']}}",
-            "-frames:v", str(a["frames"]), "-pix_fmt", "rgba", str(out / "frame_%04d.png")],
-            check=True)
-        Path(a["result_path"]).write_text(json.dumps({{"frames": a["frames"],
-            "engine": "FAKE", "font_loaded": bool(a.get("font_path"))}}))
-    """),
-        encoding="utf-8",
-    )
-    if sys.platform == "win32":
-        # Windows はシバンで起動できないため、Python を呼ぶ .cmd を実行ファイルにする
-        cmd = tmp_path / "blender.cmd"
-        cmd.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
-        return str(cmd)
-    exe = tmp_path / "blender"
-    exe.write_text(f"#!{sys.executable}\n" + script.read_text(encoding="utf-8"), encoding="utf-8")
-    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
-    return str(exe)
+    return fake_blender(tmp_path)
 
 
 async def test_blender_runner_rejects_unknown_scripts(tmp_path):

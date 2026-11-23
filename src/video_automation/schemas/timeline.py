@@ -10,6 +10,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from video_automation.schemas.animation import ClipAnimation, Transition
+
 
 class AssetKind(StrEnum):
     VIDEO = "video"
@@ -87,6 +89,7 @@ class ClipRead(BaseModel):
     volume: float
     fade_in_frames: int
     fade_out_frames: int
+    animation: ClipAnimation | None = None
 
 
 class TimelineRead(BaseModel):
@@ -160,20 +163,54 @@ class SetClipProps(BaseModel):
     transform: ClipTransform | None = None
 
 
+class SetClipAnimation(BaseModel):
+    """クリップのアニメーション（P7）。いずれか1つ以上を指定する。
+
+    - animation: キーフレームとトランジションを丸ごと置き換える
+    - preset: プリセットを適用（merge=True なら他のプロパティのキーフレームは残す）
+    - transition: 入りのシーン切替を設定（外すときは clear_transition）
+    - clear: アニメーションをすべて外す"""
+
+    type: Literal["set_clip_animation"] = "set_clip_animation"
+    clip_id: str
+    animation: ClipAnimation | None = None
+    preset: str | None = Field(default=None, max_length=60)
+    duration_sec: float | None = Field(default=None, gt=0, le=60)  # プリセットの登場・退場の長さ
+    intensity: float = Field(default=1.0, gt=0, le=3)  # プリセットの変化量の倍率
+    merge: bool = True
+    transition: Transition | None = None
+    clear_transition: bool = False
+    clear: bool = False
+
+    @model_validator(mode="after")
+    def _something(self) -> "SetClipAnimation":
+        if not (
+            self.animation or self.preset or self.transition or self.clear_transition or self.clear
+        ):
+            raise ValueError("specify animation, preset, transition or clear")
+        return self
+
+
+_Cmd = (
+    AddTrack
+    | AddClip
+    | MoveClip
+    | TrimClip
+    | SplitClip
+    | DeleteClip
+    | SetClipProps
+    | SetClipAnimation
+)
+
+
 class Batch(BaseModel):
     type: Literal["batch"] = "batch"
-    commands: list[
-        Annotated[
-            AddTrack | AddClip | MoveClip | TrimClip | SplitClip | DeleteClip | SetClipProps,
-            Field(discriminator="type"),
-        ]
-    ] = Field(min_length=1, max_length=1000)
+    commands: list[Annotated[_Cmd, Field(discriminator="type")]] = Field(
+        min_length=1, max_length=1000
+    )
 
 
-EditCommandBody = Annotated[
-    AddTrack | AddClip | MoveClip | TrimClip | SplitClip | DeleteClip | SetClipProps | Batch,
-    Field(discriminator="type"),
-]
+EditCommandBody = Annotated[_Cmd | Batch, Field(discriminator="type")]
 
 
 class CommandOrigin(StrEnum):
@@ -352,5 +389,15 @@ class TitleCardRequest(BaseModel):
     project_id: str
     text: str = Field(min_length=1, max_length=100)
     duration_sec: float = Field(default=2.0, gt=0, le=30)
-    animation: Literal["pop", "slide", "none"] = "pop"
+    # P7-02: 文字アニメーション（typewriter / bounce は1文字ずつ。改行を含む文は全体で動かす）
+    animation: Literal["pop", "slide", "zoom", "typewriter", "bounce", "fade", "none"] = "pop"
+    animation_sec: float | None = Field(default=None, gt=0, le=10)  # 動く部分の長さ（既定は種類別）
+    fade_out_sec: float = Field(default=0.3, ge=0, le=5)
     text_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
+    outline: bool = True
+    outline_color: str = Field(default="#000000", pattern=r"^#[0-9A-Fa-f]{6}$")
+    size: float = Field(default=1.0, ge=0.2, le=2.0)
+    position: Literal["center", "lower_third", "top"] = "center"
+    box: bool = False  # 文字の後ろに半透明の帯
+    box_color: str = Field(default="#000000", pattern=r"^#[0-9A-Fa-f]{6}$")
+    box_opacity: float = Field(default=0.55, ge=0, le=1)

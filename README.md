@@ -16,6 +16,10 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
 - **Phase 6（素材・音楽生成）** — 素材検索（Pexels / Pixabay / Freesound / Openverse / Wikimedia Commons）、
   安全なダウンロード、ライセンスの正規化・判定・スナップショット保存、クレジット出力、LLM要求の承認、
   ACE-Step 1.5 による BGM 生成・配置、素材・BGMタブUI
+- **Phase 7（アニメーション）** — キーフレーム形式のアニメーション定義、要素（拡大・移動・回転・不透明度）と
+  カメラ（ズーム・パン）の演出、シーン切替（ディゾルブ・暗転・スライド・ワイプ・ズーム）、
+  Blender の文字アニメーション（ポップ・タイプライター・1文字ずつ跳ねる等）と図表、シーン作成、
+  モーションプリセット、MCP（mcp_visual）、編集タブの演出・テロップ操作
 
 ## Phase 2 の要点
 
@@ -101,6 +105,31 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   uv run acestep-api --host 127.0.0.1 --port 8001
   ```
   この構成で 20秒の BGM を約100秒で生成（初回はモデル読み込みを含む）。本システムは `thinking` を使わない。
+
+## Phase 7 の要点
+
+- アニメーションはクリップごとに `animation`（キーフレーム＋入りの切替）として持ち、編集命令
+  `set_clip_animation` で設定する（Undo/Redo・LLM 承認・分割時の引き継ぎに対応）。
+  - キーフレームの `frame` はクリップ先頭からの相対フレーム。各プロパティは指定したキーの間を
+    `easing`（linear / ease_in / ease_out / ease_in_out / back_out / hold）で補間し、範囲外は端の値を保つ。
+  - 要素: `scale` `x` `y` `rotation` `opacity`、カメラ（素材の中）: `zoom` `pan_x` `pan_y`
+  - 入りの切替 `transition_in`: dissolve / dip_to_black / slide_* / wipe_* / zoom_in。
+    同じトラックの直前のクリップを切替の長さだけ延長して下に敷く（素材の続きが無ければ最終フレームで止める）。
+- 描画は FFmpeg の式に変換する（カメラ = zoompan、回転 = rotate、不透明度・ワイプ = geq を変化する区間だけ、
+  位置 = overlay の式、拡大縮小 = scale のフレーム単位評価）。FFmpeg 6.1 では大きさが変わるフレームの後に
+  geq・fade を置くと異常終了したため、拡大縮小は必ず最後に置く。
+- プリセット（`GET /motion/presets`）: カメラ（ken_burns_in/out, pan_*, zoom_punch）、要素（fade_in/out,
+  pop_in, slide_in_*/slide_out_*, zoom_enter, spin_in, float, shake）、切替、文字。プリセットは秒単位で
+  定義し、適用時にクリップの長さに合わせる（`duration_sec`・`intensity` で調整）。独自プリセットの登録・
+  クリップからの保存も可能。
+- 文字アニメーション（`POST /assets/title_card`）: pop / slide / zoom / typewriter / bounce / fade / none、
+  縁取り・位置（中央・下部・上部）・半透明の帯。Blender は動く部分のフレームだけ描画し、残りは FFmpeg で
+  最終フレームを延長してフェード・帯を付ける（描画時間の短縮）。
+- 図表（`POST /assets/infographic`）: 横棒グラフ・数値のカウントアップ。
+- シーン作成（`POST /projects/{id}/scenes`）: 背景（色・素材）＋タイトル＋カメラ演出＋切替を1回の編集命令で配置。
+- MCP（mcp_visual, `uv run video-automation-mcp-visual`）: `create_scene`, `animate_image`, `animate_text`,
+  `create_transition`, `create_infographic`, `set_camera_motion`, `list_motion_presets`, `get_job`
+- 既存の DB に後の Phase で増えた列（NULL 可）が無い場合は起動時に追加する。
 
 ## セットアップ
 

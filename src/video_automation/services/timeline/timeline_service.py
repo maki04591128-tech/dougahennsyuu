@@ -6,6 +6,7 @@
 """
 
 import hashlib
+from fractions import Fraction
 from math import floor
 from pathlib import Path
 from typing import Any
@@ -23,12 +24,14 @@ from video_automation.database.models import (
     AudioFile,
     Clip,
     EditCommand,
+    MotionPresetRow,
     Project,
     Script,
     ScriptSegment,
     Track,
 )
 from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError
+from video_automation.schemas.animation import ClipAnimation, MotionPreset, PresetKind
 from video_automation.schemas.asset_source import AddBgmRequest
 from video_automation.schemas.timeline import (
     AddClip,
@@ -46,6 +49,7 @@ from video_automation.schemas.timeline import (
     DeleteClip,
     MoveClip,
     ProjectUpdate,
+    SetClipAnimation,
     SetClipProps,
     SplitClip,
     TimelineRead,
@@ -54,6 +58,12 @@ from video_automation.schemas.timeline import (
     TrimClip,
     ValidationIssue,
     ValidationResult,
+)
+from video_automation.services.animation.motion import (  # noqa: E402
+    BUILTIN_BY_NAME,
+    merge_keyframes,
+    resolve_preset,
+    split_animation,
 )
 
 log = get_logger("timeline")
@@ -430,6 +440,12 @@ class TimelineService:
                         "fade_in_frames": 0,
                     }
                 )
+                if clip.animation:
+                    first, rest = split_animation(
+                        ClipAnimation.model_validate(clip.animation), offset, Fraction(fps)
+                    )
+                    clip.animation = first.model_dump(mode="json") if first else None
+                    second.animation = rest.model_dump(mode="json") if rest else None
                 clip.end_frame, clip.source_out_frame = (
                     c.at_frame,
                     clip.source_in_frame + offset,
@@ -449,12 +465,63 @@ class TimelineService:
                         setattr(clip, k, v)
                 if c.transform is not None:
                     clip.transform = c.transform.model_dump(mode="json")
+            elif isinstance(c, SetClipAnimation):
+                await self._set_animation(s, p, clip, c)
         await s.flush()
         await self._check_source(s, clip, fps)
         length = clip.end_frame - clip.start_frame
         if clip.fade_in_frames + clip.fade_out_frames > length:
             raise CommandError("fades are longer than the clip")
         await self._check_overlap(s, clip)
+
+    async def _set_animation(
+        self, s: AsyncSession, p: Project, clip: Clip, c: SetClipAnimation
+    ) -> None:
+        fps = Fraction(p.fps_num, p.fps_den)
+        length = clip.end_frame - clip.start_frame
+        if c.clear:
+            clip.animation = None
+            return
+        cur = ClipAnimation.model_validate(clip.animation) if clip.animation else ClipAnimation()
+        if c.animation is not None:
+            cur = c.animation
+        if c.preset:
+            preset = await self._preset(s, c.preset)
+            if preset.kind == PresetKind.TEXT:
+                raise CommandError("text presets are applied when creating a title card")
+            if preset.kind == PresetKind.TRANSITION:
+                assert preset.transition is not None
+                tran = preset.transition
+                if c.duration_sec:
+                    frames = max(1, round(c.duration_sec * float(fps)))
+                    tran = tran.model_copy(update={"duration_frames": frames})
+                cur = cur.model_copy(update={"transition_in": tran})
+            else:
+                kfs = resolve_preset(
+                    preset, length, fps, duration_sec=c.duration_sec, intensity=c.intensity
+                )
+                merged = merge_keyframes(cur.keyframes, kfs) if c.merge else kfs
+                cur = ClipAnimation(
+                    keyframes=merged, transition_in=cur.transition_in, preset=preset.name
+                )
+        if c.transition is not None:
+            cur = cur.model_copy(update={"transition_in": c.transition})
+        if c.clear_transition:
+            cur = cur.model_copy(update={"transition_in": None})
+        if cur.transition_in and cur.transition_in.duration_frames > length:
+            raise CommandError("transition is longer than the clip")
+        if any(k.frame >= length for k in cur.keyframes):
+            raise CommandError(f"keyframes must be within the clip (0..{length - 1})")
+        cur = ClipAnimation.model_validate(cur.model_dump())
+        clip.animation = None if cur.is_empty() else cur.model_dump(mode="json")
+
+    async def _preset(self, s: AsyncSession, name: str) -> MotionPreset:
+        if name in BUILTIN_BY_NAME:
+            return BUILTIN_BY_NAME[name]
+        row = await s.get(MotionPresetRow, name)
+        if row is None:
+            raise CommandError(f"unknown motion preset: {name}")
+        return MotionPreset.model_validate(row.definition)
 
     async def _apply(self, s: AsyncSession, p: Project, cmd: Any) -> tuple[Snapshot, Snapshot]:
         tracks, clips = self._touched(cmd)
