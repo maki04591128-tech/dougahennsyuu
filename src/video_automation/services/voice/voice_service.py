@@ -11,6 +11,7 @@
 """
 
 import hashlib
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +49,11 @@ from video_automation.schemas.voice import (
     VoiceSpeaker,
     VoiceStyle,
 )
+from video_automation.services.voice.expressive import find_spans, join_split_words, kana_of, shape
+from video_automation.services.voice.reading import emphasis_terms, normalize_for_speech
 from video_automation.services.voice.timing import DEFAULT_FRAME_RATE, phrase_timings, wav_info
+
+_KATA_WORD = re.compile(r"[ァ-ヴー]{3,}")
 
 log = get_logger("voice")
 ProgressFn = Callable[[float], Awaitable[None]]
@@ -230,9 +235,22 @@ class VoiceService:
         return [AccentPhrase.model_validate(a) for a in raw]
 
     # ---------- P3-05 Prosody ----------
-    def apply_prosody(self, query: AudioQuery, prosody: Prosody, info: _EngineInfo) -> AudioQuery:
+    def apply_prosody(
+        self,
+        query: AudioQuery,
+        prosody: Prosody,
+        info: _EngineInfo,
+        default_intonation: float | None = None,
+    ) -> AudioQuery:
         q = query.model_copy(deep=True)
-        for field, value in prosody.model_dump(exclude_none=True).items():
+        values = prosody.model_dump(exclude_none=True)
+        if (
+            default_intonation is not None
+            and "intonation_scale" not in values
+            and info.status.features.get(EngineFeature.ADJUST_INTONATION_SCALE.value, False)
+        ):
+            values["intonation_scale"] = default_intonation
+        for field, value in values.items():
             attr, feature = PROSODY_FEATURES[field]
             if feature is not None:
                 self._require(info, feature)
@@ -249,20 +267,91 @@ class VoiceService:
         base_query: AudioQuery | None = None,
     ) -> tuple[bytes, AudioQuery]:
         await self._style(eid, item.style_id)
+        speech = item.reading_text or item.text
         if base_query is None:
             base_query = AudioQuery.model_validate(
-                await self._call(c.audio_query(item.text, item.style_id))
+                await self._call(c.audio_query(speech, item.style_id))
             )
         if item.accent_phrases is not None:
             base_query.accent_phrases = item.accent_phrases
             base_query.kana = None
-        query = self.apply_prosody(base_query, item.prosody, info)
+        else:
+            joined = await self._join_words(c, info, item, base_query.accent_phrases)
+            if joined is not None:
+                base_query.accent_phrases = joined
+                base_query.kana = None
+        if item.accent_phrases is None and item.expressiveness:
+            base_query.accent_phrases = await self._expressive(c, item, base_query.accent_phrases)
+            base_query.kana = None
+        query = self.apply_prosody(
+            base_query,
+            item.prosody,
+            info,
+            self.settings.voice_default_intonation if item.expressiveness else None,
+        )
         wav = await self._call(
             c.synthesis(query.model_dump(mode="json", exclude_none=False), item.style_id)
         )
         if wav[:4] != b"RIFF":
             raise VoiceError("engine did not return WAV")
         return wav, query
+
+    async def _join_words(
+        self,
+        c: VoicevoxClient,
+        info: _EngineInfo,
+        item: VoiceGenerateItem,
+        phrases: list[AccentPhrase],
+    ) -> list[AccentPhrase] | None:
+        """カタカナ語が句の途中で切れていたらつなぎ、音高を再計算する。"""
+        speech = item.reading_text or item.text
+        feats = info.status.features
+        if not (
+            feats.get(EngineFeature.ADJUST_MORA_PITCH.value, False)
+            and feats.get(EngineFeature.ADJUST_PHONEME_LENGTH.value, False)
+        ):
+            return None
+        # 読み替えで入れた語も、元からあるカタカナ語（ギガパスカル など）も対象にする
+        words = list(dict.fromkeys(_KATA_WORD.findall(speech)))
+        if not words:
+            return None
+        kana: list[str] = []
+        for w in words[:8]:
+            try:
+                raw = await self._call(c.accent_phrases(w, item.style_id))
+            except VoiceError:
+                continue
+            kana.append(kana_of([AccentPhrase.model_validate(a) for a in raw]))
+        joined, changed = join_split_words(phrases, kana)
+        if not changed:
+            return None
+        try:
+            raw = await self._call(
+                c.recompute_moras(
+                    "mora_data", [a.model_dump(exclude_none=True) for a in joined], item.style_id
+                )
+            )
+        except VoiceError:
+            return None
+        return [AccentPhrase.model_validate(a) for a in raw]
+
+    async def _expressive(
+        self, c: VoicevoxClient, item: VoiceGenerateItem, phrases: list[AccentPhrase]
+    ) -> list[AccentPhrase]:
+        """強調語の読みを調べてから抑揚を整える（エンジンの推定を出発点にする）。"""
+        kana_terms: list[str] = []
+        for term in item.emphasis or emphasis_terms(item.text):
+            try:
+                raw = await self._call(c.accent_phrases(normalize_for_speech(term), item.style_id))
+            except VoiceError:
+                continue
+            kana_terms.append(kana_of([AccentPhrase.model_validate(a) for a in raw]))
+        return shape(
+            phrases,
+            strength=item.expressiveness or 0.0,
+            emphasis=find_spans(phrases, kana_terms),
+            exclaim="！" in item.text or "!" in item.text,
+        )
 
     async def preview(self, req: VoicePreviewRequest) -> bytes:
         eid, c, info = await self._engine(req.engine_id)

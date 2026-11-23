@@ -75,10 +75,11 @@ class ApiClient:
     def voice_speakers(self) -> list[dict[str, Any]]:
         return self._json(self._http.get("/voice/speakers"))
 
-    def voice_preview(self, text: str, style_id: int, prosody: dict[str, Any]) -> bytes:
+    def voice_preview(self, text: str, style_id: int, prosody: dict[str, Any], **kw: Any) -> bytes:
+        """kw: reading_text（読み上げ用の文）、expressiveness（抑揚づけ）、emphasis。"""
         r = self._http.post(
             "/voice/preview",
-            json={"text": text, "style_id": style_id, "prosody": prosody},
+            json={"text": text, "style_id": style_id, "prosody": prosody, **kw},
             timeout=120.0,
         )
         r.raise_for_status()
@@ -418,6 +419,38 @@ class ApiClient:
 
     def qa_report(self, report_id: str) -> dict[str, Any]:
         return self._json(self._http.get(f"/qa/{report_id}"))
+
+    # ----- 読みのルール（読み間違い対策） -----
+    def readings(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        params = {"project_id": project_id} if project_id else {}
+        return self._json(self._http.get("/voice/readings", params=params))
+
+    def add_reading(
+        self, surface: str, reading: str, project_id: str | None = None
+    ) -> dict[str, Any]:
+        body = {"surface": surface, "reading": reading, "project_id": project_id}
+        return self._json(self._http.post("/voice/readings", json=body))
+
+    def update_reading(self, rule: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        keys = ("surface", "reading", "project_id", "enabled", "note")
+        body = {k: rule.get(k) for k in keys} | kw
+        return self._json(self._http.put(f"/voice/readings/{rule['id']}", json=body))
+
+    def delete_reading(self, rule_id: str) -> None:
+        self._json(self._http.delete(f"/voice/readings/{rule_id}"))
+
+    def speech_text(self, text: str, project_id: str | None = None) -> str:
+        params = {"text": text} | ({"project_id": project_id} if project_id else {})
+        return self._json(self._http.post("/voice/readings/preview", params=params))["speech"]
+
+    def check_readings(self, script_id: str, model_key: str | None = None) -> dict[str, Any]:
+        return self._json(
+            self._http.post(
+                f"/scripts/{script_id}/readings/check",
+                json={"model_key": model_key, "apply": True},
+                timeout=self.LLM_TIMEOUT,
+            )
+        )
 
     def close(self) -> None:
         self._http.close()

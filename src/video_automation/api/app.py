@@ -234,6 +234,7 @@ def create_app(
     app.include_router(timeline.assets, prefix=prefix)
     app.include_router(render.router, prefix=prefix)
     app.include_router(script_studio.router, prefix=prefix)
+    app.include_router(voice.scripts, prefix=prefix)
     app.include_router(assistant.conversations, prefix=prefix)
     app.include_router(assistant.approvals, prefix=prefix)
     app.include_router(assistant.projects, prefix=prefix)

@@ -8,6 +8,7 @@
 from collections.abc import Awaitable, Callable
 from fractions import Fraction
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +45,7 @@ from video_automation.schemas.voice import (
 )
 from video_automation.services.subtitle.formats import build_ass, build_srt
 from video_automation.services.subtitle.text import default_max_chars, make_cues, split_script
+from video_automation.services.voice.reading import emphasis_terms, normalize_for_speech
 from video_automation.services.voice.timing import mora_times
 from video_automation.services.voice.voice_service import (
     EngineUnavailableError,
@@ -53,6 +55,9 @@ from video_automation.services.voice.voice_service import (
 )
 
 log = get_logger("subtitle")
+if TYPE_CHECKING:
+    from video_automation.services.voice.reading_service import ReadingService
+
 ProgressFn = Callable[[float], Awaitable[None]]
 
 
@@ -73,10 +78,23 @@ def sec_to_frame(sec: float, fps: Fraction) -> int:
 
 
 class SubtitleService:
-    def __init__(self, settings: Settings, db: Database, voice: VoiceService) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db: Database,
+        voice: VoiceService,
+        readings: "ReadingService | None" = None,
+    ) -> None:
         self.settings = settings
         self.db = db
         self.voice = voice
+        self.readings = readings
+
+    async def _speech(self, project_id: str | None, text: str) -> str:
+        """読み上げ用の文（読みのルール・略語・単位・括弧を整えたもの）。"""
+        if self.readings is not None:
+            return await self.readings.speech_text(project_id, text)
+        return normalize_for_speech(text)
 
     # ---------- 台本 (P4-01) ----------
     async def create_script(self, req: ScriptCreate) -> ScriptRead:
@@ -143,14 +161,16 @@ class SubtitleService:
             script, _ = await self._project_of(s, script_id)
             segs = await self._segments(s, script_id)
             todo = [x for x in segs if regenerate or x.audio_file_id is None]
+            q = select(ScriptCharacter).where(ScriptCharacter.script_id == script_id)
+            chars = {c.name: c for c in (await s.execute(q)).scalars()}
             missing = [x.sequence for x in todo if x.voice_style_id is None]
             if missing:
                 raise SubtitleStateError(f"voice style not set for segments {missing[:10]}")
-            # 台本スタジオで設定したキャラクターごとの抑揚（話速・高さ等）
-            q = select(ScriptCharacter).where(ScriptCharacter.script_id == script_id)
-            prosody = {
-                c.name: Prosody.model_validate(c.voice or {})
-                for c in (await s.execute(q)).scalars()
+            # 台本スタジオで設定したキャラクターごとの抑揚（話速・高さ等）と抑揚づけの強さ
+            prosody = {n: Prosody.model_validate(c.voice or {}) for n, c in chars.items()}
+            expressive = {
+                n: (c.voice or {}).get("expressiveness", self.settings.voice_expressiveness)
+                for n, c in chars.items()
             }
             for i, seg in enumerate(todo):
                 audio = (
@@ -160,8 +180,13 @@ class SubtitleService:
                             items=[
                                 VoiceGenerateItem(
                                     text=seg.text,
+                                    reading_text=await self._speech(script.project_id, seg.text),
                                     style_id=seg.voice_style_id or 0,
                                     prosody=prosody.get(seg.speaker) or Prosody(),
+                                    expressiveness=expressive.get(
+                                        seg.speaker, self.settings.voice_expressiveness
+                                    ),
+                                    emphasis=emphasis_terms(seg.text),
                                     script_segment_id=seg.id,
                                 )
                             ],
@@ -203,8 +228,11 @@ class SubtitleService:
             return [SubtitleCue.model_validate(r) for r in (await s.execute(q)).scalars()]
 
     # ---------- 音声時間取得・同期 (P4-03 / P4-04) ----------
-    async def _reading_moras(self, text: str, style_id: int, engine_id: str) -> int:
-        clean = text.replace("\n", "")
+    async def _reading_moras(
+        self, text: str, style_id: int, engine_id: str, project_id: str | None = None
+    ) -> int:
+        # 音声と同じ読み（正規化後の文）でモーラ数を数える
+        clean = await self._speech(project_id, text.replace("\n", ""))
         try:
             aps = await self.voice.accent_phrases(
                 AccentPhrasesRequest(text=clean, style_id=style_id, engine_id=engine_id)
@@ -223,7 +251,10 @@ class SubtitleService:
             first = times[0][0] if times else 0.0
             last = times[-1][1] if times else audio.duration_sec
             return [(first, last)] if len(cues) == 1 else [(first, last)] * len(cues)
-        counts = [await self._reading_moras(c.text, style_id, audio.engine_id) for c in cues]
+        counts = [
+            await self._reading_moras(c.text, style_id, audio.engine_id, audio.project_id)
+            for c in cues
+        ]
         total, n = sum(counts), len(times)
         out, cum = [], 0
         for k in counts:

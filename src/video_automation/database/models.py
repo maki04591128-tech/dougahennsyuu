@@ -579,6 +579,25 @@ class ConversationMessage(Base):
     )
 
 
+class ReadingRule(Base):
+    """読み上げ用の読みのルール（表記 → カタカナ）。
+
+    字幕の文は変えず、合成に渡す文だけを置き換える。"""
+
+    __tablename__ = "reading_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    surface: Mapped[str] = mapped_column(String(100), nullable=False)
+    reading: Mapped[str] = mapped_column(String(100), nullable=False)
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="user")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    note: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, nullable=False
+    )
+
+
 # ---------------- Phase 9: 品質検査 ----------------
 
 

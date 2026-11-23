@@ -18,12 +18,17 @@ from video_automation.schemas.voice import (
     EngineStatus,
     MoraEditRequest,
     ProsodyRequest,
+    ReadingCheckRequest,
+    ReadingCheckResult,
+    ReadingRuleIn,
+    ReadingRuleRead,
     VoiceGenerateRequest,
     VoicePreviewRequest,
     VoiceSpeaker,
 )
 
 router = APIRouter(prefix="/voice", tags=["voice"])
+scripts = APIRouter(prefix="/scripts", tags=["voice"])
 
 
 @router.get("/engines", response_model=list[EngineStatus])
@@ -105,3 +110,43 @@ async def delete_word(word_id: str, c: AppContainer = Depends(get_container)) ->
 @router.post("/dictionary/restore")
 async def restore(engine_id: str | None = None, c: AppContainer = Depends(get_container)):
     return {"restored": await c.voice.restore_dictionary(engine_id)}
+
+
+# ---------- 読みのルール（読み間違い対策） ----------
+@router.get("/readings", response_model=list[ReadingRuleRead])
+async def list_readings(project_id: str | None = None, c: AppContainer = Depends(get_container)):
+    return await c.readings.list_rules(project_id)
+
+
+@router.post("/readings", response_model=ReadingRuleRead, status_code=201)
+async def add_reading(body: ReadingRuleIn, c: AppContainer = Depends(get_container)):
+    return await c.readings.add(body)
+
+
+@router.put("/readings/{rule_id}", response_model=ReadingRuleRead)
+async def update_reading(
+    rule_id: str, body: ReadingRuleIn, c: AppContainer = Depends(get_container)
+):
+    return await c.readings.update(rule_id, body)
+
+
+@router.delete("/readings/{rule_id}", status_code=204)
+async def delete_reading(rule_id: str, c: AppContainer = Depends(get_container)) -> Response:
+    await c.readings.delete(rule_id)
+    return Response(status_code=204)
+
+
+@router.post("/readings/preview")
+async def reading_preview(
+    text: str, project_id: str | None = None, c: AppContainer = Depends(get_container)
+) -> dict[str, str]:
+    """字幕の文から、実際に読み上げに使う文を作って返す（確認用）。"""
+    return {"text": text, "speech": await c.readings.speech_text(project_id, text)}
+
+
+@scripts.post("/{script_id}/readings/check", response_model=ReadingCheckResult)
+async def check_readings(
+    script_id: str, body: ReadingCheckRequest, c: AppContainer = Depends(get_container)
+):
+    """台本の読みを AI で確認し、読み間違いを読みのルールとして登録する。"""
+    return await c.readings.check_script(script_id, body)
