@@ -136,5 +136,58 @@ class ApiClient:
         body = {"script_id": script_id, "format": fmt}
         return self._json(self._http.post("/subtitles/export", json=body, timeout=60.0))
 
+    # ----- Phase 5: タイムライン・レンダリング -----
+    def list_scripts(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/scripts", params={"project_id": project_id}))
+
+    def timeline(self, project_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/projects/{project_id}/timeline"))
+
+    def timeline_from_script(self, project_id: str, script_id: str) -> dict[str, Any]:
+        return self._json(
+            self._http.post(
+                f"/projects/{project_id}/timeline/from_script", json={"script_id": script_id}
+            )
+        )
+
+    def list_commands(self, project_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        params = {"status": status} if status else None
+        return self._json(self._http.get(f"/projects/{project_id}/commands", params=params))
+
+    def decide_command(self, project_id: str, command_id: str, approve: bool) -> dict[str, Any]:
+        action = "approve" if approve else "reject"
+        return self._json(self._http.post(f"/projects/{project_id}/commands/{command_id}/{action}"))
+
+    def undo(self, project_id: str) -> dict[str, Any]:
+        return self._json(self._http.post(f"/projects/{project_id}/undo"))
+
+    def redo(self, project_id: str) -> dict[str, Any]:
+        return self._json(self._http.post(f"/projects/{project_id}/redo"))
+
+    def preview_frame(
+        self, project_id: str, frame: int, script_id: str | None = None, width: int = 640
+    ) -> bytes:
+        body = {"frame": frame, "script_id": script_id, "width": width}
+        r = self._http.post(f"/projects/{project_id}/preview", json=body, timeout=120.0)
+        r.raise_for_status()
+        return r.content
+
+    def render_profiles(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/render/profiles"))
+
+    def render(self, project_id: str, profile: str, script_id: str | None, **kw: Any) -> dict:
+        body = {"project_id": project_id, "profile": profile, "script_id": script_id, **kw}
+        return self._json(self._http.post("/render", json=body))
+
+    def list_renders(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/render", params={"project_id": project_id}))
+
+    def get_render(self, render_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/render/{render_id}"))
+
+    def decide_render(self, render_id: str, approve: bool) -> dict[str, Any]:
+        action = "approve" if approve else "reject"
+        return self._json(self._http.post(f"/render/{render_id}/{action}"))
+
     def close(self) -> None:
         self._http.close()

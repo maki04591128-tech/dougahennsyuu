@@ -7,7 +7,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "VideoAutomation"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.5.0"
 
 
 class Settings(BaseSettings):
@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     # ---- Phase 3: 音声合成（VOICEVOX系。Nemo を優先）----
     voicevox_nemo_url: str | None = "http://127.0.0.1:50121"
     voicevox_url: str | None = "http://127.0.0.1:50021"
+
+    # ---- Phase 5: 編集・レンダリング ----
+    ffmpeg_path: str | None = None  # None=PATH から検出
+    blender_path: str | None = None  # None=PATH・Steam・既定インストール先から検出
+    # 素材の取り込みを許可するフォルダ（セキュリティ：ファイル操作は許可ディレクトリに限定）
+    import_dirs: list[Path] = Field(
+        default_factory=lambda: [
+            Path.home() / d for d in ("Videos", "Pictures", "Music", "Downloads", "Desktop")
+        ]
+    )
+    title_font_path: str | None = None  # Blender タイトル用フォント（None=OS既定の日本語フォント）
 
     def voice_engine_urls(self) -> dict[str, str]:
         urls = {"voicevox-nemo": self.voicevox_nemo_url, "voicevox": self.voicevox_url}
