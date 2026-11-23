@@ -137,7 +137,8 @@ def card_filter(req: CardRequest, layout: CardLayout, font: Path, tmp: Path) -> 
         f = tmp / f"line{i}.txt"
         f.write_text(ln.text, encoding="utf-8")
         parts.append(
-            f"drawtext=fontfile='{fontfile}':textfile='{filter_path(f)}':"
+            # expansion=none: 「18%」の % を書式として解釈させない
+            f"drawtext=fontfile='{fontfile}':textfile='{filter_path(f)}':expansion=none:"
             f"fontsize={ln.size}:fontcolor={_ff_color(ln.color)}:x={ln.x}:y={ln.y}:"
             "shadowcolor=0x000000@0.6:shadowx=2:shadowy=2"
         )

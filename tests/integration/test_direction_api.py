@@ -119,7 +119,7 @@ async def test_plan_apply_and_reapply(dclient, fake):
                         "from_line": 5,
                         "heading": "まとめ",
                         "style": "summary",
-                        "body": ["計算: w-BN が上", "実験: ダイヤモンドが上"],
+                        "body": ["計算: w-BN が 18% 上", "実験: ダイヤモンドが上"],
                     },
                 ],
             }
