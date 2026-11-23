@@ -84,12 +84,21 @@ def main() -> None:
         x0 = -vw / 2 * 0.9 + label_w
         bar_max = vw * 0.9 - label_w - vw * 0.15
         stagger = max(1, round(end * 0.3 / n))
+        # ラベル・数値はそれぞれ同じ大きさにそろえる（いちばん長いものに合わせる）
+        labs, vals = [], []
         for i, v in enumerate(values):
-            yc = top - row * (i + 0.5)
             lab = text_object(
                 f"l{i}", labels[i] if i < len(labels) else "", font, tmat, align="RIGHT"
             )
-            fit_text(lab, label_w * 0.9, bar_h * 0.8)
+            labs.append((lab, fit_text(lab, label_w * 0.9, bar_h * 0.62)))
+            val = text_object(f"v{i}", fmt(v, dec, unit), font, tmat, align="LEFT")
+            vals.append((val, fit_text(val, vw * 0.14, bar_h * 0.55)))
+        lab_s = min(sc for _, sc in labs)
+        val_s = min(sc for _, sc in vals)
+        for i, v in enumerate(values):
+            yc = top - row * (i + 0.5)
+            lab = labs[i][0]
+            lab.scale = (lab_s,) * 3
             lab.location = (x0 - vw * 0.02, yc, 0)
             bar = rect_mesh(f"b{i}", max(bar_max * abs(v) / vmax, 1e-3), bar_h, mats[i % len(mats)])
             bar.location = (x0, yc - bar_h / 2, 0)
@@ -98,8 +107,8 @@ def main() -> None:
             bar.keyframe_insert("scale", frame=start)
             bar.scale = (1, 1, 1)
             bar.keyframe_insert("scale", frame=max(start + 1, stop))
-            val = text_object(f"v{i}", fmt(v, dec, unit), font, tmat, align="LEFT")
-            fit_text(val, vw * 0.14, bar_h * 0.7)
+            val = vals[i][0]
+            val.scale = (val_s,) * 3
             val.location = (x0 + bar_max * abs(v) / vmax + vw * 0.01, yc, 0)
             counters.append((val, v, start, max(start + 1, stop)))
 

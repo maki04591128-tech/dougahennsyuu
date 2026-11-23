@@ -71,6 +71,16 @@ async def test_full_flow_generate_sync_export(client, settings):
     assert ",Default_S1,ゲスト," in ass["content"]
     path = Path(settings.data_dir) / ass["path"]
     assert path.is_file() and path.read_bytes()[:3] == b"\xef\xbb\xbf"
+    # 話者の色（自動）: 司会=水色、ゲスト=オレンジ。名前と縁取りに使う
+    assert "司会{\\r}\\N" in ass["content"] and "\\1c&HF7C34F&" in ass["content"]
+    # プロジェクトの字幕スタイルを保存すると出力に使われる
+    st = (await client.get(f"/subtitles/style/{pid}")).json()
+    assert st["speaker_label"] and st["band"]
+    st.update(speaker_label=False, band=False, font_size=50)
+    assert (await client.put(f"/subtitles/style/{pid}", json=st)).status_code == 200
+    ass2 = (await client.post("/subtitles/export", json={"script_id": sid})).json()["content"]
+    assert ",Meiryo,50," in ass2 and "{\\r}" not in ass2 and "\\p1" not in ass2
+    assert (await client.get("/subtitles/style/nope")).status_code == 404
     srt = (await client.post("/subtitles/export", json={"script_id": sid, "format": "srt"})).json()
     assert srt["content"].startswith("1\r\n00:00:") and srt["path"].endswith(".srt")
 

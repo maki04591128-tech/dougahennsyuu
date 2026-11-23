@@ -177,6 +177,7 @@ def test_script_studio_widget_flow():
         "speaking_style": "",
         "is_user": True,
         "voice": {"style_id": 3},
+        "color": None,
     }
 
     w.lines_edit.setPlainText("こんにちは\nB：割り込み\n\n")
@@ -237,6 +238,46 @@ def test_script_studio_widget_flow():
     w.check_readings()
     assert "六方晶 → ロッポウショウ" in w.issue_list.item(0).text()
     assert "1 件" in w.status_label.text()
+    # 演出プラン（AI）→ 確認 → 適用
+    assert not w.direction_apply_button.isEnabled()
+    plan = {
+        "title": "w-BN",
+        "subtitle": "",
+        "shots": [
+            {"kind": "card", "from_line": 1, "heading": "疑問", "body": ["硬さとは"]},
+            {
+                "kind": "chart",
+                "from_line": 2,
+                "to_line": 3,
+                "heading": "強度",
+                "labels": ["w-BN", "ダイヤ"],
+                "values": [114, 97],
+                "unit": "GPa",
+            },
+            {"kind": "keyword", "from_line": 2, "text": "114GPa"},
+            {"kind": "image", "from_line": 3, "query": "diamond"},
+        ],
+        "notes": ["3: 発話に無い語のテロップ「x」を外しました"],
+    }
+    api.direction_plan = lambda sid: {"plan": plan, "model_key": "m", "lines": 3}
+    applied = []
+    api.direction_apply = lambda sid, p: (
+        applied.append(p)
+        or {
+            "command_id": "c",
+            "status": "APPLIED",
+            "clips": 7,
+            "skipped": ["3: 画像の素材が未選択"],
+        }
+    )
+    w.plan_direction()
+    text = w.diff_view.toPlainText()
+    assert "[1] カード: 疑問：硬さとは" in text and "[2〜3] 図表: 強度（w-BN 114GPa" in text
+    assert "[2] テロップ: 114GPa" in text and "[3] 画像: 検索語: diamond" in text
+    assert "[整えた点]" in text and w.direction_apply_button.isEnabled()
+    w.apply_direction()
+    assert applied == [plan] and "7 クリップ" in w.status_label.text()
+    assert "画像の素材が未選択" in w.diff_view.toPlainText()
 
 
 def test_script_studio_async_runner_reports_errors():

@@ -16,6 +16,11 @@ from video_automation.schemas.animation import (
     Transition,
     TransitionType,
 )
+from video_automation.schemas.direction import (
+    DirectionApplyRequest,
+    DirectionPlan,
+    DirectionPlanRequest,
+)
 from video_automation.schemas.timeline import (
     AddClip,
     AddTrack,
@@ -200,6 +205,26 @@ async def create_scene(
     return {"job_id": job.id, "status": job.status.value}
 
 
+async def plan_direction(script_id: str, model_key: str | None = None) -> dict[str, Any]:
+    """台本から演出プラン（カード・図表・テロップ・画像の候補）を作る。タイムラインは変えない。"""
+    c = await get_container()
+    res = await c.direction.plan(DirectionPlanRequest(script_id=script_id, model_key=model_key))
+    return res.model_dump(mode="json")
+
+
+async def apply_direction(script_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+    """演出プランで素材を作り、配置を提案する（配置はユーザーの承認後に適用）。Job ID を返す。"""
+    c = await get_container()
+    req = DirectionApplyRequest(script_id=script_id, plan=DirectionPlan.model_validate(plan))
+
+    async def run(progress: Any) -> dict[str, Any]:
+        r = await c.direction.apply(req, origin=CommandOrigin.LLM)
+        return {**r.model_dump(mode="json"), "note": NOTE}
+
+    job = c.jobs.submit("direction_apply", run)
+    return {"job_id": job.id, "status": job.status.value}
+
+
 async def get_job(job_id: str) -> dict[str, Any]:
     """Job の状態と結果。"""
     c = await get_container()
@@ -215,6 +240,8 @@ for _fn in (
     animate_text,
     create_infographic,
     create_scene,
+    plan_direction,
+    apply_direction,
     get_job,
 ):
     mcp.tool(name=_fn.__name__, description=(_fn.__doc__ or "").strip().split("\n")[0])(_fn)

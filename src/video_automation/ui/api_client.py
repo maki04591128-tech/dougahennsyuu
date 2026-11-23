@@ -5,6 +5,10 @@ from typing import Any
 import httpx
 
 
+class JobFailedError(RuntimeError):
+    """サーバーの Job が失敗・中止・時間切れになった。"""
+
+
 class ApiClient:
     def __init__(self, base_url: str, client: httpx.Client | None = None) -> None:
         self._http = client or httpx.Client(base_url=base_url, timeout=10.0)
@@ -442,6 +446,38 @@ class ApiClient:
     def speech_text(self, text: str, project_id: str | None = None) -> str:
         params = {"text": text} | ({"project_id": project_id} if project_id else {})
         return self._json(self._http.post("/voice/readings/preview", params=params))["speech"]
+
+    # ---------- 演出プラン ----------
+    def direction_plan(self, script_id: str, model_key: str | None = None) -> dict[str, Any]:
+        return self._json(
+            self._http.post(
+                "/direction/plan",
+                json={"script_id": script_id, "model_key": model_key},
+                timeout=self.LLM_TIMEOUT,
+            )
+        )
+
+    def wait_job(self, job_id: str, timeout: float = 1800.0, interval: float = 1.0) -> Any:
+        """Job の終了を待って結果を返す（失敗は例外）。UI のワーカースレッドから呼ぶ。"""
+        import time
+
+        end = time.monotonic() + timeout
+        while True:
+            j = self.get_job(job_id)
+            if j["status"] == "SUCCEEDED":
+                return j.get("result")
+            if j["status"] in ("FAILED", "CANCELLED"):
+                raise JobFailedError(j.get("error") or j["status"])
+            if time.monotonic() > end:
+                raise JobFailedError("job timed out")
+            time.sleep(interval)
+
+    def direction_apply(self, script_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+        job = self._json(
+            self._http.post("/direction/apply", json={"script_id": script_id, "plan": plan})
+        )
+        result: dict[str, Any] = self.wait_job(job["id"])
+        return result
 
     def check_readings(self, script_id: str, model_key: str | None = None) -> dict[str, Any]:
         return self._json(

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from video_automation.api.routes import (
     asset_sources,
     assistant,
+    direction,
     health,
     jobs,
     models,
@@ -248,5 +249,6 @@ def create_app(
     app.include_router(asset_sources.music, prefix=prefix)
     app.include_router(motion.router, prefix=prefix)
     app.include_router(motion.visual, prefix=prefix)
+    app.include_router(direction.router, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

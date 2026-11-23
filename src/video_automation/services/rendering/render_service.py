@@ -142,12 +142,16 @@ class RenderService:
             for c in cues
             if (c.end_frame or 0) > offset_frames
         ]
+        style = SubtitleStyle.model_validate(p.subtitle_style or {})
+        if not fade:
+            style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
         content = build_ass(
             rows,
             Fraction(p.fps_num, p.fps_den),
             width,
             height,
-            SubtitleStyle() if fade else SubtitleStyle(fade_in_ms=0, fade_out_ms=0),
+            style,
+            speaker_accents=await self.subtitles.speaker_accents(script_id),
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out

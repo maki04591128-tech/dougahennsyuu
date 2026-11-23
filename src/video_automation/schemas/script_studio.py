@@ -40,6 +40,8 @@ class CharacterIn(BaseModel):
     speaking_style: str = Field(default="", max_length=500)
     is_user: bool = False  # USER_ONE_SIDE でユーザーが担当するキャラクター
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    # 字幕の縁取り・名前の色（#RRGGBB）。None は自動で割り当てる
+    color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
 
 
 class CharacterRead(CharacterIn):

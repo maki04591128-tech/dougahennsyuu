@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Response
 from video_automation.api.dependencies import get_container
 from video_automation.app.bootstrap import AppContainer
 from video_automation.schemas.animation import (
+    CardRequest,
     InfographicRequest,
     MotionPreset,
     MotionPresetCreate,
@@ -39,6 +40,16 @@ async def preset_from_clip(body: SaveClipAsPreset, c: AppContainer = Depends(get
 async def delete_preset(name: str, c: AppContainer = Depends(get_container)) -> Response:
     await c.presets.delete(name)
     return Response(status_code=204)
+
+
+@visual.post("/assets/card", response_model=JobRead, status_code=202)
+async def card(body: CardRequest, c: AppContainer = Depends(get_container)):
+    """情報カード（見出し＋本文、透過 PNG）を作り素材として登録する。"""
+
+    async def run(_progress: Any) -> dict[str, Any]:
+        return (await c.titles.card(body)).model_dump(mode="json")
+
+    return c.jobs.submit("card", run)
 
 
 @visual.post("/assets/infographic", response_model=JobRead, status_code=202)

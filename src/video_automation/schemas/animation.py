@@ -11,7 +11,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Easing(StrEnum):
@@ -173,6 +173,9 @@ class InfographicRequest(BaseModel):
     box_color: str = Field(default="#000000", pattern=_HEX)
     box_opacity: float = Field(default=0.45, ge=0, le=1)
     fade_out_sec: float = Field(default=0.3, ge=0, le=5)
+    # 強調する項目（その棒だけ colors[0]、他は muted_color）。None は色分け
+    highlight: int | None = Field(default=None, ge=0, le=7)
+    muted_color: str = Field(default="#6F829E", pattern=_HEX)
 
     @model_validator(mode="after")
     def _labels(self) -> "InfographicRequest":
@@ -194,3 +197,35 @@ class SceneRequest(BaseModel):
     title_position: Literal["center", "lower_third", "top"] = "center"
     transition: Transition | None = None
     origin: Literal["user", "llm"] = "user"
+
+
+class CardRequest(BaseModel):
+    """情報カード（見出し＋本文の静止画、透過 PNG）。FFmpeg で作るので速い。
+
+    style: info=見出し＋本文 / point=要点（本文に「・」）/ summary=まとめ（見出しを強調）
+           / keyword=短い語や数値を大きく（テロップ）"""
+
+    project_id: str
+    heading: str = Field(default="", max_length=40)
+    body: list[str] = Field(default_factory=list, max_length=6)
+    style: Literal["info", "point", "summary", "keyword"] = "info"
+    accent_color: str = Field(default="#4FC3F7", pattern=_HEX)
+    panel_color: str = Field(default="#0F1B2D", pattern=_HEX)
+    panel_opacity: float = Field(default=0.88, ge=0, le=1)
+    text_color: str = Field(default="#FFFFFF", pattern=_HEX)
+    width_ratio: float = Field(default=0.62, ge=0.15, le=0.95)  # 画面幅に対する幅
+    scale: float = Field(default=1.0, ge=0.5, le=2.0)  # 文字の大きさの倍率
+
+    @field_validator("body")
+    @classmethod
+    def _body(cls, v: list[str]) -> list[str]:
+        out = [x.strip() for x in v if x and x.strip()]
+        if any(len(x) > 80 for x in out):
+            raise ValueError("each body line must be at most 80 characters")
+        return out
+
+    @model_validator(mode="after")
+    def _some_text(self) -> "CardRequest":
+        if not self.heading.strip() and not self.body:
+            raise ValueError("heading or body is required")
+        return self
