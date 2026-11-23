@@ -17,10 +17,9 @@ from video_automation.integrations.blender.runner import Blender, BlenderError
 
 def _fake_blender(tmp_path):
     ff = shutil.which("ffmpeg")
-    script = tmp_path / "blender"
+    script = tmp_path / "fake_blender.py"
     script.write_text(
         textwrap.dedent(f"""\
-        #!{sys.executable}
         import json, subprocess, sys
         from pathlib import Path
         if "--version" in sys.argv:
@@ -28,7 +27,7 @@ def _fake_blender(tmp_path):
         a = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
         assert sys.argv[sys.argv.index("--python") + 1].endswith("title_card.py")
         out = Path(a["output_dir"])
-        subprocess.run(["{ff}", "-v", "error", "-y", "-f", "lavfi", "-i",
+        subprocess.run([{ff!r}, "-v", "error", "-y", "-f", "lavfi", "-i",
             f"color=c=white@0.5:s={{a['width']}}x{{a['height']}}:r={{a['fps']}}",
             "-frames:v", str(a["frames"]), "-pix_fmt", "rgba", str(out / "frame_%04d.png")],
             check=True)
@@ -37,8 +36,15 @@ def _fake_blender(tmp_path):
     """),
         encoding="utf-8",
     )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    return str(script)
+    if sys.platform == "win32":
+        # Windows はシバンで起動できないため、Python を呼ぶ .cmd を実行ファイルにする
+        cmd = tmp_path / "blender.cmd"
+        cmd.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        return str(cmd)
+    exe = tmp_path / "blender"
+    exe.write_text(f"#!{sys.executable}\n" + script.read_text(encoding="utf-8"), encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    return str(exe)
 
 
 async def test_blender_runner_rejects_unknown_scripts(tmp_path):

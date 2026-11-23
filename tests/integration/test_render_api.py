@@ -2,9 +2,25 @@
 
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 from video_automation.integrations.ffmpeg.runner import FFmpeg
+
+
+def _ffmpeg_procs(pattern: str) -> list[str]:
+    """コマンドラインに pattern を含む ffmpeg プロセス（Windows / POSIX 両対応）。"""
+    if sys.platform == "win32":
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | "
+            f"Where-Object {{ $_.CommandLine -like '*{pattern}*' }} | "
+            "ForEach-Object { $_.ProcessId }"
+        )
+        cmd = ["powershell", "-NoProfile", "-Command", ps]
+    else:
+        cmd = ["pgrep", "-f", f"ffmpeg.*{pattern}"]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout
+    return [x for x in out.split() if x.strip()]
 
 
 async def _project_with_timeline(c, media_dir, w=640, h=360):
@@ -73,7 +89,9 @@ async def test_render_fhd_and_portrait(mclient, media_dir, media_settings):
     assert r.status_code == 202 and r.json()["status"] == "QUEUED"
     job = await c.app.state.jobs.wait(r.json()["job_id"])
     assert job.status == "SUCCEEDED", job.error
-    assert job.result["encoder"] == "libx264"  # GPU 無し環境では自動で CPU 符号化
+    # encoder=auto: NVENC が実際に使える環境では h264_nvenc、それ以外は libx264
+    nvenc = await c.app.state.container.ffmpeg.nvenc_usable()
+    assert job.result["encoder"] == ("h264_nvenc" if nvenc else "libx264")
     out = Path(media_settings.data_dir) / job.result["output_path"]
     info = await FFmpeg().probe(out)
     assert (info.width, info.height) == (1920, 1080) and info.has_audio
@@ -128,8 +146,7 @@ async def test_render_requires_approval_for_llm_and_can_be_cancelled(mclient, me
         await asyncio.sleep(0.1)
     assert st == "CANCELLED"
     # ffmpeg プロセスが残っていない
-    ps = subprocess.run(["pgrep", "-f", "3840x2160"], capture_output=True, text=True)
-    assert ps.stdout.strip() == ""
+    assert _ffmpeg_procs("3840x2160") == []
 
 
 async def test_empty_timeline_and_errors(mclient):

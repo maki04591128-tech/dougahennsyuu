@@ -5,9 +5,11 @@ Blender の PNG 連番 → FFmpeg で透過付き MOV（PNG コーデック）�
 """
 
 import tempfile
+import time
 from pathlib import Path
 from uuid import uuid4
 
+from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import Project
@@ -26,6 +28,8 @@ FONT_CANDIDATES = [
     r"C:\Windows\Fonts\msgothic.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
 ]
+
+log = get_logger("title_card")
 
 
 def _rgba(hex_color: str) -> list[float]:
@@ -64,6 +68,7 @@ class TitleCardService:
         out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"title_{uuid4().hex[:8]}.mov"
+        t0 = time.perf_counter()
         with tempfile.TemporaryDirectory(prefix="va_title_") as tmp:
             result = await self.blender.run_script(
                 "title_card",
@@ -82,6 +87,13 @@ class TitleCardService:
             )
             if not result.get("frames"):
                 raise RuntimeError("blender produced no frames")
+            log.info(
+                "title_card_rendered",
+                engine=result.get("engine"),
+                samples=result.get("samples"),
+                frames=result["frames"],
+                sec=round(time.perf_counter() - t0, 1),
+            )
             await self.ffmpeg.run(
                 [
                     "-framerate",

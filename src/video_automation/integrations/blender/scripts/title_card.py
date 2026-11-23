@@ -35,6 +35,25 @@ def main() -> None:
         if name in engines:
             scene.render.engine = name
             break
+    # 発光マテリアルの平面文字なので高品質設定は不要。既定(64サンプル)だと1フレーム数秒かかる
+    samples = int(args.get("samples", 8))
+    ee = getattr(scene, "eevee", None)
+    if ee is not None:
+        for attr, val in (
+            ("taa_render_samples", samples),
+            ("use_gtao", False),
+            ("use_bloom", False),
+            ("use_ssr", False),
+            ("use_motion_blur", False),
+            ("use_shadows", False),
+            ("use_raytracing", False),
+            ("use_volumetric_shadows", False),
+        ):
+            if hasattr(ee, attr):
+                setattr(ee, attr, val)
+    if hasattr(scene.render, "use_motion_blur"):
+        scene.render.use_motion_blur = False
+    scene.render.use_persistent_data = True
     scene.render.resolution_x, scene.render.resolution_y = w, h
     scene.render.resolution_percentage = 100
     scene.render.fps = fps
@@ -104,6 +123,7 @@ def main() -> None:
         json.dumps(
             {
                 "engine": scene.render.engine,
+                "samples": samples,
                 "blender": bpy.app.version_string,
                 "frames": len(files),
                 "pattern": str(out_dir / "frame_%04d.png"),
