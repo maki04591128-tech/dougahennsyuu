@@ -13,6 +13,13 @@ $ErrorActionPreference = 'Stop'
 $Src = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Log = Join-Path $Src 'install_log.txt'
 $Lines = New-Object System.Collections.Generic.List[string]
+# ネイティブコマンド（uv 等）は情報を標準エラーに出すため、PowerShell 5.1 でエラー扱いされないよう
+# 一時的に Continue にして文字列として受け取り、成否は終了コードで判断する
+function Native([scriptblock]$b) {
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { $o = & $b 2>&1 | ForEach-Object { "$_" } | Out-String; return @{ Out = $o.Trim(); Code = $LASTEXITCODE } }
+  finally { $ErrorActionPreference = $old }
+}
 function Log([string]$s) { $Lines.Add($s); Write-Host $s; [IO.File]::WriteAllText($Log, ($Lines -join "`r`n"), (New-Object Text.UTF8Encoding($true))) }
 
 try {
@@ -31,7 +38,7 @@ try {
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     $Uv = Join-Path $env:USERPROFILE '.local\bin\uv.exe'
   }
-  Log "uv: $(& $Uv --version)"
+  Log "uv: $((Native { & $Uv --version }).Out)"
 
   # 2) アプリのファイルをコピー（data と .env は残す）
   New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -54,9 +61,9 @@ try {
   Push-Location $InstallDir
   try {
     $env:UV_PYTHON = '3.12'
-    $out = & $Uv sync --frozen --no-dev --extra ui --python 3.12 2>&1 | Out-String
-    Log $out.Trim()
-    if ($LASTEXITCODE -ne 0) { throw "uv sync に失敗しました（exit $LASTEXITCODE）" }
+    $r = Native { & $Uv sync --frozen --no-dev --extra ui --python 3.12 }
+    Log $r.Out
+    if ($r.Code -ne 0) { throw "uv sync に失敗しました（exit $($r.Code)）" }
   } finally { Pop-Location }
   $Exe = Join-Path $InstallDir '.venv\Scripts\video-automation.exe'
   if (-not (Test-Path $Exe)) { throw "起動ファイルが作られていません: $Exe" }
@@ -83,10 +90,10 @@ try {
   Push-Location $InstallDir
   try {
     $env:PYTHONUTF8 = '1'
-    $doc = & $Exe --doctor 2>&1 | Out-String
-    $code = $LASTEXITCODE
+    $r = Native { & $Exe --doctor }
+    $code = $r.Code
     Log "---- 動作環境の確認 ----"
-    Log $doc.Trim()
+    Log $r.Out
   } finally { Pop-Location }
   if ($code -ne 0) { Log "必須の項目が不足しています。docs\USER_MANUAL.md の「必要なソフト」を参照してください。"; exit 1 }
   Log "セットアップ完了 $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
