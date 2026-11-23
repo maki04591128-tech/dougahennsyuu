@@ -3,11 +3,11 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "VideoAutomation"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 
 class Settings(BaseSettings):
@@ -15,9 +15,26 @@ class Settings(BaseSettings):
 
     # セキュリティ要件: ローカルAPIは原則localhostにバインド
     host: str = "127.0.0.1"
-    port: int = Field(8765, ge=1, le=65535)
+    port: int = Field(default=8765, ge=1, le=65535)
     data_dir: Path = Path("data")
     log_level: str = "INFO"
+
+    # ---- Phase 2: LLM / モデル検出 ----
+    # 自動検出は既定ポートのみ（無制限なポートスキャンはしない）
+    ollama_url: str = "http://127.0.0.1:11434"
+    lmstudio_url: str = "http://127.0.0.1:1234"
+    autodetect_ollama: bool = True
+    autodetect_lmstudio: bool = True
+    discovery_timeout_s: float = Field(default=8.0, gt=0)
+    # VRAM 8GB 環境のため既定は同時ロード1モデル（切替時に他モデルをアンロード）
+    single_loaded_model: bool = True
+    # クラウドAPIキーは環境変数でも指定可能（DBには平文保存しない）
+    openai_api_key: SecretStr | None = None
+    anthropic_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
+    # 音楽生成（ACE-Step 1.5、別プロセス）
+    acestep_url: str = "http://127.0.0.1:8001"
+    acestep_path: Path | None = None
 
     @property
     def database_path(self) -> Path:

@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import structlog
 _SENSITIVE = ("api_key", "apikey", "token", "secret", "password", "authorization")
 
 
-def _redact(_: Any, __: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+def _redact(_: Any, __: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     for key in list(event_dict):
         if any(s in key.lower() for s in _SENSITIVE):
             event_dict[key] = "***"
