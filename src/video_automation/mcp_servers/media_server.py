@@ -1,6 +1,8 @@
-"""mcp_media サーバー（Phase 3: 音声）。内部の VoiceService を呼ぶアダプター。
+"""mcp_media サーバー。内部サービスを呼ぶアダプター。
 
-Phase 4: generate_subtitles / export_subtitles。素材・音楽生成は Phase 6 で追加する。
+Phase 3: 音声 / Phase 4: generate_subtitles・export_subtitles /
+Phase 6: search_assets・inspect_license・download_asset・generate_music・add_bgm。
+LLM 由来の素材取得・タイムライン変更はユーザー承認待ちになる（ライセンスの明示承認もできない）。
 """
 
 from typing import Any
@@ -8,12 +10,24 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from video_automation.mcp_servers._shared import get_container
+from video_automation.schemas.asset_source import (
+    AddBgmRequest,
+    AssetDownloadRequest,
+    AssetRef,
+    AssetSearchRequest,
+    LicenseInspectRequest,
+    MediaType,
+    MusicGenerateRequest,
+    Orientation,
+    SourceName,
+)
 from video_automation.schemas.subtitle import (
     SubtitleExportRequest,
     SubtitleFormat,
     SubtitleGenerateRequest,
     SubtitleSyncRequest,
 )
+from video_automation.schemas.timeline import CommandOrigin
 from video_automation.schemas.voice import (
     DictionaryWordRequest,
     Prosody,
@@ -132,6 +146,145 @@ mcp.tool(name="generate_subtitles", description="台本から字幕を生成し�
     generate_subtitles
 )
 mcp.tool(name="export_subtitles", description="字幕をASS/SRTで書き出す")(export_subtitles)
+
+
+# ---------------- Phase 6: 素材・音楽生成 ----------------
+
+
+async def search_assets(
+    query: str,
+    media_type: str = "image",
+    sources: list[str] | None = None,
+    orientation: str = "any",
+    max_duration_sec: float | None = None,
+    allowed_only: bool = True,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """フリー素材を検索する（承認不要）。既定ではそのまま使えるライセンスのものだけ返す。"""
+    c = await get_container()
+    resp = await c.asset_sources.search(
+        AssetSearchRequest(
+            query=query,
+            media_type=MediaType(media_type),
+            sources=[SourceName(x) for x in sources] if sources else None,
+            orientation=Orientation(orientation),
+            max_duration_sec=max_duration_sec,
+            allowed_only=allowed_only,
+        )
+    )
+    keep = (
+        "source",
+        "source_id",
+        "media_type",
+        "title",
+        "creator",
+        "width",
+        "height",
+        "duration_sec",
+        "verdict",
+        "attribution",
+    )
+    return {
+        "results": [
+            {**{k: getattr(r, k) for k in keep}, "license": r.license.code}
+            for r in resp.results[: max(1, min(limit, 50))]
+        ],
+        "errors": resp.errors,
+        "skipped": resp.skipped,
+    }
+
+
+async def inspect_license(
+    source: str | None = None,
+    source_id: str | None = None,
+    media_type: str | None = None,
+    asset_id: str | None = None,
+) -> dict[str, Any]:
+    """素材のライセンス条件と利用可否（allowed / needs_ack）を確認する。"""
+    c = await get_container()
+    ref = (
+        AssetRef(source=SourceName(source), source_id=source_id, media_type=MediaType(media_type))
+        if source and source_id and media_type
+        else None
+    )
+    r = await c.asset_sources.inspect(LicenseInspectRequest(ref=ref, asset_id=asset_id))
+    return r.model_dump(mode="json")
+
+
+async def download_asset(
+    project_id: str, source: str, source_id: str, media_type: str
+) -> dict[str, Any]:
+    """素材をプロジェクトに取り込むよう要求する（ユーザーの承認後に取得）。"""
+    c = await get_container()
+    r = await c.asset_sources.download(
+        AssetDownloadRequest(
+            project_id=project_id,
+            source=SourceName(source),
+            source_id=source_id,
+            media_type=MediaType(media_type),
+            origin="llm",
+        )
+    )
+    out = r.model_dump(mode="json")
+    if r.status == "PENDING_APPROVAL":
+        out["note"] = "ユーザーの承認後に取得されます"
+    return out
+
+
+async def generate_music(
+    project_id: str,
+    prompt: str,
+    duration_sec: float = 60.0,
+    instrumental: bool = True,
+    lyrics: str = "",
+    bpm: int | None = None,
+    key_scale: str = "",
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """ACE-Step 1.5 で BGM を生成し素材として登録する。生成には数十秒〜数分かかる（Job）。"""
+    c = await get_container()
+    req = MusicGenerateRequest(
+        project_id=project_id,
+        prompt=prompt,
+        duration_sec=duration_sec,
+        instrumental=instrumental,
+        lyrics=lyrics,
+        bpm=bpm,
+        key_scale=key_scale,
+        seed=seed,
+    )
+
+    async def run(progress: Any) -> dict[str, Any]:
+        out = await c.music.generate(req, progress)
+        return {"assets": [a.model_dump(mode="json") for a in out]}
+
+    job = c.jobs.submit("music_generate", run)
+    return {"job_id": job.id, "status": job.status.value}
+
+
+async def add_bgm(
+    project_id: str, asset_id: str, volume: float = 0.25, loop: bool = True
+) -> dict[str, Any]:
+    """BGM トラックの追加を提案する（承認待ち）。曲が短ければ繰り返して全体を埋める。"""
+    c = await get_container()
+    row = await c.timeline.add_bgm(
+        project_id, AddBgmRequest(asset_id=asset_id, volume=volume, loop=loop), CommandOrigin.LLM
+    )
+    return {
+        "command_id": row.id,
+        "status": row.status.value,
+        "note": "ユーザーの承認後に適用されます",
+    }
+
+
+for _fn, _desc in (
+    (search_assets, "フリー素材（画像・動画・効果音）を検索する"),
+    (inspect_license, "素材のライセンス条件と利用可否を確認する"),
+    (download_asset, "素材の取得を要求する（ユーザー承認後に取得）"),
+    (generate_music, "ACE-Step 1.5 で BGM を生成する（Job）"),
+    (add_bgm, "BGM トラックの追加を提案する（承認待ち）"),
+):
+    mcp.tool(name=_fn.__name__, description=_desc)(_fn)
 
 
 def main() -> None:

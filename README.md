@@ -13,6 +13,9 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
 - **Phase 5（編集・書き出し）** — 素材取り込み、タイムライン（トラック・クリップ）、編集命令（Undo/Redo・LLM承認）、
   FFmpeg 書き出し（NVENC自動判定・縦横/4K・字幕焼き込み・ラウドネス正規化）、フレーム/動画プレビュー、
   Blender タイトルカード、MCP（mcp_render）、編集・書き出しタブUI
+- **Phase 6（素材・音楽生成）** — 素材検索（Pexels / Pixabay / Freesound / Openverse / Wikimedia Commons）、
+  安全なダウンロード、ライセンスの正規化・判定・スナップショット保存、クレジット出力、LLM要求の承認、
+  ACE-Step 1.5 による BGM 生成・配置、素材・BGMタブUI
 
 ## Phase 2 の要点
 
@@ -69,6 +72,35 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   透過付き MOV（PNG コーデック）を素材として登録する。
 - MCP（mcp_render, `uv run video-automation-mcp-render`）: `inspect_timeline`, `add_clip`, `trim_clip`,
   `move_clip`, `apply_edit`, `preview_timeline`, `validate_project`, `render_project`, `get_render_status`
+
+## Phase 6 の要点
+
+- 取得元: Openverse・Wikimedia Commons はキー不要。Pexels・Pixabay・Freesound は各サービスで無料の
+  APIキーを取得し、「素材・BGM」タブの「APIキー設定」から登録する（Windows DPAPI で暗号化して保存。
+  環境変数 `VA_PEXELS_API_KEY` / `VA_PIXABAY_API_KEY` / `VA_FREESOUND_API_KEY` でも可）。
+- 検索結果は24時間キャッシュする（Pixabay の利用条件）。取得元ごとのエラー（キー不正・レート制限）は
+  他の結果を止めずに `errors` で返す。
+- ダウンロードは URL を受け取らず、取得元APIから取り直した URL のみ使う。https のみ・取得元ごとの
+  許可ホスト・名前解決後のプライベートアドレス拒否（リダイレクト先も再検査）・サイズ上限・形式検査を行う。
+- ライセンスは共通形式に正規化し、取得時点の内容を `asset_licenses` に保存する。CC0 / PD / CC BY /
+  CC BY-SA / Pexels / Pixabay は「利用可」。不明・非営利限定（NC）・改変禁止（ND）等は「要確認」で、
+  ユーザーが `acknowledge_license=true` で明示した場合のみ取得できる。タイムラインで使うと検証で注意が出る。
+- LLM（MCP）からのダウンロードは承認待ち（`/assets/requests/{id}/approve`）。LLM はライセンスの明示承認をできない。
+- Freesound は原音の取得に OAuth2 が必要なため、プレビュー音源（MP3 約128kbps）を取得する。
+- Pixabay の通常キーで取得できる画像は最大 1280px（フル解像度は Pixabay の承認が必要）。
+- `GET /projects/{id}/credits` で動画の概要欄に貼れるクレジット（素材・VOICEVOX・ACE-Step）を出力。
+- BGM: ACE-Step 1.5 の `acestep-api`（既定 `127.0.0.1:8001`、別環境・別プロセス）に
+  `/release_task` → `/query_result` → `/v1/audio` で依頼する。生成前にロード中の LLM をアンロード
+  （VRAM 節約、`VA_MUSIC_UNLOAD_LLM`）。プロンプト・条件・モデル・シードを `music_generations` に記録。
+  `POST /projects/{id}/timeline/add_bgm` で BGM トラックを追加（短い曲は繰り返して埋め、端をフェード）。
+- MCP（mcp_media）: `search_assets`, `inspect_license`, `download_asset`, `generate_music`, `add_bgm`
+- ACE-Step を VRAM 8GB の Windows で起動する場合（実機 RTX 5050 で確認）:
+  ```powershell
+  $env:ACESTEP_INIT_LLM = "false"   # 補助LM(5Hz LM)を載せない。載せると VAE デコードで VRAM が尽きて停止した
+  $env:PYTHONUTF8 = "1"             # ログ出力を cp932 で書けず生成が失敗するのを防ぐ
+  uv run acestep-api --host 127.0.0.1 --port 8001
+  ```
+  この構成で 20秒の BGM を約100秒で生成（初回はモデル読み込みを含む）。本システムは `thinking` を使わない。
 
 ## セットアップ
 

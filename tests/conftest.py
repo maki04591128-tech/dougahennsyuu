@@ -87,3 +87,23 @@ async def mclient(media_settings, fake):
         async with httpx.AsyncClient(transport=transport, base_url="http://test/api/v1") as c:
             c.app = app  # type: ignore[attr-defined]
             yield c
+
+
+@pytest_asyncio.fixture
+async def aclient(media_settings, fake):
+    """素材取得用: 名前解決は偽の resolver（外部DNSに依存しない）。"""
+    from fake_assets import fake_resolver, media
+
+    media()
+    app = create_app(
+        media_settings,
+        http_transport=fake.transport,
+        protector=FakeProtector(),
+        dns_resolver=fake_resolver,
+    )
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test/api/v1") as c:
+            c.app = app  # type: ignore[attr-defined]
+            c.fake = fake  # type: ignore[attr-defined]
+            yield c

@@ -152,7 +152,11 @@ class FFmpeg:
         is_image = bool(
             v
             and v.get("codec_name") in image_codecs
-            and (fmt.get("format_name", "").endswith("_pipe") or dur in (None, "N/A"))
+            and (
+                fmt.get("format_name", "").endswith("_pipe")
+                or fmt.get("format_name") == "image2"  # 拡張子付きの静止画（jpg 等）
+                or dur in (None, "N/A")
+            )
         )
         return MediaInfo(
             path=str(path),

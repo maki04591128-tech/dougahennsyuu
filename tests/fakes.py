@@ -58,6 +58,10 @@ class FakeServers:
         self.lm_loaded: dict[str, str] = {"qwen/qwen3-8b": "inst-1"}
         self.requests: list[tuple[str, str, Any]] = []
         self.nemo = FakeNemo()
+        from fake_assets import FakeAceStep, FakeAssetWeb
+
+        self.web = FakeAssetWeb()
+        self.acestep = FakeAceStep()
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -67,6 +71,10 @@ class FakeServers:
         host = f"{request.url.host}:{request.url.port}"
         if host == NEMO:
             return self.nemo.handle(request)
+        if self.web.handles(request.url.host):
+            return self.web.handle(request)
+        if host == "127.0.0.1:8001":
+            return self.acestep.handle(request)
         body = json.loads(request.content) if request.content else None
         self.requests.append((host, request.url.path, body))
         if host == OLLAMA and self.ollama_up:
