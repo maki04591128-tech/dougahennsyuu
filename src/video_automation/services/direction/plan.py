@@ -61,12 +61,23 @@ SYSTEM = (
     "2〜4 発話に 1 つは card / chart / image を置く。"
     "同じ発話から始まる card / chart / image は 1 つだけ。"
     "title は動画のタイトル(20文字以内)、subtitle は興味を引く一言(24文字以内)。"
+    "card には必ず body を 1〜3 項目書く（見出しだけのカードは作らない）。"
+    "台本で 2 つ以上の数値を比べている所には chart を置く。\n"
+    "出力例（別の題材）:\n"
+    '{"title":"電池はなぜ劣化する？","subtitle":"毎日の充電で差がつく","shots":['
+    '{"kind":"card","from_line":2,"to_line":3,"heading":"劣化の原因",'
+    '"body":["高温","満充電のまま放置","深い放電"],"style":"point"},'
+    '{"kind":"chart","from_line":4,"to_line":5,"heading":"1年後の容量",'
+    '"labels":["25℃","40℃"],"values":[90,75],"unit":"%","highlight":1},'
+    '{"kind":"keyword","from_line":4,"text":"40℃で75%"},'
+    '{"kind":"card","from_line":8,"heading":"まとめ","body":["熱を避ける","80%で止める"],'
+    '"style":"summary"}]}'
 )
 
 
 def _norm(text: str) -> str:
     t = unicodedata.normalize("NFKC", text)
-    return re.sub(r"[\s,、。・]", "", t).lower()
+    return re.sub(r"[\s,、。・?!「」『』()（）]", "", t).lower()
 
 
 def _num_str(v: float) -> str:
