@@ -191,7 +191,8 @@ class ReadingService:
                 # 文に無い表記・カタカナでない読み・すでに同じ読みのものは採用しない
                 if not surface or surface not in seg.text or not is_katakana(reading):
                     continue
-                if surface == reading or len(surface) > 30:
+                # 語単位の指摘だけを採る（文や句をまるごと置き換える提案は不採用）
+                if surface == reading or len(surface) > 12 or re.search(r"[、。，．\s]", surface):
                     continue
                 if any(x.surface == surface for x in issues):
                     continue
