@@ -159,3 +159,102 @@ def test_main_window_has_timeline_tab():
     labels = [w.tabs.tabText(i) for i in range(w.tabs.count())]
     assert "編集・書き出し" in labels
     app.processEvents()
+
+
+class AnimApi(FakeApi):
+    def __init__(self):
+        super().__init__()
+        self.clips = [
+            {
+                "id": "k1",
+                "track_id": "t1",
+                "asset_id": "a1",
+                "start_frame": 0,
+                "end_frame": 90,
+                "volume": 1.0,
+                "animation": {
+                    "preset": "pop_in",
+                    "keyframes": [{}],
+                    "transition_in": {"type": "dissolve"},
+                },
+            }
+        ]
+        self.title_polls = 0
+
+    def motion_presets(self, kind=None):
+        return [
+            {"name": "ken_burns_in", "kind": "camera", "label": "ゆっくりズームイン"},
+            {"name": "pop_in", "kind": "element", "label": "ポップイン"},
+            {
+                "name": "wipe_left",
+                "kind": "transition",
+                "label": "ワイプ",
+                "transition": {"type": "wipe_left", "duration_frames": 12},
+            },
+            {"name": "text_typewriter", "kind": "text", "label": "タイプライター"},
+        ]
+
+    def set_clip_animation(self, pid, cid, **kw):
+        self.calls.append(("anim", cid, kw))
+        return {}
+
+    def title_card(self, pid, text, **kw):
+        self.calls.append(("title", text, kw))
+        return {"id": "jt"}
+
+    def get_job(self, jid):
+        if jid == "jt":
+            self.title_polls += 1
+            if self.title_polls < 2:
+                return {"status": "RUNNING"}
+            return {"status": "SUCCEEDED", "result": {"id": "a-title"}}
+        return super().get_job(jid)
+
+    def place_on_track(self, pid, aid, frame, name):
+        self.calls.append(("place", aid, frame, name))
+        return {}
+
+
+def test_timeline_widget_animation_controls():
+    from PySide6.QtWidgets import QApplication
+
+    from video_automation.ui.timeline.widget import TimelineWidget
+
+    app = QApplication.instance() or QApplication([])
+    api = AnimApi()
+    w = TimelineWidget(api)
+    w.refresh()
+    assert w.preset_combo.count() == 2 and w.transition_combo.count() == 1
+    assert w.title_anim_combo.currentData() == "typewriter"
+    assert w.clip_table.item(0, 5).text() == "pop_in / 入り:dissolve"
+    w.apply_preset()  # 未選択
+    assert "選択" in w.status_label.text() and not any(c[0] == "anim" for c in api.calls)
+    w.clip_table.selectRow(0)
+    w.preset_combo.setCurrentIndex(0)
+    w.intensity_spin.setValue(1.5)
+    w.apply_preset()
+    assert api.calls[-1] == ("anim", "k1", {"preset": "ken_burns_in", "intensity": 1.5})
+    w.transition_frames.setValue(20)
+    w.apply_transition()
+    assert api.calls[-1] == (
+        "anim",
+        "k1",
+        {"transition": {"type": "wipe_left", "duration_frames": 20}},
+    )
+    w.clear_animation()
+    assert api.calls[-1] == ("anim", "k1", {"clear": True})
+
+    w.title_edit.setText("第1章")
+    w.title_pos_combo.setCurrentIndex(1)
+    w.frame_spin.setValue(30)
+    w.add_title()
+    assert api.calls[-1] == (
+        "title",
+        "第1章",
+        {"animation": "typewriter", "position": "lower_third", "box": True, "duration_sec": 3.0},
+    )
+    assert not w.title_button.isEnabled()
+    w._poll_render()
+    w._poll_render()
+    assert ("place", "a-title", 30, "テロップ") in api.calls and w.title_button.isEnabled()
+    app.processEvents()

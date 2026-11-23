@@ -12,10 +12,13 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -54,8 +57,12 @@ class TimelineWidget(QWidget):
         self.redo_button = QPushButton("やり直す")
         self.redo_button.clicked.connect(lambda: self._history("redo"))
 
-        self.clip_table = QTableWidget(0, 5)
-        self.clip_table.setHorizontalHeaderLabels(["トラック", "開始", "終了", "素材", "音量"])
+        self.clip_table = QTableWidget(0, 6)
+        self.clip_table.setHorizontalHeaderLabels(
+            ["トラック", "開始", "終了", "素材", "音量", "演出"]
+        )
+        self.clip_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.clip_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.clip_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.clip_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
@@ -76,6 +83,37 @@ class TimelineWidget(QWidget):
         self.approve_button.clicked.connect(lambda: self.decide(True))
         self.reject_button = QPushButton("却下")
         self.reject_button.clicked.connect(lambda: self.decide(False))
+
+        # ---- 演出（Phase 7）----
+        self.preset_combo = QComboBox()
+        self.intensity_spin = QDoubleSpinBox()
+        self.intensity_spin.setRange(0.1, 3.0)
+        self.intensity_spin.setSingleStep(0.1)
+        self.intensity_spin.setValue(1.0)
+        self.preset_button = QPushButton("演出を適用")
+        self.preset_button.clicked.connect(self.apply_preset)
+        self.transition_combo = QComboBox()
+        self.transition_frames = QSpinBox()
+        self.transition_frames.setRange(1, 600)
+        self.transition_frames.setValue(15)
+        self.transition_frames.setSuffix(" フレーム")
+        self.transition_button = QPushButton("入りの切替を設定")
+        self.transition_button.clicked.connect(self.apply_transition)
+        self.clear_anim_button = QPushButton("演出を外す")
+        self.clear_anim_button.clicked.connect(self.clear_animation)
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("テロップの文字")
+        self.title_anim_combo = QComboBox()
+        self.title_pos_combo = QComboBox()
+        for label, value in (("中央", "center"), ("下部（帯）", "lower_third"), ("上部", "top")):
+            self.title_pos_combo.addItem(label, value)
+        self.title_duration = QDoubleSpinBox()
+        self.title_duration.setRange(0.5, 30.0)
+        self.title_duration.setValue(3.0)
+        self.title_duration.setSuffix(" 秒")
+        self.title_button = QPushButton("テロップを追加（表示中のフレームに）")
+        self.title_button.clicked.connect(self.add_title)
+        self._title_job: tuple[str, int] | None = None
 
         self.render_button = QPushButton("書き出し")
         self.render_button.clicked.connect(self.start_render)
@@ -105,6 +143,31 @@ class TimelineWidget(QWidget):
         left.addLayout(top)
         left.addWidget(self.duration_label)
         left.addWidget(self.clip_table)
+        anim_box = QGroupBox("演出（選択中のクリップ）")
+        af = QFormLayout(anim_box)
+        ph = QHBoxLayout()
+        ph.addWidget(self.preset_combo, 1)
+        ph.addWidget(QLabel("強さ"))
+        ph.addWidget(self.intensity_spin)
+        ph.addWidget(self.preset_button)
+        af.addRow("動き", ph)
+        th = QHBoxLayout()
+        th.addWidget(self.transition_combo, 1)
+        th.addWidget(self.transition_frames)
+        th.addWidget(self.transition_button)
+        af.addRow("切替", th)
+        af.addRow(self.clear_anim_button)
+        title_box = QGroupBox("テロップ（Blender）")
+        tf = QFormLayout(title_box)
+        tf.addRow(self.title_edit)
+        th2 = QHBoxLayout()
+        th2.addWidget(self.title_anim_combo)
+        th2.addWidget(self.title_pos_combo)
+        th2.addWidget(self.title_duration)
+        tf.addRow(th2)
+        tf.addRow(self.title_button)
+        left.addWidget(anim_box)
+        left.addWidget(title_box)
         left.addWidget(QLabel("承認待ち（LLMからの編集・書き出し）"))
         left.addWidget(self.pending_list)
         left.addLayout(pending_btns)
@@ -155,7 +218,29 @@ class TimelineWidget(QWidget):
         self.profile_combo.clear()
         for pr in profiles:
             self.profile_combo.addItem(f"{pr['label']} ({pr['width']}x{pr['height']})", pr["name"])
+        self.load_presets()
         self.load_project()
+
+    def load_presets(self) -> None:
+        if not hasattr(self.api, "motion_presets"):
+            return
+        try:
+            presets = self.api.motion_presets()
+        except Exception as exc:
+            self._error("プリセット取得", exc)
+            return
+        self.preset_combo.clear()
+        self.transition_combo.clear()
+        self.title_anim_combo.clear()
+        kinds = {"camera": "カメラ", "element": "動き"}
+        for p in presets:
+            if p["kind"] in kinds:
+                self.preset_combo.addItem(f"{kinds[p['kind']]}: {p['label']}", p["name"])
+            elif p["kind"] == "transition":
+                frames = (p.get("transition") or {}).get("duration_frames", 15)
+                self.transition_combo.addItem(p["label"], (p["name"], frames))
+            elif p["kind"] == "text":
+                self.title_anim_combo.addItem(p["label"], p["name"].removeprefix("text_"))
 
     def load_project(self) -> None:
         pid = self._pid()
@@ -194,12 +279,105 @@ class TimelineWidget(QWidget):
                 fmt_frame(c["end_frame"], fps),
                 assets.get(c["asset_id"], c["asset_id"]),
                 f"{c['volume']:.2f}",
+                self._anim_label(c.get("animation")),
             ]
             for col, v in enumerate(vals):
                 t.setItem(r, col, QTableWidgetItem(str(v)))
         dur = tl["duration_frames"]
         self.duration_label.setText(f"長さ {fmt_frame(dur, fps)}（{dur} フレーム）")
         self.frame_spin.setRange(0, max(dur - 1, 0))
+
+    @staticmethod
+    def _anim_label(anim: dict | None) -> str:
+        if not anim:
+            return ""
+        parts = []
+        if anim.get("preset"):
+            parts.append(anim["preset"])
+        elif anim.get("keyframes"):
+            parts.append(f"キー{len(anim['keyframes'])}")
+        if anim.get("transition_in"):
+            parts.append(f"入り:{anim['transition_in']['type']}")
+        return " / ".join(parts)
+
+    def _selected_clip(self) -> str | None:
+        rows = self.clip_table.selectionModel().selectedRows()
+        if not rows or self._tl is None:
+            self.status_label.setText("クリップを選択してください")
+            return None
+        return self._tl["clips"][rows[0].row()]["id"]
+
+    def _set_animation(self, action: str, **kw: Any) -> None:
+        pid, cid = self._pid(), self._selected_clip()
+        if not pid or not cid:
+            return
+        try:
+            self.api.set_clip_animation(pid, cid, **kw)
+        except Exception as exc:
+            self._error(action, exc)
+            return
+        self.status_label.setText(f"{action}しました（プレビューで確認できます）")
+        self.load_project()
+
+    def apply_preset(self) -> None:
+        name = self.preset_combo.currentData()
+        if name:
+            self._set_animation("演出を適用", preset=name, intensity=self.intensity_spin.value())
+
+    def apply_transition(self) -> None:
+        data = self.transition_combo.currentData()
+        if data:
+            tran = {"type": data[0], "duration_frames": self.transition_frames.value()}
+            self._set_animation("切替を設定", transition=tran)
+
+    def clear_animation(self) -> None:
+        self._set_animation("演出を外", clear=True)
+
+    def add_title(self) -> None:
+        pid, text = self._pid(), self.title_edit.text().strip()
+        if not pid or not text:
+            self.status_label.setText("テロップの文字を入力してください")
+            return
+        pos = self.title_pos_combo.currentData()
+        try:
+            job = self.api.title_card(
+                pid,
+                text,
+                animation=self.title_anim_combo.currentData() or "pop",
+                position=pos,
+                box=pos == "lower_third",
+                duration_sec=self.title_duration.value(),
+            )
+        except Exception as exc:
+            self._error("テロップ作成", exc)
+            return
+        self._title_job = (job["id"], self.frame_spin.value())
+        self.title_button.setEnabled(False)
+        self.status_label.setText("テロップを作成中…（Blender）")
+        self._poll.start()
+
+    def _poll_title(self) -> bool:
+        """テロップ作成の Job を確認する。完了したら配置して True。"""
+        if self._title_job is None:
+            return True
+        job_id, frame = self._title_job
+        job = self.api.get_job(job_id)
+        if job["status"] in ("PENDING", "RUNNING"):
+            return False
+        self._title_job = None
+        self.title_button.setEnabled(True)
+        pid = self._pid()
+        if job["status"] != "SUCCEEDED" or not pid:
+            self.status_label.setText(f"テロップ作成に失敗しました（{job.get('error')}）")
+            return True
+        try:
+            self.api.place_on_track(pid, job["result"]["id"], frame, "テロップ")
+        except Exception as exc:
+            self._error("テロップの配置", exc)
+            return True
+        self.status_label.setText("テロップを配置しました")
+        self.load_project()
+        return True
 
     def _show_pending(self, commands: list[dict], renders: list[dict]) -> None:
         self.pending_list.clear()
@@ -306,8 +484,14 @@ class TimelineWidget(QWidget):
         self._poll.start()
 
     def _poll_render(self) -> None:
+        try:
+            title_done = self._poll_title()
+        except Exception as exc:
+            self._error("テロップ作成の状態取得", exc)
+            title_done = False
         if not self._render_id:
-            self._poll.stop()
+            if title_done:
+                self._poll.stop()
             return
         try:
             r = self.api.get_render(self._render_id)
@@ -320,7 +504,8 @@ class TimelineWidget(QWidget):
         except Exception as exc:
             self._error("状態取得", exc)
             return
-        self._poll.stop()
+        if title_done:
+            self._poll.stop()
         self._render_id = None
         self.render_button.setEnabled(True)
         if r["status"] == "SUCCEEDED":

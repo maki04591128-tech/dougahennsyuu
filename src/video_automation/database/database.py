@@ -2,8 +2,9 @@
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -12,6 +13,17 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from video_automation.database.models import Base
+
+
+def _add_missing_columns(conn: Any) -> None:
+    insp = inspect(conn)
+    for table in Base.metadata.sorted_tables:
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing or not col.nullable:
+                continue
+            ctype = col.type.compile(dialect=conn.dialect)
+            conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ctype}'))
 
 
 class Database:
@@ -33,9 +45,13 @@ class Database:
         return cls(f"sqlite+aiosqlite:///{path.as_posix()}")
 
     async def create_all(self) -> None:
-        """開発・テスト用の簡易作成。本番はAlembic migrationを使う。"""
+        """開発・テスト用の簡易作成。本番はAlembic migrationを使う。
+
+        既存のDBに後のPhaseで増えた列が無い場合は、NULL可の列に限り追加する
+        （create_all は既存テーブルの列を増やさないため）。"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(_add_missing_columns)
 
     async def session(self) -> AsyncIterator[AsyncSession]:
         async with self.session_factory() as s:

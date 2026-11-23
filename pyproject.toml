@@ -1,6 +1,6 @@
 [project]
 name = "video-automation"
-version = "0.6.0"
+version = "0.7.0"
 description = "MCP対応 対話型動画編集自動化システム"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -35,6 +35,7 @@ video-automation = "video_automation.app.main:main"
 video-automation-mcp = "video_automation.mcp_servers.core_server:main"
 video-automation-mcp-media = "video_automation.mcp_servers.media_server:main"
 video-automation-mcp-render = "video_automation.mcp_servers.render_server:main"
+video-automation-mcp-visual = "video_automation.mcp_servers.visual_server:main"
 
 [build-system]
 requires = ["hatchling"]

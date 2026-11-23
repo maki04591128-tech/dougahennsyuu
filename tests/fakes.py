@@ -440,3 +440,57 @@ class FakeNemo:
                 self.user_dict[wid] = dict(q)
             return httpx.Response(204)
         return httpx.Response(404, json={"detail": "Not Found"})
+
+
+def fake_blender(tmp_path) -> str:
+    """偽の blender 実行ファイル。同梱スクリプト（title_card / infographic）の呼び出しを
+    calls.jsonl に記録し、中央に白い四角のある透過 PNG 連番と結果JSONを書く。"""
+    import shutil
+    import stat
+    import sys
+    import textwrap
+
+    ff = shutil.which("ffmpeg")
+    log = tmp_path / "calls.jsonl"
+    script = tmp_path / "fake_blender.py"
+    script.write_text(
+        textwrap.dedent(f"""\
+        import json, subprocess, sys
+        from pathlib import Path
+        if "--version" in sys.argv:
+            print("Blender 5.3.0"); sys.exit(0)
+        a = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
+        name = Path(sys.argv[sys.argv.index("--python") + 1]).stem
+        assert name in ("title_card", "infographic"), name
+        with open({str(log)!r}, "a", encoding="utf-8") as f:
+            f.write(json.dumps({{"script": name, **a}}, ensure_ascii=False) + "\\n")
+        out = Path(a["output_dir"])
+        w, h = a["width"], a["height"]
+        bw, bh = w // 2, h // 5
+        bx, by = (w - bw) // 2, (h - bh) // 2
+        subprocess.run([{ff!r}, "-v", "error", "-y", "-f", "lavfi", "-i",
+            f"color=c=black@0.0:s={{w}}x{{h}}:r={{a['fps']}},format=rgba,"
+            f"drawbox=x={{bx}}:y={{by}}:w={{bw}}:h={{bh}}:color=white:t=fill:replace=1",
+            "-frames:v", str(a["frames"]), "-pix_fmt", "rgba", str(out / "frame_%04d.png")],
+            check=True)
+        Path(a["result_path"]).write_text(json.dumps({{"frames": a["frames"], "engine": "FAKE",
+            "font_loaded": bool(a.get("font_path")), "text_box": [bx, by, bw, bh]}}))
+    """),
+        encoding="utf-8",
+    )
+    if sys.platform == "win32":
+        # Windows はシバンで起動できないため、Python を呼ぶ .cmd を実行ファイルにする
+        cmd = tmp_path / "blender.cmd"
+        cmd.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        return str(cmd)
+    exe = tmp_path / "blender"
+    exe.write_text(f"#!{sys.executable}\n" + script.read_text(encoding="utf-8"), encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    return str(exe)
+
+
+def blender_calls(tmp_path) -> list[dict]:
+    p = tmp_path / "calls.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x]

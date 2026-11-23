@@ -7,7 +7,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_NAME = "VideoAutomation"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 
 
 class Settings(BaseSettings):

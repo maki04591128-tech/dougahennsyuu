@@ -22,6 +22,7 @@ from video_automation.core.jobs.job_manager import JobManager
 from video_automation.database.database import Database
 from video_automation.database.models import Asset, Clip, Project, RenderJob, Script, Track
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
+from video_automation.schemas.animation import ClipAnimation, TransitionType
 from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat, SubtitleStyle
 from video_automation.schemas.timeline import (
     RENDER_PROFILES,
@@ -36,12 +37,19 @@ from video_automation.schemas.timeline import (
     RenderStatus,
     TrackKind,
 )
+from video_automation.services.animation.render_anim import (
+    EXTENDS_PREVIOUS,
+    ClipAnimFilters,
+    clip_filters,
+    defaults_only,
+)
 from video_automation.services.subtitle.formats import build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import (
     CommandError,
     TimelineNotFoundError,
     TimelineService,
+    asset_frames,
 )
 
 log = get_logger("render")
@@ -224,9 +232,28 @@ class RenderService:
             and c.volume > 0
             and single_frame is None  # 1フレームのプレビューでは音声を扱わない
         ]
+        # ---- アニメーション（Phase 7） ----
+        anims = {c.id: ClipAnimation.model_validate(c.animation) for c in visual if c.animation}
+        # 入りのトランジションの間は前のクリップを延長して下に敷く
+        # （素材の続きが無い分は最終フレームで止める）
+        ext: dict[str, int] = {}
+        dip_out: dict[str, int] = {}
+        by_track_end = {(c.track_id, c.end_frame): c for c in visual}
+        for c in visual:
+            tran = anims[c.id].transition_in if c.id in anims else None
+            prev = by_track_end.get((c.track_id, c.start_frame))
+            if tran is None or prev is None:
+                continue
+            d = min(tran.duration_frames, c.end_frame - c.start_frame)
+            if tran.type == TransitionType.DIP_TO_BLACK:
+                dip_out[prev.id] = max(1, d // 2)
+            elif tran.type in EXTENDS_PREVIOUS:
+                ext[prev.id] = max(ext.get(prev.id, 0), d)
+
         used: dict[str, int] = {}
+        span: dict[str, tuple[int, int, float, float]] = {}  # s0, s1, 実素材の秒, 静止で埋める秒
         for c in sorted(set(visual) | set(audible), key=lambda c: c.start_frame):
-            s0, s1 = max(c.start_frame, r0), min(c.end_frame, r1)
+            s0, s1 = max(c.start_frame, r0), min(c.end_frame + ext.get(c.id, 0), r1)
             if s1 <= s0:
                 continue
             a = assets[c.asset_id]
@@ -234,36 +261,67 @@ class RenderService:
             dur = sec(s1 - s0)
             src_in = sec(c.source_in_frame + (s0 - c.start_frame))
             if a.kind == AssetKind.IMAGE.value:
+                media, pad = dur, 0.0
                 inputs += ["-loop", "1", "-framerate", fps_s, "-t", ff_seconds(dur), "-i", src_path]
             else:
-                inputs += ["-ss", ff_seconds(src_in), "-t", ff_seconds(dur), "-i", src_path]
+                total_src = asset_frames(a, float(fps))
+                handle = (total_src - c.source_out_frame) if total_src is not None else 0
+                media_end = min(s1, c.end_frame + max(0, handle))
+                media = sec(max(media_end - s0, 1))
+                pad = max(0.0, dur - media)
+                inputs += ["-ss", ff_seconds(src_in), "-t", ff_seconds(media), "-i", src_path]
             used[c.id] = n
+            span[c.id] = (s0, s1, media, pad)
             n += 1
 
         for c in visual:
             if c.id not in used:
                 continue
             i = used[c.id]
-            s0 = max(c.start_frame, r0)
+            s0, s1, _, pad = span[c.id]
+            a = assets[c.asset_id]
             off = sec(s0 - r0)
-            dur = sec(min(c.end_frame, r1) - s0)
+            dur = sec(s1 - s0)
+            own_end = sec(c.end_frame - s0)  # 延長前のクリップの終わり（このクリップの時刻）
             t = ClipTransform.model_validate(c.transform or {})
+            anim = anims.get(c.id)
+            af = (
+                clip_filters(
+                    anim,
+                    fps=fps,
+                    k=sec(s0 - c.start_frame),
+                    off=off,
+                    clip_sec=sec(c.end_frame - c.start_frame),
+                    src_size=(a.width, a.height),
+                    canvas=(width, height),
+                    is_image=a.kind == AssetKind.IMAGE.value,
+                )
+                if anim and not defaults_only(anim)
+                else ClipAnimFilters()
+            )
             fades = []
             if c.fade_in_frames and s0 == c.start_frame:
                 fades.append(f"fade=t=in:st=0:d={ff_seconds(sec(c.fade_in_frames))}:alpha=1")
-            if c.fade_out_frames and min(c.end_frame, r1) == c.end_frame:
-                st = max(0.0, dur - sec(c.fade_out_frames))
+            out_frames = c.fade_out_frames or dip_out.get(c.id, 0)
+            if out_frames and c.end_frame <= r1:
+                st = max(0.0, own_end - sec(out_frames))
                 fades.append(
-                    f"fade=t=out:st={ff_seconds(st)}:d={ff_seconds(sec(c.fade_out_frames))}:alpha=1"
+                    f"fade=t=out:st={ff_seconds(st)}:d={ff_seconds(sec(out_frames))}:alpha=1"
                 )
             if t.opacity < 1:
                 fades.append(f"colorchannelmixer=aa={t.opacity}")
-            filters.append(f"[{i}:v]fps={fps_s},setpts=PTS-STARTPTS[raw{i}]")
+            raw = [f"fps={fps_s}", "setpts=PTS-STARTPTS"]
+            if pad > 0:
+                raw.append(f"tpad=stop_mode=clone:stop_duration={ff_seconds(pad)}")
+            raw += af.pre
+            filters.append(f"[{i}:v]{','.join(raw)}[raw{i}]")
             filters.append(_layout(t, width, height, f"raw{i}", f"lay{i}", i))
-            chain = ",".join([*fades, f"setpts=PTS+{ff_seconds(off)}/TB"])
+            chain = ",".join([*af.post, *fades, *af.resize, f"setpts=PTS+{ff_seconds(off)}/TB"])
             filters.append(f"[lay{i}]{chain}[v{i}]")
-            x = f"(W-w)/2+{t.x}*W"
-            y = f"(H-h)/2+{t.y}*H"
+            dx = f"+({af.dx})" if af.dx else ""
+            dy = f"+({af.dy})" if af.dy else ""
+            x = f"'(W-w)/2+({t.x}{dx})*W'"
+            y = f"'(H-h)/2+({t.y}{dy})*H'"
             filters.append(
                 f"[{base}][v{i}]overlay=x={x}:y={y}:eof_action=pass:"
                 f"enable='between(t,{ff_seconds(off)},{ff_seconds(off + dur)})'[b{i}]"
@@ -274,19 +332,28 @@ class RenderService:
             if c.id not in used:
                 continue
             i = used[c.id]
-            s0 = max(c.start_frame, r0)
-            dur = sec(min(c.end_frame, r1) - s0)
+            s0, s1, media, _ = span[c.id]
+            own = sec(min(c.end_frame, s1) - s0)
+            dur = min(media, sec(s1 - s0))  # 延長分は素材の続きがある範囲だけ音を鳴らす
             ms = round(sec(s0 - r0) * 1000)
             parts = [
                 "asetpts=PTS-STARTPTS",
+                f"atrim=0:{ff_seconds(dur)}",
                 "aresample=48000",
                 "aformat=sample_fmts=fltp:channel_layouts=stereo",
                 f"volume={c.volume}",
             ]
-            if c.fade_in_frames and s0 == c.start_frame:
-                parts.append(f"afade=t=in:st=0:d={ff_seconds(sec(c.fade_in_frames))}")
-            if c.fade_out_frames and min(c.end_frame, r1) == c.end_frame:
-                st = max(0.0, dur - sec(c.fade_out_frames))
+            anim = anims.get(c.id)
+            tran = anim.transition_in if anim else None
+            fade_in = sec(c.fade_in_frames) if c.fade_in_frames else 0.0
+            if not fade_in and tran is not None:
+                fade_in = sec(min(tran.duration_frames, c.end_frame - c.start_frame))
+            if fade_in and s0 == c.start_frame:
+                parts.append(f"afade=t=in:st=0:d={ff_seconds(fade_in)}")
+            if dur > own + 1e-6:  # トランジションで延長した分は音をフェードアウト
+                parts.append(f"afade=t=out:st={ff_seconds(own)}:d={ff_seconds(dur - own)}")
+            elif c.fade_out_frames and c.end_frame <= r1:
+                st = max(0.0, own - sec(c.fade_out_frames))
                 parts.append(
                     f"afade=t=out:st={ff_seconds(st)}:d={ff_seconds(sec(c.fade_out_frames))}"
                 )

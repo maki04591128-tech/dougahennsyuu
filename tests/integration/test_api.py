@@ -8,7 +8,7 @@ async def test_health(client):
         "status": "ok",
         "application": "VideoAutomation",
         "database": "connected",
-        "version": "0.6.0",
+        "version": "0.7.0",
     }
 
 

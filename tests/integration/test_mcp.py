@@ -187,3 +187,85 @@ async def test_mcp_media_asset_and_music_tools(media_settings, fake):
     finally:
         _shared.set_container(None)
         await c.aclose()
+
+
+async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
+    from fakes import FakeProtector, fake_blender
+    from video_automation.app.bootstrap import build_container
+    from video_automation.database.models import Project
+    from video_automation.mcp_servers import _shared, visual_server
+    from video_automation.schemas.timeline import (
+        AddClip,
+        AddTrack,
+        AssetImportRequest,
+        Batch,
+        CommandRequest,
+    )
+
+    names = {t.name for t in await visual_server.mcp.list_tools()}
+    assert {
+        "create_scene",
+        "animate_image",
+        "animate_text",
+        "create_transition",
+        "create_infographic",
+        "set_camera_motion",
+        "list_motion_presets",
+    } <= names
+    s = media_settings.model_copy(update={"blender_path": fake_blender(tmp_path)})
+    c = await build_container(
+        s, http_transport=fake.transport, protector=FakeProtector(), configure_logs=False
+    )
+    _shared.set_container(c)
+    try:
+        async with c.db.session_factory() as ses:
+            p = Project(name="v", width=320, height=180)
+            ses.add(p)
+            await ses.commit()
+            pid = p.id
+        a = await c.timeline.import_asset(
+            AssetImportRequest(project_id=pid, path=str(media_dir / "tall.png"))
+        )
+        await c.timeline.submit(
+            pid,
+            CommandRequest(
+                command=Batch(
+                    commands=[
+                        AddTrack(kind="video", track_id="v"),
+                        AddClip(
+                            track_id="v",
+                            asset_id=a.id,
+                            start_frame=0,
+                            duration_frames=60,
+                            clip_id="k",
+                        ),
+                    ]
+                )
+            ),
+        )
+        cams = await visual_server.list_motion_presets("camera")
+        assert "ken_burns_in" in {p["name"] for p in cams}
+        for r in (
+            await visual_server.set_camera_motion(pid, "k", "ken_burns_in"),
+            await visual_server.animate_image(pid, "k", "pop_in"),
+            await visual_server.create_transition(pid, "k", "dissolve", 10),
+        ):
+            assert r["status"] == "PENDING_APPROVAL"
+        assert (await c.timeline.get_timeline(pid)).clips[0].animation is None  # 承認前
+        j = await visual_server.animate_text(pid, "見出し", 0, 2, "typewriter")
+        job = await c.jobs.wait(j["job_id"])
+        assert job.status == "SUCCEEDED", job.error
+        assert job.result["status"] == "PENDING_APPROVAL"
+        await c.timeline.decide(pid, job.result["command_id"], True)
+        tl = await c.timeline.get_timeline(pid)
+        assert any(t.name == "テロップ" for t in tl.tracks) and len(tl.clips) == 2
+        j = await visual_server.create_infographic(pid, [1, 2], ["a", "b"], title="x")
+        assert (await c.jobs.wait(j["job_id"])).status == "SUCCEEDED"
+        j = await visual_server.create_scene(pid, 90, 1.0, title="章", transition="dissolve")
+        job = await c.jobs.wait(j["job_id"])
+        assert job.status == "SUCCEEDED", job.error
+        assert job.result["command"]["status"] == "PENDING_APPROVAL"
+        assert (await visual_server.get_job(j["job_id"]))["status"] == "SUCCEEDED"
+    finally:
+        _shared.set_container(None)
+        await c.aclose()

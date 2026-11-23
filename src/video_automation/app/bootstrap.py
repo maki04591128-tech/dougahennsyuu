@@ -12,6 +12,8 @@ from video_automation.core.jobs.job_manager import JobManager
 from video_automation.database.database import Database
 from video_automation.integrations.blender.runner import Blender
 from video_automation.integrations.ffmpeg.runner import FFmpeg
+from video_automation.services.animation.preset_service import PresetService
+from video_automation.services.animation.scene_service import SceneService
 from video_automation.services.assets.asset_source_service import AssetSourceService
 from video_automation.services.assets.downloader import Resolver
 from video_automation.services.llm_tasks.task_router import TaskRouter
@@ -43,6 +45,8 @@ class AppContainer:
     titles: TitleCardService
     asset_sources: AssetSourceService
     music: MusicService
+    presets: PresetService
+    scenes: SceneService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -73,6 +77,7 @@ async def build_container(
     ffmpeg = FFmpeg(settings.ffmpeg_path)
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
+    titles = TitleCardService(settings, db, blender, ffmpeg, timeline)
     return AppContainer(
         settings=settings,
         db=db,
@@ -87,7 +92,7 @@ async def build_container(
         blender=blender,
         timeline=timeline,
         render=RenderService(settings, db, ffmpeg, timeline, subtitles, jobs),
-        titles=TitleCardService(settings, db, blender, ffmpeg, timeline),
+        titles=titles,
         asset_sources=AssetSourceService(
             settings,
             db,
@@ -98,4 +103,6 @@ async def build_container(
             resolver=dns_resolver,
         ),
         music=MusicService(settings, db, timeline, providers, transport=http_transport),
+        presets=PresetService(db),
+        scenes=SceneService(settings, db, ffmpeg, timeline, titles),
     )

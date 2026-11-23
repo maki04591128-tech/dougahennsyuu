@@ -14,7 +14,8 @@ from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import Project
 from video_automation.integrations.blender.runner import Blender
-from video_automation.integrations.ffmpeg.runner import FFmpeg
+from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds
+from video_automation.schemas.animation import InfographicRequest
 from video_automation.schemas.timeline import AssetKind, AssetRead, TitleCardRequest
 from video_automation.services.timeline.timeline_service import (
     TimelineNotFoundError,
@@ -57,14 +58,109 @@ class TitleCardService:
             return self.settings.title_font_path
         return next((f for f in FONT_CANDIDATES if Path(f).is_file()), None)
 
-    async def create(self, req: TitleCardRequest) -> AssetRead:
+    async def _project(self, project_id: str) -> tuple[int, int, int, int]:
         async with self.db.session_factory() as s:
-            p = await s.get(Project, req.project_id)
+            p = await s.get(Project, project_id)
             if p is None:
-                raise TimelineNotFoundError(f"project {req.project_id}")
-            w, h, fps_num, fps_den = p.width, p.height, p.fps_num, p.fps_den
+                raise TimelineNotFoundError(f"project {project_id}")
+            return p.width, p.height, p.fps_num, p.fps_den
+
+    @staticmethod
+    def animation_seconds(req: TitleCardRequest) -> float:
+        if req.animation_sec:
+            return req.animation_sec
+        n = len(req.text.replace("\n", ""))
+        return {
+            "pop": 0.45,
+            "slide": 0.5,
+            "zoom": 0.45,
+            "typewriter": min(max(n * 0.07, 0.3), 3.0) + 0.1,
+            "bounce": min(max(n * 0.05, 0.2), 2.0) + 0.45,
+        }.get(req.animation, 0.0)
+
+    async def _compose(
+        self,
+        tmp: Path,
+        out: Path,
+        *,
+        size: tuple[int, int],
+        fps: tuple[int, int],
+        rendered: int,
+        total: int,
+        fade_in_sec: float,
+        fade_out_sec: float,
+        box: tuple[int, int, int, int] | None,
+        box_rgba: str,
+    ) -> None:
+        """Blender の連番（動く部分だけ）→ 最終フレームで延長・フェード・帯 → 透過 MOV。"""
+        w, h = size
+        fps_s = f"{fps[0]}/{fps[1]}"
+        dur = total * fps[1] / fps[0]
+        rest = max(0, total - rendered) * fps[1] / fps[0]
+        txt = ["setpts=PTS-STARTPTS", "format=rgba"]
+        if rest > 0:
+            txt.append(f"tpad=stop_mode=clone:stop_duration={ff_seconds(rest)}")
+        graph = [f"[0:v]{','.join(txt)}[t]"]
+        inputs = ["-framerate", fps_s, "-i", str(tmp / "frame_%04d.png")]
+        src = "t"
+        if box is not None:
+            bx, by, bw, bh = box
+            inputs += [
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c=black@0.0:s={w}x{h}:r={fps_s}:d={ff_seconds(dur)},format=rgba",
+            ]
+            graph.append(
+                f"[1:v]format=rgba,drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={box_rgba}:t=fill:replace=1,"
+                f"fade=t=in:st=0:d=0.2:alpha=1[box]"
+            )
+            # 透明を保つため、帯の層は入力の時点で RGBA にしておく（-i 側で format=rgba）
+            graph.append("[box][t]overlay=0:0:format=auto[bt]")
+            src = "bt"
+        fades = []
+        if fade_in_sec > 0:
+            fades.append(f"fade=t=in:st=0:d={ff_seconds(fade_in_sec)}:alpha=1")
+        if fade_out_sec > 0:
+            st = max(0.0, dur - fade_out_sec)
+            fades.append(f"fade=t=out:st={ff_seconds(st)}:d={ff_seconds(fade_out_sec)}:alpha=1")
+        graph.append(f"[{src}]{','.join([*fades, 'format=rgba'])}[out]")
+        await self.ffmpeg.run(
+            [
+                *inputs,
+                "-filter_complex",
+                ";".join(graph),
+                "-map",
+                "[out]",
+                "-frames:v",
+                str(total),
+                "-r",
+                fps_s,
+                "-c:v",
+                "png",
+                "-pix_fmt",
+                "rgba",
+                str(out),
+            ]
+        )
+
+    @staticmethod
+    def _box(text_box: list[int] | None, size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+        if not text_box:
+            return None
+        w, h = size
+        x, y, bw, bh = text_box
+        px, py = max(8, round(bh * 0.45)), max(4, round(bh * 0.22))
+        x0, y0 = max(0, x - px), max(0, y - py)
+        x1, y1 = min(w, x + bw + px), min(h, y + bh + py)
+        return x0, y0, max(2, x1 - x0), max(2, y1 - y0)
+
+    async def create(self, req: TitleCardRequest) -> AssetRead:
+        w, h, fps_num, fps_den = await self._project(req.project_id)
         fps = round(fps_num / fps_den)
-        frames = max(1, round(req.duration_sec * fps_num / fps_den))
+        total = max(1, round(req.duration_sec * fps_num / fps_den))
+        anim_sec = self.animation_seconds(req)
+        rendered = min(total, max(1, round(anim_sec * fps_num / fps_den)))
         out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"title_{uuid4().hex[:8]}.mov"
@@ -77,10 +173,13 @@ class TitleCardService:
                     "width": w,
                     "height": h,
                     "fps": fps,
-                    "frames": frames,
+                    "frames": rendered,
                     "font_path": self.font_path(),
                     "text_color": _rgba(req.text_color),
-                    "bg_color": [0, 0, 0, 0],
+                    "outline": req.outline,
+                    "outline_color": _rgba(req.outline_color),
+                    "size": req.size,
+                    "position": req.position,
                     "output_dir": tmp,
                     "animation": req.animation,
                 },
@@ -90,24 +189,73 @@ class TitleCardService:
             log.info(
                 "title_card_rendered",
                 engine=result.get("engine"),
-                samples=result.get("samples"),
+                animation=req.animation,
                 frames=result["frames"],
+                total_frames=total,
                 sec=round(time.perf_counter() - t0, 1),
             )
-            await self.ffmpeg.run(
-                [
-                    "-framerate",
-                    f"{fps_num}/{fps_den}",
-                    "-i",
-                    str(Path(tmp) / "frame_%04d.png"),
-                    "-c:v",
-                    "png",
-                    "-pix_fmt",
-                    "rgba",
-                    str(out),
-                ]
+            await self._compose(
+                Path(tmp),
+                out,
+                size=(w, h),
+                fps=(fps_num, fps_den),
+                rendered=int(result["frames"]),
+                total=total,
+                fade_in_sec=min(0.4, req.duration_sec / 2) if req.animation == "fade" else 0.0,
+                fade_out_sec=min(req.fade_out_sec, req.duration_sec / 2),
+                box=self._box(result.get("text_box"), (w, h)) if req.box else None,
+                box_rgba=f"{req.box_color}@{req.box_opacity:g}",
             )
         asset = await self.timeline.register_generated(
             req.project_id, out, AssetKind.VIDEO, "blender", f"タイトル「{req.text[:20]}」"
+        )
+        return AssetRead.model_validate(asset)
+
+    async def infographic(self, req: InfographicRequest) -> AssetRead:
+        w, h, fps_num, fps_den = await self._project(req.project_id)
+        fps = round(fps_num / fps_den)
+        total = max(1, round(req.duration_sec * fps_num / fps_den))
+        rendered = min(total, max(2, round(req.animation_sec * fps_num / fps_den)))
+        out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"chart_{uuid4().hex[:8]}.mov"
+        with tempfile.TemporaryDirectory(prefix="va_chart_") as tmp:
+            result = await self.blender.run_script(
+                "infographic",
+                {
+                    "kind": req.kind,
+                    "title": req.title,
+                    "labels": req.labels,
+                    "values": req.values,
+                    "unit": req.unit,
+                    "decimals": req.decimals,
+                    "width": w,
+                    "height": h,
+                    "fps": fps,
+                    "frames": rendered,
+                    "font_path": self.font_path(),
+                    "text_color": _rgba(req.text_color),
+                    "accent_colors": [_rgba(c) for c in req.colors],
+                    "output_dir": tmp,
+                },
+            )
+            if not result.get("frames"):
+                raise RuntimeError("blender produced no frames")
+            m = round(min(w, h) * 0.04)
+            await self._compose(
+                Path(tmp),
+                out,
+                size=(w, h),
+                fps=(fps_num, fps_den),
+                rendered=int(result["frames"]),
+                total=total,
+                fade_in_sec=0.0,
+                fade_out_sec=min(req.fade_out_sec, req.duration_sec / 2),
+                box=(m, m, w - 2 * m, h - 2 * m) if req.box else None,
+                box_rgba=f"{req.box_color}@{req.box_opacity:g}",
+            )
+        name = f"図表「{(req.title or req.kind)[:20]}」"
+        asset = await self.timeline.register_generated(
+            req.project_id, out, AssetKind.VIDEO, "blender", name
         )
         return AssetRead.model_validate(asset)

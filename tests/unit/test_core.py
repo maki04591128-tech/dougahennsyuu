@@ -29,3 +29,22 @@ def test_log_redacts_secrets(tmp_path):
 
 def test_mcp_ping():
     assert ping()["status"] == "ok"
+
+
+async def test_create_all_adds_missing_nullable_columns(tmp_path):
+    """後の Phase で増えた列（NULL 可）を既存の DB に追加する。"""
+    from sqlalchemy import text
+
+    from video_automation.database.database import Database
+
+    db = Database.from_path(tmp_path / "old.db")
+    await db.create_all()
+    async with db.engine.begin() as conn:
+        await conn.execute(text('ALTER TABLE clips DROP COLUMN "animation"'))
+        cols = [r[1] for r in (await conn.execute(text("PRAGMA table_info(clips)"))).all()]
+    assert "animation" not in cols
+    await db.create_all()
+    async with db.engine.begin() as conn:
+        cols = [r[1] for r in (await conn.execute(text("PRAGMA table_info(clips)"))).all()]
+    assert "animation" in cols
+    await db.dispose()
