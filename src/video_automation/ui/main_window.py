@@ -6,19 +6,15 @@
 from typing import Any
 
 from PySide6.QtWidgets import (
-    QLabel,
-    QListWidget,
     QMainWindow,
-    QPushButton,
     QTabWidget,
-    QVBoxLayout,
-    QWidget,
 )
 
 from video_automation.ui.assets.widget import AssetsWidget
 from video_automation.ui.assistant.widget import AssistantWidget
 from video_automation.ui.design.widget import DesignWidget
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
+from video_automation.ui.project.widget import ProjectWidget
 from video_automation.ui.qa.widget import QAWidget
 from video_automation.ui.script_studio.widget import ScriptStudioWidget
 from video_automation.ui.subtitle.widget import SubtitleWidget
@@ -35,16 +31,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("VideoAutomation")
         self.resize(1200, 800)
 
-        self.status_label = QLabel("API: 未接続")
-        self.project_list = QListWidget()
-        self.refresh_button = QPushButton("接続確認 / 更新")
+        project_tab = ProjectWidget(api)
+        self.project = project_tab
+        # 互換: 以前の属性名（テストや拡張から参照される）
+        self.status_label = project_tab.status_label
+        self.project_list = project_tab.project_list
+        self.refresh_button = project_tab.refresh_button
         self.refresh_button.clicked.connect(self.refresh)
-
-        project_tab = QWidget()
-        layout = QVBoxLayout(project_tab)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.project_list)
-        layout.addWidget(self.refresh_button)
 
         self.llm_settings = LlmSettingsWidget(api)
         self.tabs = QTabWidget()
@@ -76,9 +69,7 @@ class MainWindow(QMainWindow):
         try:
             h = self.api.health()
             self.status_label.setText(f"API: {h['status']} (v{h['version']}, DB {h['database']})")
-            self.project_list.clear()
-            for p in self.api.list_projects():
-                self.project_list.addItem(f"{p['name']} ({p['width']}x{p['height']})")
+            self.project.show_projects(self.api.list_projects())
         except Exception as exc:
             self.status_label.setText(f"API: 接続失敗 ({type(exc).__name__})")
             return

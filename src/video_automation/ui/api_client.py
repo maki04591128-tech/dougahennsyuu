@@ -529,3 +529,11 @@ class ApiClient:
     def transcribe(self, project_id: str, asset_id: str, **kw: Any) -> dict[str, Any]:
         body = {"project_id": project_id, "asset_id": asset_id, **kw}
         return self._json(self._http.post("/transcribe", json=body))
+
+    # ----- 素材の取り込み（PC のファイル） -----
+    def import_asset(self, project_id: str, path: str) -> dict[str, Any]:
+        body = {"project_id": project_id, "path": path}
+        return self._json(self._http.post("/assets/import", json=body, timeout=120.0))
+
+    def list_assets(self, project_id: str) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/assets", params={"project_id": project_id}))
