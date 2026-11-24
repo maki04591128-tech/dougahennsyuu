@@ -267,6 +267,14 @@ def check_line(
                     changed = True
         if changed:
             fixed = "".join(out) + fixed[last:]
+        # 文の途中で読点が続く形（「長持ちさせられるのだよ、貴女。」）も同じように直す
+        for e in (x for x in bad_end if x.endswith("のだ")):
+            pat = re.compile(rf"{re.escape(e)}([{''.join(sorted(_PARTICLES))}]?)(?=[、,])")
+            if pat.search(fixed):
+                issues.append(PersonaIssue(index, "foreign_ending", e, "", None))
+                fixed = pat.sub(lambda m, e=e: e[:-1] + m.group(1), fixed)
+                changed = True
+        if changed:
             for x in issues:
                 if x.kind == "foreign_ending":
                     x.fixed = fixed

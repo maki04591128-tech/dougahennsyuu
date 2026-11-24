@@ -10,6 +10,7 @@ LLM は発話番号つきの台本から、カード・図表・テロップ・�
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from typing import Any
 
 from video_automation.schemas.direction import MAIN_KINDS, DirectionPlan, Shot, ShotKind
@@ -73,6 +74,7 @@ SYSTEM = (
     "同じ発話から始まる card / chart / image は 1 つだけ。"
     "title は動画のタイトル(20文字以内)、subtitle は興味を引く一言(24文字以内)。"
     "card には必ず body を 1〜3 項目書く（見出しだけのカードは作らない）。"
+    "body はセリフを写さず、15 文字ほどの体言止めに要約する（字幕と同じ文を二重に出さない）。"
     "台本で 2 つ以上の数値を比べている所には chart を置く。\n"
     "使わない項目は空文字・空配列にする。\n"
     "例: 電池の劣化の話なら、card（見出し「劣化の原因」、body「高温」「満充電のまま放置」）、"
@@ -156,6 +158,18 @@ def infer_unit(values: list[float], text: str) -> str:
     return ""
 
 
+def _copied(item: str, lines: list[str]) -> bool:
+    """カードの項目がセリフの写し（ほぼ同じ文・セリフの一部の長い引き写し）か。"""
+    a = _norm(item)
+    if len(a) < 12:  # 短い要点（「明るさを自動に」）は写しでも要約として使える
+        return False
+    for ln in lines:
+        b = _norm(ln)
+        if a in b or SequenceMatcher(None, a, b).ratio() >= 0.75:
+            return True
+    return False
+
+
 def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> DirectionPlan:
     n = len(lines)
     notes = list(plan.notes)
@@ -182,6 +196,14 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
             if junk:  # 小さなモデルは項目名や指示の言葉を本文に入れることがある
                 notes.append(
                     f"{s.from_line}: カードの本文から要点でない文（{len(junk)} 件）を外しました"
+                )
+            # セリフをそのまま写した項目は字幕と同じ文が二重に出るだけなので外す
+            copied = [b for b in s.body if b not in junk and _copied(b, lines)]
+            if copied:
+                junk = [*junk, *copied]
+                notes.append(
+                    f"{s.from_line}: セリフをそのまま写したカードの項目"
+                    f"（{len(copied)} 件）を外しました"
                 )
             s.body = [_trim(b, 40) for b in s.body if b.strip() and b not in junk][:3]
             if not s.heading and not s.body:
