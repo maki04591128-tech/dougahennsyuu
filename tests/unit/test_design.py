@@ -244,3 +244,11 @@ def test_voice_synced_subtitles_are_allowed_up_to_speech_speed():
     m.subtitle.voice_rates = []
     speed = [v for v in check(info, m).violations if v.code == "subtitle_speed"]
     assert len(speed) == 1 and "3 件" in speed[0].message
+
+
+def test_blender_colors_are_linear():
+    from video_automation.services.rendering.title_card import _rgba
+
+    assert _rgba("#FFFFFF") == [1.0, 1.0, 1.0, 1.0]
+    r, g, b, _ = _rgba("#808080")
+    assert abs(r - 0.2159) < 1e-3  # sRGB 0.5 → 線形 0.216（暗い色を浮かせない）

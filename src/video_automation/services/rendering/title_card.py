@@ -46,9 +46,15 @@ FONT_FILES = {
 log = get_logger("title_card")
 
 
+def _srgb_to_linear(c: float) -> float:
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
 def _rgba(hex_color: str) -> list[float]:
+    """#RRGGBB（sRGB）→ Blender の色（線形）。Blender のマテリアルの色は線形なので、
+    変換しないと暗い色が明るく浮く（明るい背景の型で題名が灰色に見えていた）。"""
     h = hex_color.lstrip("#")
-    return [int(h[i : i + 2], 16) / 255 for i in (0, 2, 4)] + [1.0]
+    return [_srgb_to_linear(int(h[i : i + 2], 16) / 255) for i in (0, 2, 4)] + [1.0]
 
 
 class TitleCardService:
