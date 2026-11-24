@@ -50,3 +50,44 @@ def test_change_regions_finds_area_and_ignores_full_change() -> None:
     f = found[0]
     assert 150 < f.x < 250 and 40 < f.y < 80  # 録画の画素に戻す
     assert all(x.t != 1.6 for x in found)
+
+
+def test_camera_moves_smoothly_near_the_screen_edge():
+    """画面の端に近い所へ寄るときも、途中で急に止まらない（動きが折れない）。"""
+    from video_automation.services.screencast.camera import Shot
+
+    p = CameraParams()
+    # 右上に寄った所から、左下へ倍率を変えながら移る（以前は端で止まって動きが折れた）
+    shots = [Shot(0.0, SIZE[0] - 5, 5, 2.2), Shot(1.0, 5, SIZE[1] - 5, 1.3)]
+    fps = 60
+    xy = np.array([camera_at(shots, 1.0 + i / fps, SIZE, p)[:2] for i in range(int(0.9 * fps))])
+    v = np.diff(xy, axis=0)
+    acc = np.abs(np.diff(v, axis=0))
+    # 速度の変化（加速度）が滑らか: どのフレームでも、最大の速さの 1/4 を超えて急に変わらない
+    assert (acc.max(0) < np.abs(v).max(0) * 0.25).all()
+    # 最後は移った先（端に合わせた位置）に止まる
+    end = camera_at(shots, 3.0, SIZE, p)
+    assert abs(end[0] - SIZE[0] / 1.3 / 2) < 1e-6 and end[2] == 1.3
+
+
+def test_clip_camera_uses_subpixel_perspective_not_zoompan():
+    from fractions import Fraction
+
+    from video_automation.schemas.animation import ClipAnimation
+    from video_automation.services.animation.motion import BUILTIN_BY_NAME, resolve_preset
+    from video_automation.services.animation.render_anim import clip_filters
+
+    kfs = resolve_preset(BUILTIN_BY_NAME["ken_burns_in"], 300, Fraction(30))
+    anim = ClipAnimation(keyframes=kfs)
+    f = clip_filters(
+        anim,
+        fps=Fraction(30),
+        k=0.0,
+        off=0.0,
+        clip_sec=10.0,
+        src_size=(1920, 1080),
+        canvas=(1920, 1080),
+        is_image=True,
+    )
+    joined = ",".join(f.pre)
+    assert "zoompan" not in joined and "perspective=" in joined and "eval=frame" in joined

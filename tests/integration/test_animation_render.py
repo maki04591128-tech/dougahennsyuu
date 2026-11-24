@@ -252,7 +252,7 @@ async def test_render_mp4_with_animation_and_range(mclient, imgs, media_dir):
     await anim(c, pid, clip_id=a, preset="ken_burns_in")
     await anim(c, pid, clip_id=b, preset="dissolve")
     await anim(c, pid, clip_id=b, preset="pop_in", duration_sec=0.3, intensity=0.5)
-    # 動画素材にもカメラ（zoompan）を付ける
+    # 動画素材にもカメラ（ズーム・パン）を付ける
     v = (
         await c.post(
             "/assets/import", json={"project_id": pid, "path": str(media_dir / "clip.mp4")}

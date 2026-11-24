@@ -105,6 +105,18 @@ def plan_shots(
     return shots
 
 
+def _slack(s: Shot, size: tuple[int, int]) -> tuple[float | None, float | None]:
+    """ショットの表示範囲の位置を、動ける範囲（画面 − 表示範囲）の中の割合 0〜1 で表す。
+
+    全体を見せるショット（動ける範囲が無い）は None（相手のショットの割合を使う）。"""
+    cx, cy = clamp_center(s.cx, s.cy, s.zoom, size)
+    vw, vh = _view(size, s.zoom)
+    w, h = size
+    fx = (cx - vw / 2) / (w - vw) if w - vw > 1e-6 else None
+    fy = (cy - vh / 2) / (h - vh) if h - vh > 1e-6 else None
+    return fx, fy
+
+
 def _ease(u: float) -> float:
     u = min(1.0, max(0.0, u))
     return 4 * u**3 if u < 0.5 else 1 - (-2 * u + 2) ** 3 / 2  # 加速→減速（cubic in-out）
@@ -127,9 +139,19 @@ def camera_at(
             u = _ease((t - s.t) / dur)
             # 倍率は対数で補間（寄り・引きの速さが均一に見える）
             z = math.exp(math.log(prev.zoom) + (math.log(s.zoom) - math.log(prev.zoom)) * u)
-            cx = prev.cx + (s.cx - prev.cx) * u
-            cy = prev.cy + (s.cy - prev.cy) * u
-            return (*clamp_center(cx, cy, z, size), z)
+            # 位置は「動ける範囲の中の割合」で補間する。中心をそのまま補間して画面の端で
+            # 止める（clamp）と、途中で急に止まって動きが折れ、カクついて見える
+            ax, ay = _slack(prev, size)
+            bx, by = _slack(s, size)
+            ax, bx = ax if ax is not None else bx, bx if bx is not None else ax
+            ay, by = ay if ay is not None else by, by if by is not None else ay
+            vw, vh = _view(size, z)
+            w, h = size
+            fx = 0.5 if ax is None or bx is None else ax + (bx - ax) * u
+            fy = 0.5 if ay is None or by is None else ay + (by - ay) * u
+            cx = vw / 2 + (w - vw) * fx if vw < w else w / 2
+            cy = vh / 2 + (h - vh) * fy if vh < h else h / 2
+            return cx, cy, z
         prev = s
     return (*clamp_center(prev.cx, prev.cy, prev.zoom, size), prev.zoom)
 

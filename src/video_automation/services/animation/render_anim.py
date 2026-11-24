@@ -2,7 +2,7 @@
 
 時刻の扱い: 各クリップのフィルタ列では、クリップの描画開始時点を 0 とする時刻 t が流れる。
 範囲指定の書き出しでクリップの途中から始まる場合があるため、クリップ先頭からの秒は t + k。
-- zoompan（カメラ）: on / fps + k
+- perspective（カメラ。1/256 画素の精度）: on / fps + k
 - rotate / scale(eval=frame): t + k
 - geq（不透明度・ワイプ）: T + k
 - overlay（位置）: t - off + k（overlay の t は出力全体の時刻）
@@ -87,17 +87,23 @@ def clip_filters(
         cw, ch = canvas
         f = max(cw / aw, ch / ah)
         zw, zh = _even(aw * f), _even(ah * f)
-        # zoompan は位置を整数で丸めるため、2倍に拡大してから処理して揺れを抑える（4K は等倍）
-        j = 2 if max(zw, zh) <= 2200 else 1
+        # 以前は zoompan を使っていたが、切り出す位置を整数の画素に丸めるため、ゆっくりした
+        # ズーム・パンが 1 画素ずつ段になって「カクつく」。perspective は 1/256 画素の精度で
+        # 四隅を写すので、同じ大きさのまま滑らかに寄る・引く（時刻は出力のフレーム数 on から）
         tz = f"(on*{fps.denominator}/{fps.numerator}+{num(k)})"
         z = f"max(1,{track_expr(zoom, fps, tz, 1.0)})"
         px = track_expr(panx, fps, tz, 0.0)
         py = track_expr(pany, fps, tz, 0.0)
+        vw, vh = f"(W/({z}))", f"(H/({z}))"
+        x0 = f"(W-{vw})*(0.5+0.5*({px}))"
+        y0 = f"(H-{vh})*(0.5+0.5*({py}))"
+        x1, y1 = f"{x0}+{vw}", f"{y0}+{vh}"
         out.pre += [
-            f"scale={zw * j}:{zh * j}",
-            f"zoompan=z='{z}':x='(iw-iw/zoom)*(0.5+0.5*({px}))':"
-            f"y='(ih-ih/zoom)*(0.5+0.5*({py}))':d=1:s={zw}x{zh}:fps={fps_s}",
+            f"fps={fps_s}",
+            f"scale={zw}:{zh}",
             "setsar=1",
+            f"perspective=x0='{x0}':y0='{y0}':x1='{x1}':y1='{y0}':"
+            f"x2='{x0}':y2='{y1}':x3='{x1}':y3='{y1}':interpolation=cubic:eval=frame",
         ]
 
     # ---------- 要素（回転・拡大・不透明度・位置） ----------
