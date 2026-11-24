@@ -25,12 +25,14 @@ PART_COMPONENTS: dict[str, tuple[Component, ...]] = {
     "glitch": (Component.GLITCH,),
     "flash": (Component.FLASH,),
     "iris": (Component.TRANSITION_SHAPE,),
+    # 字幕を動く文字（キネティックタイポグラフィ）で出す。歌詞を出す用途（MV・リリック）だけ
+    "lyrics": (Component.LYRIC_TEXT, Component.KINETIC_TEXT),
 }
 
 LEVEL_PARTS: dict[RichLevel, set[str]] = {
     # 撮影処理（ブルーム・ビネット＝"look"）は派手のときだけ。図・文字の色が濁り、
     # 画面の端が暗くなるため、解説・講義などの控えめ・標準の演出では付けない
-    RichLevel.SUBTLE: {"chapter_labels", "ken_burns"},
+    RichLevel.SUBTLE: {"chapter_labels", "ken_burns", "lyrics"},
     RichLevel.STANDARD: {
         "chapter_labels",
         "ken_burns",
@@ -39,6 +41,7 @@ LEVEL_PARTS: dict[RichLevel, set[str]] = {
         "sfx",
         "punch",
         "iris",
+        "lyrics",
     },
     RichLevel.BOLD: set(PART_COMPONENTS),
 }

@@ -875,6 +875,7 @@ class RenderService:
                             "segment": c.script_segment_id,
                             "text": c.text,
                             "start_frame": c.start_frame - r0,
+                            "end_frame": (c.end_frame or c.start_frame) - r0,
                         }
                     )
         outline = await self.design.outline(req.project_id)
@@ -929,8 +930,12 @@ class RenderService:
         await progress(0.85)
         ass = None
         subs: list[str] = []
+        # 字幕を動く文字で出せたときは、同じ文を字幕として焼き込まない（二重になる）
+        kinetic = bool(rich.parts.get("lyrics")) and "lyrics" not in failed
+        if kinetic:
+            rich.notes.append("字幕は動く文字（キネティックタイポグラフィ）で出しました")
         if req.script_id:
-            if req.burn_subtitles:
+            if req.burn_subtitles and not kinetic:
                 # 冒頭の演出の分だけ字幕を後ろへずらす（offset が負＝後ろへ）
                 ass = await self._ass_for(
                     req.script_id, prof.width, prof.height, out.with_suffix(".burn.ass"), r0 - intro
