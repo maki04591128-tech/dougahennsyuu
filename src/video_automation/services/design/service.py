@@ -159,7 +159,12 @@ class DesignService:
             for comp, x0, y0, x1, y1 in rec.get("placements") or []:
                 m.placements.append(Placement(Component(comp), x0, y0, x1, y1))
             m.empty_spans.extend((a, b) for a, b in rec.get("empty_spans") or [])
-        if rows and subtitle_style is not None:
+        if rows and subtitle_style is not None and subtitle_style.mode == "lyric":
+            # 歌詞として出す（字幕の大きさ・行の長さ・速さの決まりは当てない）
+            m.add(Component.LYRIC_TEXT, len(rows))
+            m.fonts.add(subtitle_style.font_name)
+            m.colors.append(subtitle_style.glow_color)
+        elif rows and subtitle_style is not None:
             st = subtitle_style
             unit = min(w, h)
             ratio = (st.font_size / unit) if st.font_size else st.font_size_ratio

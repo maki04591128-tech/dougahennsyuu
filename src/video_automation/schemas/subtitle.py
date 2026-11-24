@@ -79,8 +79,13 @@ class SubtitleStyle(BaseModel):
     band_color: str = "#8C000000"
     # 帯の形: full=画面幅で下端まで / fitted=字幕の文字の幅と高さだけ（画面を覆いすぎない）
     band_mode: Literal["full", "fitted"] = "full"
+    # 表示の種類: subtitle=発話の字幕 / lyric=歌詞（MV・リリック動画。帯・話者名なし、
+    # 大きめの文字にゆっくりのフェードと光のにじみ）
+    mode: Literal["subtitle", "lyric"] = "subtitle"
+    glow_color: str = "#C9B6FF"  # 歌詞の光のにじみの色
+    glow: float = Field(default=6.0, ge=0, le=30)  # にじみの強さ（0 で無し）
 
-    @field_validator("primary_color", "outline_color", "back_color", "band_color")
+    @field_validator("primary_color", "outline_color", "back_color", "band_color", "glow_color")
     @classmethod
     def _color(cls, v: str) -> str:
         h = v.lstrip("#")
