@@ -1,6 +1,8 @@
 """声（話者）ごとの口調。声を選ぶとキャラクターの口調で台本を書けるようにする。
 
 組み込みは公式・出典のある設定だけにする（推測で口調を作らない）。
+一人称・二人称・紹介は VOICEVOX 公式サイト「ボイボ寮」の各キャラクターの紹介と「呼び方」
+（https://voicevox.hiroshiba.jp/dormitory/<名前>/ と .../calls/、2026-11-24 確認）から。
 それ以外の声（VOICEVOX Nemo の「女声1」など、または組み込みに無いキャラクター）は
 ユーザーが登録する。登録は組み込みより優先する。
 """
@@ -25,6 +27,7 @@ class VoiceCharacterStyle(BaseModel):
 
     speaker: str = Field(min_length=1, max_length=100)  # エンジンの話者名（例: ずんだもん）
     first_person: str = Field(default="", max_length=20)  # 一人称
+    second_person: str = Field(default="", max_length=40)  # 相手の呼び方（二人称）
     endings: list[str] = Field(default_factory=list, max_length=8)  # 語尾
     tone: str = Field(default="", max_length=300)  # 話し方の特徴
     source: str = Field(default="", max_length=300)  # 出典（組み込みのとき）
@@ -35,6 +38,8 @@ class VoiceCharacterStyle(BaseModel):
         parts = []
         if self.first_person:
             parts.append(f"一人称は「{self.first_person}」")
+        if self.second_person:
+            parts.append(f"相手は「{self.second_person}」と呼ぶ")
         if self.endings:
             parts.append("語尾は" + "・".join(f"「{e}」" for e in self.endings))
         if self.tone:
@@ -47,23 +52,125 @@ BUILTIN: dict[str, VoiceCharacterStyle] = {
     for s in [
         VoiceCharacterStyle(
             speaker="ずんだもん",
-            first_person="ボク",
+            first_person="僕",
+            second_person="オマエ・みんな",
             endings=["〜のだ", "〜なのだ"],
-            tone="ずんだ餅の精。やや不幸属性で、ないがしろにされることもしばしば",
-            source="語尾: Game Watch 2024-12-09 の紹介／一人称は一般の設定（要確認）",
-            builtin=True,
-        ),
-        VoiceCharacterStyle(
-            speaker="あんこもん",
-            endings=["〜だもん"],
-            tone="ずんだもんをライバル視していて、ツンツンしている",
-            source="VOICEVOX 公式 X（2026-01-05 ボイボ寮キャラクター紹介）",
+            tone="ずんだ餅の精。やや不幸属性が備わっており、ないがしろにされることもしばしば。一人称は自分の名前「ずんだもん」も使う",
+            source="ボイボ寮 zundamon（紹介・呼び方）／語尾: Game Watch 2024-12-09",
             builtin=True,
         ),
         VoiceCharacterStyle(
             speaker="四国めたん",
-            tone="上品なお嬢様の話し方。中二病の妄想が趣味で「漆黒のめたん」を自称する",
-            source="ピクシブ百科事典「VOICEVOX」のキャラクター紹介（要確認）",
+            first_person="わたくし",
+            second_person="アンタ・貴女",
+            tone="誰にでも遠慮しないので基本的にタメ口。若干ツンデレ気味。趣味は中二病妄想、常に金欠",
+            source="ボイボ寮 shikoku_metan（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="春日部つむぎ",
+            first_person="あーし",
+            second_person="きみ・きみたち",
+            tone="埼玉県内の高校に通うギャル。やんちゃに見えて実は真面目な一面もある",
+            source="ボイボ寮 kasukabe_tsumugi（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="雨晴はう",
+            first_person="僕",
+            second_person="あなた・あなた達",
+            tone="現役看護師。看護師のあれこれを伝える",
+            source="ボイボ寮 amehare_hau（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="波音リツ",
+            first_person="あたし",
+            second_person="アンタ・アンタら",
+            tone="2ch・VIP 発のキャラクター",
+            source="ボイボ寮 namine_ritsu（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="玄野武宏",
+            first_person="俺",
+            second_person="お前・お前ら",
+            tone="サッパリした青年。やや短気だが面倒見は良い",
+            source="ボイボ寮 kurono_takehiro（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="白上虎太郎",
+            first_person="おれ",
+            second_person="きみ・きみ達",
+            tone="まっすぐで人懐っこい青年。愛嬌はあるものの少しおばか",
+            source="ボイボ寮 shirakami_kotarou（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="青山龍星",
+            first_person="オレ",
+            second_person="アンタ・アンタ達・お前達",
+            tone="大柄で無骨な青年。寡黙で冷静なストッパー役",
+            source="ボイボ寮 aoyama_ryusei（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="冥鳴ひまり",
+            first_person="私",
+            second_person="君たち",
+            tone="冥界から来た死神。可愛いものに目がない。優しくて清楚（自称）",
+            source="ボイボ寮 meimei_himari（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="九州そら",
+            first_person="まーくつー",
+            second_person="あなたさま・みなさま",
+            tone="宇宙開拓用に開発されたアンドロイド（正式名称は九州そらmk=II）。相手には「さま」を付ける",
+            source="ボイボ寮 kyushu_sora（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="もち子さん",
+            first_person="私",
+            second_person="あなた・あなた達",
+            tone="福島県生まれのプラモ好きの犬系ヲタ娘。小さい背丈で頑張る人を応援する。一人称は「もち子」も使う",
+            source="ボイボ寮 mochikosan（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="東北ずん子",
+            first_person="私",
+            second_person="あなた・みんな",
+            tone="前向きで明るい、母性の塊のような性格。ずんだの話をし始めると饒舌になる",
+            source="ボイボ寮 tohoku_zunko（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="東北きりたん",
+            first_person="わたし",
+            second_person="あなた・あなたがた",
+            tone="ひきこもり気質で夜型。他人に対してはクールで毒舌",
+            source="ボイボ寮 tohoku_kiritan（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="東北イタコ",
+            first_person="あたし",
+            second_person="あなた・みなさん",
+            endings=["〜ですわ"],
+            tone="ですわ口調。イタコ専門学校を首席で卒業したが、本来のイタコ能力はイマイチ。東北三姉妹の長女",
+            source="ボイボ寮 tohoku_itako（紹介・呼び方）",
+            builtin=True,
+        ),
+        VoiceCharacterStyle(
+            speaker="あんこもん",
+            first_person="あんこもん",
+            second_person="おまえ",
+            endings=["〜だもん"],
+            tone="ずんだもんをライバル視していて、ツンツンしている",
+            source="ボイボ寮 ankomon（紹介・呼び方）",
             builtin=True,
         ),
     ]

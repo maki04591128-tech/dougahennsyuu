@@ -27,13 +27,15 @@ class VoiceCharactersWidget(QWidget):
         self.api = api
         self.items: list[dict[str, Any]] = []
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["声", "一人称", "語尾", "話し方", "出典"])
-        self.table.setColumnWidth(3, 360)
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["声", "一人称", "二人称", "語尾", "話し方", "出典"])
+        self.table.setColumnWidth(4, 360)
         self.table.itemSelectionChanged.connect(self._selected)
         self.speaker_edit = QLineEdit()
         self.speaker_edit.setPlaceholderText("エンジンの話者名（例: ずんだもん）")
         self.first_edit = QLineEdit()
+        self.second_edit = QLineEdit()
+        self.second_edit.setPlaceholderText("相手の呼び方（例: あなた・みんな）")
         self.endings_edit = QLineEdit()
         self.endings_edit.setPlaceholderText("「、」区切り（例: のだ、なのだ）")
         self.tone_edit = QLineEdit()
@@ -47,6 +49,7 @@ class VoiceCharactersWidget(QWidget):
         form = QFormLayout()
         form.addRow("声", self.speaker_edit)
         form.addRow("一人称", self.first_edit)
+        form.addRow("二人称", self.second_edit)
         form.addRow("語尾", self.endings_edit)
         form.addRow("話し方", self.tone_edit)
         btns = QHBoxLayout()
@@ -72,6 +75,7 @@ class VoiceCharactersWidget(QWidget):
             vals = [
                 c["speaker"],
                 c.get("first_person", ""),
+                c.get("second_person", ""),
                 "、".join(c.get("endings") or []),
                 c.get("tone", ""),
                 src,
@@ -86,6 +90,7 @@ class VoiceCharactersWidget(QWidget):
         c = self.items[row]
         self.speaker_edit.setText(c["speaker"])
         self.first_edit.setText(c.get("first_person", ""))
+        self.second_edit.setText(c.get("second_person", ""))
         self.endings_edit.setText("、".join(c.get("endings") or []))
         self.tone_edit.setText(c.get("tone", ""))
 
@@ -101,6 +106,7 @@ class VoiceCharactersWidget(QWidget):
             self.api.put_voice_character(
                 sp,
                 first_person=self.first_edit.text().strip(),
+                second_person=self.second_edit.text().strip(),
                 endings=endings,
                 tone=self.tone_edit.text().strip(),
             )

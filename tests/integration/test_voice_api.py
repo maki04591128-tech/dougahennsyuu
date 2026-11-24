@@ -208,6 +208,10 @@ async def test_voice_character_style_fills_speaking_style(client):
     # 組み込み（出典のあるキャラクター）
     styles = {s["speaker"]: s for s in (await client.get("/voice/characters")).json()}
     assert styles["ずんだもん"]["builtin"] and "〜のだ" in styles["ずんだもん"]["endings"]
+    # 公式の「呼び方」から: 一人称・二人称
+    assert styles["四国めたん"]["first_person"] == "わたくし"
+    assert styles["春日部つむぎ"]["first_person"] == "あーし"
+    assert len([x for x in styles.values() if x["builtin"]]) >= 15
     # Nemo の声には口調が無い → ユーザーが登録する
     by = (await client.get(f"/voice/characters/by_style/{STYLE}")).json()
     assert by["speaker"] == "女声1" and by["style"] is None

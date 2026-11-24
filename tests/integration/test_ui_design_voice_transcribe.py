@@ -66,19 +66,21 @@ def test_voice_characters_widget(api):
     w = VoiceCharactersWidget(api)
     w.refresh()
     builtin = w.table.rowCount()
-    assert builtin >= 3 and "組み込み" in w.table.item(0, 4).text()
+    assert builtin >= 15 and "組み込み" in w.table.item(0, 5).text()
 
     w.speaker_edit.setText("")
     w.save()
     assert "入力" in w.status_label.text()
     w.speaker_edit.setText("テスト声")
     w.first_edit.setText("ぼく")
+    w.second_edit.setText("きみ")
     w.endings_edit.setText("だよ、, だね ,")
     w.tone_edit.setText("明るく話す")
     w.save()
     assert w.table.rowCount() == builtin + 1
     got = {c["speaker"]: c for c in api.voice_characters()}["テスト声"]
     assert got["endings"] == ["だよ", "だね"] and got["first_person"] == "ぼく"
+    assert got["second_person"] == "きみ"
 
     row = next(i for i in range(w.table.rowCount()) if w.table.item(i, 0).text() == "テスト声")
     w.table.selectRow(row)
