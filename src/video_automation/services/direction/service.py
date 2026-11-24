@@ -21,7 +21,7 @@ from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import Project, Script, ScriptCharacter, ScriptSegment
-from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError
+from video_automation.integrations.ffmpeg.runner import FFmpeg
 from video_automation.schemas.animation import CardRequest, InfographicRequest
 from video_automation.schemas.design import Component, DesignProfile
 from video_automation.schemas.direction import (
@@ -94,6 +94,8 @@ SKILLS_FOR_PLAN = [
 ]
 # 画面録画を見せる用途（screen-tutorial-direction の既定の演出を優先して読ませる）
 _SCREEN_PURPOSES = {"tutorial", "explainer"}
+# 動く背景を「浮かぶ形」にする用途（それ以外は、箱の床が波打つアイソメトリック）
+FLOATING_BG_PURPOSES = {"mv", "lyric", "trailer", "promo", "event", "product"}
 CHART_MAX_SEC = 30.0
 CARD_SCALE = 1.25  # 図・カード領域のカードの文字の大きさ（字幕より少し小さい程度）
 HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発話数の上限
@@ -105,6 +107,46 @@ class _Line:
     text: str
     start: int
     end: int
+
+
+def _hex_rgb(c: str) -> tuple[int, int, int]:
+    c = c.lstrip("#")
+    return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+
+
+def pattern_background(out: Path, w: int, h: int, c0: str, c1: str, main: str) -> None:
+    """模様つきの静止画の背景: 斜めのグラデーション＋柔らかい光の円＋細かい点の格子。
+
+    平らな単色・グラデーションだけだと画面が止まって見えるので、目立たない奥行きを付ける。"""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    a, b, m = _hex_rgb(c0), _hex_rgb(c1), _hex_rgb(main)
+    small = Image.new("RGB", (64, 36) if w >= h else (36, 64))
+    sw, sh = small.size
+    px = small.load()
+    assert px is not None
+    for y in range(sh):
+        for x in range(sw):
+            u = (x / (sw - 1) + y / (sh - 1)) / 2
+            px[x, y] = tuple(round(a[i] + (b[i] - a[i]) * u) for i in range(3))
+    im = small.resize((w, h), Image.Resampling.BICUBIC).convert("RGBA")
+    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(glow)
+    r = round(max(w, h) * 0.32)
+    for cx, cy, al in ((0.82, 0.18, 46), (0.12, 0.9, 34)):
+        x, y = round(w * cx), round(h * cy)
+        d.ellipse((x - r, y - r, x + r, y + r), fill=(*m, al))
+    glow = glow.filter(ImageFilter.GaussianBlur(r * 0.45))
+    im.alpha_composite(glow)
+    dots = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(dots)
+    step = max(24, round(min(w, h) / 27))
+    rad = max(1, step // 14)
+    for y in range(step // 2, h, step):
+        for x in range(step // 2, w, step):
+            d.ellipse((x - rad, y - rad, x + rad, y + rad), fill=(255, 255, 255, 14))
+    im.alpha_composite(dots)
+    im.convert("RGB").save(out)
 
 
 def native_transform(
@@ -289,38 +331,39 @@ class DirectionService:
     async def _background(
         self, project_id: str, style: str, w: int, h: int, prof: DesignProfile | None = None
     ) -> AssetRead:
+        """背景。単色・平らなグラデーションだけにはしない（advanced-motion-techniques）。
+
+        動きが許される用途は Blender の 3D の動く背景（箱の床が波打つ／形が浮かぶ）。
+        Blender が無い・失敗したとき、動きが許されない用途は、模様つきの静止画にする。"""
         c0, c1 = BACKGROUNDS.get(style, BACKGROUNDS["navy"])
+        main, accent = "#3BB8DB", "#FFC752"
         if prof is not None:  # 用途の型の背景（暗い側→明るい側のグラデーション）
             c0 = "0x" + prof.palette.base.lstrip("#")
             c1 = "0x" + prof.palette.base2.lstrip("#")
+            main, accent = prof.palette.main, prof.palette.accent
             style = f"{prof.purpose.value}"
+        moving = prof is None or prof.allows(Component.BACKGROUND_MOTION)
+        if moving and self.titles.blender.available:
+            loud = prof is not None and prof.purpose.value in FLOATING_BG_PURPOSES
+            try:
+                return await self.titles.motion_background(
+                    project_id,
+                    style="floating" if loud else "iso_blocks",
+                    base="#" + c0[2:],
+                    base2="#" + c1[2:],
+                    main=main,
+                    accent=accent,
+                    name=f"動く背景（{style}）",
+                )
+            except Exception as exc:  # noqa: BLE001 - 静止画の背景で続ける
+                log.warning("motion_background_failed", error=str(exc)[:300])
         out_dir = self.settings.data_dir / "projects" / project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"bg_{style}_{w}x{h}.png"
+        out = out_dir / f"bg_{style}_{w}x{h}_p.png"
         if not out.is_file():
-            src = f"gradients=s={w}x{h}:c0={c0}:c1={c1}:x0=0:y0=0:x1={w}:y1={h}:d=1"
-            try:
-                await self.ffmpeg.run(
-                    ["-f", "lavfi", "-i", src, "-frames:v", "1", "-update", "1", str(out)],
-                    timeout=60,
-                )
-            except FFmpegError:  # 古い FFmpeg には gradients が無い
-                await self.ffmpeg.run(
-                    [
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        f"color=c={c1}:s={w}x{h}:d=1",
-                        "-frames:v",
-                        "1",
-                        "-update",
-                        "1",
-                        str(out),
-                    ],
-                    timeout=60,
-                )
+            pattern_background(out, w, h, "#" + c0[2:], "#" + c1[2:], main)
         a = await self.timeline.register_generated(
-            project_id, out, AssetKind.IMAGE, "ffmpeg", f"背景（{style}）"
+            project_id, out, AssetKind.IMAGE, "pillow", f"背景（{style}）"
         )
         return AssetRead.model_validate(a)
 
@@ -408,10 +451,19 @@ class DirectionService:
 
         # 背景（ゆっくり寄る）
         bg = await self._background(p.id, plan.background, w, h, prof)
-        cid = add(bg_t, bg.id, 0, total)
-        if prof is None or prof.allows(Component.BACKGROUND_MOTION):
-            cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
+        if bg.kind == AssetKind.VIDEO:
+            # 動く背景は継ぎ目なく繰り返せる長さなので、並べて全体を覆う
+            loop = max(1, media_frames(bg, total))
+            pos = 0
+            while pos < total:
+                add(bg_t, bg.id, pos, min(loop, total - pos))
+                pos += loop
             use(Component.BACKGROUND_MOTION)
+        else:
+            cid = add(bg_t, bg.id, 0, total)
+            if prof is None or prof.allows(Component.BACKGROUND_MOTION):
+                cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
+                use(Component.BACKGROUND_MOTION)
 
         # タイトル（最初の発話の間。短すぎるときは 3 秒）
         title_end = 0

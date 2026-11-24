@@ -3,6 +3,7 @@
 Blender は偽の実行ファイル、LLM・音声エンジンは偽のサーバー。カードは実際に FFmpeg で作る。
 """
 
+import json
 import shutil
 
 import httpx
@@ -85,7 +86,7 @@ async def _ready_script(c):
     return pid, sid
 
 
-async def test_plan_apply_and_reapply(dclient, fake):
+async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     c = dclient
     pid, sid = await _ready_script(c)
     seen = {}
@@ -168,8 +169,15 @@ async def test_plan_apply_and_reapply(dclient, fake):
     kw = max(txt, key=lambda x: x["start_frame"])
     # 右上（左上は書き出し時の章の見出しの場所なので重ねない）
     assert kw["transform"]["y"] < -0.3 and kw["transform"]["x"] > 0.2
-    assert len(by_track["演出・背景"]) == 1
-    assert by_track["演出・背景"][0]["end_frame"] == tl["duration_frames"]
+    # 背景は Blender の動く背景（8 秒で継ぎ目なく繰り返す）を並べて全体を覆う
+    bgs = sorted(by_track["演出・背景"], key=lambda x: x["start_frame"])
+    assert len(bgs) >= 2 and bgs[0]["start_frame"] == 0
+    for a_, b_ in zip(bgs, bgs[1:], strict=False):
+        assert a_["end_frame"] == b_["start_frame"]
+    assert bgs[-1]["end_frame"] == tl["duration_frames"]
+    calls = [json.loads(x) for x in (tmp_path / "calls.jsonl").read_text("utf-8").splitlines()]
+    mb = [x for x in calls if x["script"] == "motion_bg"]
+    assert mb and mb[0]["style"] == "iso_blocks" and mb[0]["frames"] == 8 * 30
 
     # 字幕つきで 1 フレーム描画できる（カードの PNG・帯・話者名）
     mid = fig[1]["start_frame"] + 20

@@ -14,7 +14,7 @@ from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import Project
 from video_automation.integrations.blender.runner import Blender
-from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds
+from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError, ff_seconds
 from video_automation.schemas.animation import CardRequest, InfographicRequest
 from video_automation.schemas.timeline import AssetKind, AssetRead, TitleCardRequest
 from video_automation.services.design.guard import font_key
@@ -292,6 +292,113 @@ class TitleCardService:
             req.project_id, out, AssetKind.VIDEO, "blender", name
         )
         return AssetRead.model_validate(asset)
+
+    # ---------- 動く背景（Blender の 3D を、グラデーションの上に薄く重ねる） ----------
+    async def motion_background(
+        self,
+        project_id: str,
+        *,
+        style: str,
+        base: str,
+        base2: str,
+        main: str,
+        accent: str,
+        loop_sec: float = 8.0,
+        opacity: float = 0.55,
+        name: str = "",
+    ) -> AssetRead:
+        """継ぎ目なく繰り返せる動く背景（MP4）。同じ設定なら作り直さない。"""
+        import hashlib
+
+        w, h, fps_num, fps_den = await self._project(project_id)
+        fps = round(fps_num / fps_den)
+        frames = max(2, round(loop_sec * fps_num / fps_den))
+        spec = f"{style}|{w}x{h}|{fps_num}/{fps_den}|{frames}|{base}{base2}{main}{accent}|{opacity}"
+        key = hashlib.sha1(spec.encode()).hexdigest()[:10]
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"bg_motion_{style}_{key}.mp4"
+        if not out.is_file():
+            with tempfile.TemporaryDirectory(prefix="va_bg_") as tmp:
+                result = await self.blender.run_script(
+                    "motion_bg",
+                    {
+                        "style": style,
+                        "width": w,
+                        "height": h,
+                        "fps": fps,
+                        "frames": frames,
+                        "colors": {
+                            "base": _rgba(base),
+                            "base2": _rgba(base2),
+                            "main": _rgba(main),
+                            "accent": _rgba(accent),
+                        },
+                        "output_dir": tmp,
+                    },
+                    timeout=1800,
+                )
+                if not result.get("frames"):
+                    raise RuntimeError("blender produced no frames")
+                fps_s = f"{fps_num}/{fps_den}"
+                c0, c1 = "0x" + base.lstrip("#"), "0x" + base2.lstrip("#")
+                dur = ff_seconds(frames * fps_den / fps_num)
+                # 3D の層は少しぼかし、薄くして重ねる（字幕・図より目立たせない）
+                blur = max(1.0, w / 1100)
+                graph = (
+                    f"[1:v]format=rgba,scale={w}:{h}:flags=bicubic,gblur=sigma={blur:.2f},"
+                    f"colorchannelmixer=aa={opacity:g}[fg];[0:v][fg]overlay=0:0:shortest=1,"
+                    "format=yuv420p[out]"
+                )
+                grad = (
+                    f"gradients=s={w}x{h}:c0={c0}:c1={c1}:x0=0:y0=0:x1={w}:y1={h}:"
+                    f"r={fps_s}:d={dur}:speed=0.00001"
+                )
+                flat = f"color=c={c1}:s={w}x{h}:r={fps_s}:d={dur}"
+                for src in (grad, flat):  # 古い FFmpeg には gradients が無い
+                    try:
+                        await self._bg_encode(src, tmp, graph, frames, fps_s, out)
+                        break
+                    except FFmpegError:
+                        if src == flat:
+                            raise
+        asset = await self.timeline.register_generated(
+            project_id, out, AssetKind.VIDEO, "blender", name or f"動く背景（{style}）"
+        )
+        return AssetRead.model_validate(asset)
+
+    async def _bg_encode(
+        self, src: str, tmp: str, graph: str, frames: int, fps_s: str, out: Path
+    ) -> None:
+        await self.ffmpeg.run(
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                src,
+                "-framerate",
+                fps_s,
+                "-i",
+                str(Path(tmp) / "frame_%04d.png"),
+                "-filter_complex",
+                graph,
+                "-map",
+                "[out]",
+                "-frames:v",
+                str(frames),
+                "-r",
+                fps_s,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "20",
+                "-an",
+                str(out),
+            ],
+            timeout=600,
+        )
 
     # ---------- 情報カード（FFmpeg で静止画を作る） ----------
     async def card(self, req: CardRequest) -> AssetRead:
