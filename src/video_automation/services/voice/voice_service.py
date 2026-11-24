@@ -106,6 +106,7 @@ class VoiceService:
             for eid, url in settings.voice_engine_urls().items()
         }
         self._info: dict[str, _EngineInfo] = {}
+        self._style_ids: dict[str, set[int]] = {}  # エンジンごとの声（style_id）の一覧
 
     # ---------- P3-01 Engine Capability ----------
     async def _probe(self, engine_id: str) -> _EngineInfo:
@@ -171,6 +172,47 @@ class VoiceService:
             raise EngineUnavailableError(engine_id)
         return engine_id, self.clients[engine_id], info
 
+    async def engine_for_style(
+        self, engine_id: str | None, style_id: int
+    ) -> tuple[str, VoicevoxClient, _EngineInfo]:
+        """話者の声（style_id）を持つエンジン。engine_id の指定があればそれを使う。
+        複数のエンジン（Nemo と製品版など）で声を混ぜられるよう、声ごとに選ぶ。"""
+        if engine_id is not None:
+            return await self._engine(engine_id)
+        first: tuple[str, VoicevoxClient, _EngineInfo] | None = None
+        for eid in self.clients:
+            info = self._info.get(eid) or await self._probe(eid)
+            self._info[eid] = info
+            if not info.status.available:
+                continue
+            first = first or (eid, self.clients[eid], info)
+            ids = self._style_ids.get(eid)
+            if ids is None:
+                try:
+                    speakers = await self.speakers(eid)
+                except VoiceError:
+                    continue
+                ids = {st.id for sp in speakers for st in sp.styles}
+                self._style_ids[eid] = ids
+            if style_id in ids:
+                return eid, self.clients[eid], info
+        if first is None:
+            raise EngineUnavailableError("no voice engine available")
+        return first
+
+    async def speaker_of(self, style_id: int) -> VoiceSpeaker | None:
+        """声（style_id）の話者。使えるエンジンを順に探す。"""
+        for st in await self.engines(refresh=False):
+            if not st.available:
+                continue
+            try:
+                for sp in await self.speakers(st.engine_id):
+                    if any(x.id == style_id for x in sp.styles):
+                        return sp
+            except VoiceError:
+                continue
+        return None
+
     @staticmethod
     def _require(info: _EngineInfo, feature: EngineFeature) -> None:
         # manifest に無い機能は「未確認」→利用不可（仕様 §8：未対応機能は利用不可にする）
@@ -216,13 +258,13 @@ class VoiceService:
 
     # ---------- P3-04 Pronunciation ----------
     async def accent_phrases(self, req: AccentPhrasesRequest) -> list[AccentPhrase]:
-        eid, c, _ = await self._engine(req.engine_id)
+        eid, c, _ = await self.engine_for_style(req.engine_id, req.style_id)
         await self._style(eid, req.style_id)
         raw = await self._call(c.accent_phrases(req.text, req.style_id))
         return [AccentPhrase.model_validate(a) for a in raw]
 
     async def recompute(self, req: MoraEditRequest) -> list[AccentPhrase]:
-        eid, c, info = await self._engine(req.engine_id)
+        eid, c, info = await self.engine_for_style(req.engine_id, req.style_id)
         if req.recompute in ("mora_data", "mora_pitch"):
             self._require(info, EngineFeature.ADJUST_MORA_PITCH)
         if req.recompute in ("mora_data", "mora_length"):
@@ -354,7 +396,7 @@ class VoiceService:
         )
 
     async def preview(self, req: VoicePreviewRequest) -> bytes:
-        eid, c, info = await self._engine(req.engine_id)
+        eid, c, info = await self.engine_for_style(req.engine_id, req.style_id)
         wav, _ = await self._synthesize(eid, c, info, req)
         return wav
 
@@ -402,13 +444,14 @@ class VoiceService:
     async def generate(
         self, req: VoiceGenerateRequest, progress: ProgressFn | None = None
     ) -> list[AudioFileRead]:
-        eid, c, info = await self._engine(req.engine_id)
         if req.project_id is not None:
             async with self.db.session_factory() as s:
                 if await s.get(Project, req.project_id) is None:
                     raise NotFoundError(f"project {req.project_id}")
         out: list[AudioFileRead] = []
+        eid = ""
         for i, item in enumerate(req.items):
+            eid, c, info = await self.engine_for_style(req.engine_id, item.style_id)
             wav, query = await self._synthesize(eid, c, info, item)
             row = await self._save(eid, info, req.project_id, item, wav, query)
             out.append(self.to_read(row))

@@ -26,9 +26,40 @@ from video_automation.schemas.voice import (
     VoicePreviewRequest,
     VoiceSpeaker,
 )
+from video_automation.services.voice.characters import VoiceCharacterStyle
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 scripts = APIRouter(prefix="/scripts", tags=["voice"])
+
+
+# ---------- 声ごとの口調（声を選ぶとキャラクターの口調で台本を書く） ----------
+@router.get("/characters", response_model=list[VoiceCharacterStyle])
+async def list_character_styles(c: AppContainer = Depends(get_container)):
+    return await c.voice_characters.list()
+
+
+@router.get("/characters/by_style/{style_id}")
+async def character_style_of(style_id: int, c: AppContainer = Depends(get_container)):
+    """声（style_id）の話者名と口調。口調が未登録なら style は null。"""
+    speaker, style = await c.voice_characters.for_style(style_id)
+    return {
+        "speaker": speaker,
+        "style": style.model_dump() if style else None,
+        "speaking_style": style.text() if style else "",
+    }
+
+
+@router.put("/characters/{speaker}", response_model=VoiceCharacterStyle)
+async def put_character_style(
+    speaker: str, body: VoiceCharacterStyle, c: AppContainer = Depends(get_container)
+):
+    return await c.voice_characters.put(body.model_copy(update={"speaker": speaker}))
+
+
+@router.delete("/characters/{speaker}", status_code=204)
+async def delete_character_style(speaker: str, c: AppContainer = Depends(get_container)):
+    await c.voice_characters.delete(speaker)
+    return Response(status_code=204)
 
 
 @router.get("/engines", response_model=list[EngineStatus])

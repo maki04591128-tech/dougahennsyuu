@@ -202,3 +202,44 @@ async def test_concurrent_generation(client):
     )
     assert all(j.status == "SUCCEEDED" for j in jobs)
     assert len((await client.get("/voice/audio")).json()) == 5
+
+
+async def test_voice_character_style_fills_speaking_style(client):
+    # 組み込み（出典のあるキャラクター）
+    styles = {s["speaker"]: s for s in (await client.get("/voice/characters")).json()}
+    assert styles["ずんだもん"]["builtin"] and "〜のだ" in styles["ずんだもん"]["endings"]
+    # Nemo の声には口調が無い → ユーザーが登録する
+    by = (await client.get(f"/voice/characters/by_style/{STYLE}")).json()
+    assert by["speaker"] == "女声1" and by["style"] is None
+    r = await client.put(
+        "/voice/characters/女声1",
+        json={
+            "speaker": "x",
+            "first_person": "わたし",
+            "endings": ["〜です"],
+            "tone": "落ち着いた",
+        },
+    )
+    assert r.status_code == 200 and r.json()["speaker"] == "女声1"
+    by = (await client.get(f"/voice/characters/by_style/{STYLE}")).json()
+    assert "一人称は「わたし」" in by["speaking_style"]
+    # 声を選んで口調が空のキャラクターは、その声の口調で埋まる。書いた口調は変えない
+    pid = (await client.post("/projects", json={"name": "C"})).json()["id"]
+    sc = (
+        await client.post(
+            "/scripts/studio",
+            json={
+                "project_id": pid,
+                "mode": "MANUAL",
+                "title": "t",
+                "characters": [
+                    {"name": "A", "voice": {"style_id": STYLE}},
+                    {"name": "B", "voice": {"style_id": STYLE}, "speaking_style": "関西弁"},
+                ],
+            },
+        )
+    ).json()
+    chars = {c["name"]: c for c in sc["characters"]}
+    assert "わたし" in chars["A"]["speaking_style"] and chars["B"]["speaking_style"] == "関西弁"
+    assert (await client.delete("/voice/characters/女声1")).status_code == 204
+    assert (await client.get(f"/voice/characters/by_style/{STYLE}")).json()["style"] is None
