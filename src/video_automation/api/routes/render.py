@@ -60,6 +60,9 @@ async def render_files(render_id: str, c: AppContainer = Depends(get_container))
         "status": r.status,
         "video": str(base / r.output_path) if r.output_path else None,
         "subtitles": [str(base / x) for x in r.subtitle_paths],
+        "credits": str(cp)
+        if r.output_path and (cp := (base / r.output_path).with_suffix(".credits.txt")).is_file()
+        else None,
     }
 
 

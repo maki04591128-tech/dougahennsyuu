@@ -139,7 +139,12 @@ def test_timeline_widget_flow():
         "render",
         "fhd_portrait",
         "s1",
-        {"burn_subtitles": False, "loudnorm": True, "rich_direction": "off"},
+        {
+            "burn_subtitles": False,
+            "loudnorm": True,
+            "rich_direction": "off",
+            "credits": "text",
+        },
     )
     assert not w.render_button.isEnabled()
     w._poll_render()

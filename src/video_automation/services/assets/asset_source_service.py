@@ -24,6 +24,7 @@ from video_automation.database.models import (
     AssetRequestRow,
     AssetSourceKey,
     AudioFile,
+    Clip,
     MusicGeneration,
     Project,
     SearchCacheRow,
@@ -559,14 +560,22 @@ class AssetSourceService:
             return AssetRequestRead.model_validate(row)
 
     # ---------- クレジット ----------
-    async def credits(self, project_id: str) -> CreditsResponse:
+    async def credits(self, project_id: str, used_only: bool = False) -> CreditsResponse:
+        """クレジット。used_only はタイムラインで使っている素材だけ（書き出しに付ける文）。"""
         await self._project(project_id)
         async with self.db.session_factory() as s:
-            assets = (
+            assets = list(
                 (await s.execute(select(Asset).where(Asset.project_id == project_id)))
                 .scalars()
                 .all()
             )
+            if used_only:
+                used = set(
+                    (await s.execute(select(Clip.asset_id).where(Clip.project_id == project_id)))
+                    .scalars()
+                    .all()
+                )
+                assets = [a for a in assets if a.id in used]
             lic = {
                 r.asset_id: r
                 for r in (

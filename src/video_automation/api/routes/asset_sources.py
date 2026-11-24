@@ -102,8 +102,11 @@ async def reject(request_id: str, c: AppContainer = Depends(get_container)):
 
 
 @projects.get("/credits", response_model=CreditsResponse)
-async def credits(project_id: str, c: AppContainer = Depends(get_container)):
-    return await c.asset_sources.credits(project_id)
+async def credits(
+    project_id: str, used_only: bool = False, c: AppContainer = Depends(get_container)
+):
+    """クレジットの一覧と、概要欄に貼れる文。used_only はタイムラインで使っている素材だけ。"""
+    return await c.asset_sources.credits(project_id, used_only)
 
 
 @projects.post("/timeline/add_bgm", response_model=CommandRead, status_code=201)

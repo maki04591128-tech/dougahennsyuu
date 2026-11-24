@@ -126,6 +126,11 @@ async def build_container(
     )
     voice_characters = VoiceCharacterService(db, voice)
     studio = ScriptStudio(db, llm, voice_characters)
+
+    async def _used_credits(project_id: str) -> str:
+        return (await asset_sources.credits(project_id, used_only=True)).text
+
+    render.credits_for = _used_credits
     approvals = ApprovalService(settings, db, timeline, render, asset_sources, studio)
     await approvals.load_policy()
     orchestrator = Orchestrator(

@@ -50,7 +50,7 @@ BUILTIN: dict[str, VoiceCharacterStyle] = {
             first_person="ボク",
             endings=["〜のだ", "〜なのだ"],
             tone="ずんだ餅の精。やや不幸属性で、ないがしろにされることもしばしば",
-            source="VOICEVOX ボイボ寮（説明）／口調は一般に知られる設定（要確認）",
+            source="語尾: Game Watch 2024-12-09 の紹介／一人称は一般の設定（要確認）",
             builtin=True,
         ),
         VoiceCharacterStyle(
