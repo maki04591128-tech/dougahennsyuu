@@ -100,6 +100,8 @@ class SubtitleSyncRequest(BaseModel):
     script_id: str
     gap_sec: float = Field(default=0.3, ge=0, le=10)  # セグメント間の無音
     min_duration_sec: float = Field(default=0.6, ge=0, le=10)
+    # 行の終わりの字幕を、次の字幕が出るまで（最大この秒数）残す。読み切れる時間を確保する
+    hold_sec: float = Field(default=0.5, ge=0, le=5)
 
 
 class SubtitleFormat(StrEnum):

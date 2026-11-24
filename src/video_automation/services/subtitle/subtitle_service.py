@@ -334,11 +334,14 @@ class SubtitleService:
 
             # 最短表示時間：次のキュー開始までの範囲で延長。重なりは除去（半開区間）
             min_len = sec_to_frame(req.min_duration_sec, fps)
+            hold = sec_to_frame(req.hold_sec, fps)
             for i, cue in enumerate(all_cues):
                 assert cue.start_frame is not None and cue.end_frame is not None
                 limit = all_cues[i + 1].start_frame if i + 1 < len(all_cues) else None
                 if cue.end_frame - cue.start_frame < min_len:
                     cue.end_frame = cue.start_frame + min_len
+                if limit is not None:  # 次の字幕までの間（行の間の無音）に残す
+                    cue.end_frame = max(cue.end_frame, min(cue.end_frame + hold, limit))
                 if limit is not None and cue.end_frame > limit:
                     cue.end_frame = max(cue.start_frame + 1, limit)
             await s.commit()

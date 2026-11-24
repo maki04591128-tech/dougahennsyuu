@@ -46,7 +46,9 @@ async def test_full_flow_generate_sync_export(client, settings):
     gen = await client.post("/subtitles/generate", json={"script_id": sid})
     assert gen.status_code == 200
     assert (await client.post("/subtitles/export", json={"script_id": sid})).status_code == 409
-    cues = (await client.post("/subtitles/synchronize", json={"script_id": sid})).json()
+    cues = (
+        await client.post("/subtitles/synchronize", json={"script_id": sid, "hold_sec": 0})
+    ).json()
     assert len(cues) == 3 and all(len(ln) <= 22 for c in cues for ln in c["text"].split("\n"))
     assert cues[1]["text"].count("\n") == 1  # 長文は2行に折り返し
     # 半開区間で単調・非重複
@@ -94,7 +96,9 @@ async def test_multiline_cue_split_follows_mora_timing(client):
     await client.post(
         "/subtitles/generate", json={"script_id": sid, "max_chars_per_line": 11, "max_lines": 1}
     )
-    cues = (await client.post("/subtitles/synchronize", json={"script_id": sid})).json()
+    cues = (
+        await client.post("/subtitles/synchronize", json={"script_id": sid, "hold_sec": 0})
+    ).json()
     assert [c["text"] for c in cues][:2] == ["あいうえおかきくけこ、", "さしすせそたちつてとな"]
     d = [c["end_frame"] - c["start_frame"] for c in cues]
     assert abs(d[1] / d[0] - 11 / 10) < 0.05  # 10モーラ : 11モーラ
@@ -104,7 +108,9 @@ async def test_portrait_and_ntsc_fps(client):
     pid = await _project(client, 1080, 1920, (30000, 1001))
     sid, _ = await _script_with_audio(client, pid)
     await client.post("/subtitles/generate", json={"script_id": sid})
-    cues = (await client.post("/subtitles/synchronize", json={"script_id": sid})).json()
+    cues = (
+        await client.post("/subtitles/synchronize", json={"script_id": sid, "hold_sec": 0})
+    ).json()
     assert all(len(ln) <= 14 for c in cues for ln in c["text"].split("\n"))
     ass = (await client.post("/subtitles/export", json={"script_id": sid})).json()["content"]
     assert "PlayResX: 1080" in ass and "PlayResY: 1920" in ass

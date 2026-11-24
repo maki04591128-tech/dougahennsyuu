@@ -61,6 +61,8 @@ class SubtitleUse:
     band: str  # none / fitted / full
     font: str
     lines: list[tuple[str, float]] = field(default_factory=list)  # (文, 表示秒)
+    # 各字幕の元の音声の速さ（字/秒）。音声に合わせていない字幕は None
+    voice_rates: list[float | None] = field(default_factory=list)
 
 
 @dataclass
@@ -202,11 +204,34 @@ def check(
                     ),
                 )
             )
-        fast = [
-            t
-            for t, sec in sub.lines
-            if sec > 0 and len(t.replace("\n", "")) / sec > spec.chars_per_sec
-        ]
+        # 音声に合わせた字幕は、音声の速さまでは許す（音声と同時に聞けるため）。
+        # 音声より 25% 以上速く切り替わる字幕と、上限を超える字幕だけを警告する
+        rates = sub.voice_rates or [None] * len(sub.lines)
+        fast: list[str] = []
+        fast_voiced: list[str] = []
+        for (t, sec), vr in zip(sub.lines, rates, strict=False):
+            if sec <= 0:
+                continue
+            speed = len(t.replace("\n", "")) / sec
+            if vr is None:
+                if speed > spec.chars_per_sec:
+                    fast.append(t)
+            else:
+                limit = min(max(spec.chars_per_sec, vr * 1.25), spec.speech_chars_per_sec)
+                if speed > limit:
+                    fast_voiced.append(t)
+        if fast_voiced:
+            out.append(
+                Violation(
+                    code="subtitle_speed",
+                    component=Component.SUBTITLE,
+                    severity="warning",
+                    message=(
+                        f"音声より速く切り替わる（または 1 秒 {spec.speech_chars_per_sec:g} 字を"
+                        f"超える）字幕が {len(fast_voiced)} 件あります。区切りを減らしてください"
+                    ),
+                )
+            )
         if fast:
             out.append(
                 Violation(

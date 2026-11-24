@@ -224,3 +224,23 @@ def test_light_profiles_get_light_outline_and_denied_speaker_label_is_off():
     assert explainer.outline_color == "#000000" and explainer.speaker_label
     kids = style_from_profile(PROFILES[Purpose.KIDS])
     assert kids.speaker_label is False  # 子ども向けは話者名を使わない
+
+
+def test_voice_synced_subtitles_are_allowed_up_to_speech_speed():
+    info = PROFILES[Purpose.EXPLAINER]  # 読める速さ 1 秒 7 字
+    m = DesignManifest()
+    m.add(C.SUBTITLE, 3)
+    m.subtitle = SubtitleUse(
+        size_ratio=info.subtitle.size_ratio,
+        band=info.subtitle.band,
+        font=info.typography.body_font,
+        lines=[("あ" * 18, 2.0), ("い" * 16, 2.0), ("う" * 30, 2.0)],  # 9, 8, 15 字/秒
+        voice_rates=[8.0, 8.0, 8.0],
+    )
+    speed = [v for v in check(info, m).violations if v.code == "subtitle_speed"]
+    # 音声（8 字/秒）の 1.25 倍=10 字/秒 までは許し、15 字/秒だけ警告
+    assert len(speed) == 1 and "1 件" in speed[0].message and "音声" in speed[0].message
+    # 音声に合わせていない字幕は従来どおり「読める速さ」で判定
+    m.subtitle.voice_rates = []
+    speed = [v for v in check(info, m).violations if v.code == "subtitle_speed"]
+    assert len(speed) == 1 and "3 件" in speed[0].message
