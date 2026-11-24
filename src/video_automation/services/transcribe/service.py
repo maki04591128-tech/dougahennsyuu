@@ -146,15 +146,21 @@ class WhisperRecognizer:
 
     def _run(self, audio: Any, language: str) -> Recognized:
         model = self._load()
-        segs, info = model.transcribe(
-            audio, language=language, word_timestamps=True, vad_filter=True, beam_size=5
-        )
-        words: list[Word] = []
-        segments: list[tuple[str, float, float]] = []
-        for sg in segs:  # 区切りは順に作られる（ここで実際に計算が走る）
-            segments.append((sg.text, float(sg.start), float(sg.end)))
-            for w in sg.words or []:
-                words.append(Word(w.word, float(w.start), float(w.end)))
+        # 声の区間の判定（VAD）は伴奏つきの歌声を「声ではない」と落とすことがある。
+        # 何も聞き取れなかったときは、判定なしでもう一度だけ試す
+        for vad in (True, False):
+            segs, info = model.transcribe(
+                audio, language=language, word_timestamps=True, vad_filter=vad, beam_size=5
+            )
+            words: list[Word] = []
+            segments: list[tuple[str, float, float]] = []
+            for sg in segs:  # 区切りは順に作られる（ここで実際に計算が走る）
+                segments.append((sg.text, float(sg.start), float(sg.end)))
+                for w in sg.words or []:
+                    words.append(Word(w.word, float(w.start), float(w.end)))
+            if words:
+                break
+            log.info("transcribe_retry_without_vad")
         return Recognized(words, segments, info.language, float(info.duration))
 
     def __call__(self, audio: Any, language: str) -> Recognized:
@@ -271,7 +277,7 @@ class TranscriptionService:
         if progress:
             await progress(0.8)
         if req.lyrics and req.lyrics.strip():
-            lines = align_lyrics(req.lyrics.splitlines(), rec.words)
+            lines = align_lyrics(req.lyrics.splitlines(), rec.words, duration=rec.duration)
         else:
             lines = lines_from_segments(rec.segments)
         if not lines:
