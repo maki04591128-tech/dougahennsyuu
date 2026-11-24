@@ -61,6 +61,8 @@ CHAR_COLS = [
     "話者ID",
     "抑揚の強さ(0-2)",
     "字幕の色(#RRGGBB)",
+    "立ち絵",
+    "字幕の書体（空欄=自動）",
 ]
 TURN_COLS = ["#", "シーン", "話者", "セリフ", "生成元", "固定", "推定秒"]
 
@@ -113,6 +115,12 @@ class ScriptStudioWidget(QWidget):
         self.del_char_button.clicked.connect(
             lambda: self.char_table.removeRow(self.char_table.currentRow())
         )
+        # 立ち絵（PSD を取り込むと表情・腕の部品に分けたパックになる）
+        self.tachie_packs: list[dict[str, Any]] = []
+        self.tachie_path_edit = QLineEdit()
+        self.tachie_path_edit.setPlaceholderText("立ち絵の PSD または zip の場所（PSDTool 形式）")
+        self.tachie_import_button = QPushButton("立ち絵を取り込む")
+        self.tachie_import_button.clicked.connect(self.import_tachie)
 
         self.new_button = QPushButton("新規作成")
         self.new_button.clicked.connect(self.create_script)
@@ -146,6 +154,10 @@ class ScriptStudioWidget(QWidget):
         cb.addWidget(self.add_char_button)
         cb.addWidget(self.del_char_button)
         sl.addLayout(cb)
+        tb = QHBoxLayout()
+        tb.addWidget(self.tachie_path_edit, 1)
+        tb.addWidget(self.tachie_import_button)
+        sl.addLayout(tb)
         bb = QHBoxLayout()
         bb.addWidget(self.new_button)
         bb.addWidget(self.save_button)
@@ -301,6 +313,7 @@ class ScriptStudioWidget(QWidget):
         for p in projects:
             self.project_combo.addItem(p["name"], p["id"])
         self.project_combo.blockSignals(False)
+        self._load_packs()
         self.open_latest()
 
     def open_latest(self, *_: Any) -> None:
@@ -333,6 +346,49 @@ class ScriptStudioWidget(QWidget):
         ex = voice.get("expressiveness")
         self.char_table.setItem(r, 6, QTableWidgetItem("" if ex is None else f"{ex:g}"))
         self.char_table.setItem(r, 7, QTableWidgetItem(str(c.get("color") or "")))
+        combo = QComboBox()
+        combo.addItem("（なし）", None)
+        for p in self.tachie_packs:
+            combo.addItem(f"{p['name']}（{p.get('author') or '作者不明'}）", p["id"])
+        want = c.get("tachie_pack") if "tachie_pack" in c else self._guess_pack(c.get("name"))
+        i = combo.findData(want) if want else 0
+        combo.setCurrentIndex(max(0, i))
+        self.char_table.setCellWidget(r, 8, combo)
+        self.char_table.setItem(r, 9, QTableWidgetItem(str(c.get("subtitle_font") or "")))
+
+    def _guess_pack(self, name: Any) -> str | None:
+        """新しいキャラクターの立ち絵: 名前が合うパックを既定で選ぶ（めたん→四国めたん）。"""
+        n = str(name or "").strip()
+        if not n:
+            return None
+        for p in self.tachie_packs:
+            if n == p["name"] or n in p["name"] or p["name"] in n:
+                return str(p["id"])
+        return None
+
+    def _load_packs(self) -> None:
+        if not hasattr(self.api, "tachie_packs"):
+            return
+        try:
+            self.tachie_packs = self.api.tachie_packs()
+        except Exception:  # noqa: BLE001 - 立ち絵の一覧が取れなくても台本は使える
+            self.tachie_packs = []
+
+    def import_tachie(self) -> None:
+        path = self.tachie_path_edit.text().strip().strip('"')
+        if not path:
+            self.status_label.setText("立ち絵の PSD または zip の場所を入れてください")
+            return
+
+        def done(p: dict[str, Any]) -> None:
+            chars = self.characters()
+            self._load_packs()
+            self.char_table.setRowCount(0)
+            for c in chars:
+                self._add_char_row(c)
+            self.status_label.setText(f"立ち絵「{p['name']}」を取り込みました")
+
+        self._call(lambda: self.api.tachie_import(path), done, "立ち絵を取り込み中…（1〜2 分）")
 
     def characters(self) -> list[dict[str, Any]]:
         out = []
@@ -367,9 +423,16 @@ class ScriptStudioWidget(QWidget):
                     "is_user": bool(cell[4] and cell[4].checkState() == Qt.CheckState.Checked),
                     "voice": voice,
                     "color": _color(cell[7].text() if len(cell) > 7 and cell[7] else ""),
+                    "tachie_pack": self._pack_of(r),
+                    "subtitle_font": (cell[9].text().strip() if len(cell) > 9 and cell[9] else "")
+                    or None,
                 }
             )
         return out
+
+    def _pack_of(self, row: int) -> str | None:
+        w = self.char_table.cellWidget(row, 8)
+        return w.currentData() if isinstance(w, QComboBox) else None
 
     def settings(self) -> dict[str, Any]:
         return {

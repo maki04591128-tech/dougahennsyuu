@@ -178,6 +178,8 @@ def test_script_studio_widget_flow():
         "is_user": True,
         "voice": {"style_id": 3},
         "color": None,
+        "tachie_pack": None,
+        "subtitle_font": None,
     }
 
     w.lines_edit.setPlainText("こんにちは\nB：割り込み\n\n")
@@ -330,3 +332,36 @@ def test_script_studio_opens_latest_script_of_project():
     w.refresh()  # 保存済みの台本（最後に作ったもの）を開く
     assert ("detail", "s1") in api.calls
     assert w.turn_table.rowCount() == 2 and "開きました" in w.status_label.text()
+
+
+def test_script_studio_tachie_column(qtbot_like=None):
+    """立ち絵の列: パックを選べ、名前の合うパックが既定で選ばれる。"""
+    import pytest
+
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    from video_automation.ui.script_studio.widget import ScriptStudioWidget
+
+    QApplication.instance() or QApplication([])
+
+    class Api:
+        def tachie_packs(self):
+            return [
+                {"id": "zundamon", "name": "ずんだもん", "author": "坂本アヒル"},
+                {"id": "shikoku_metan", "name": "四国めたん", "author": "坂本アヒル"},
+            ]
+
+        def list_projects(self):
+            return []
+
+    w = ScriptStudioWidget(Api())
+    w.refresh()
+    w.char_table.setRowCount(0)
+    w._add_char_row({"name": "めたん"})
+    w._add_char_row({"name": "ずんだもん", "tachie_pack": None, "subtitle_font": "Meiryo"})
+    combo = w.char_table.cellWidget(0, 8)
+    assert isinstance(combo, QComboBox) and combo.currentData() == "shikoku_metan"
+    chars = w.characters()
+    assert chars[0]["tachie_pack"] == "shikoku_metan"
+    assert chars[1]["tachie_pack"] is None and chars[1]["subtitle_font"] == "Meiryo"

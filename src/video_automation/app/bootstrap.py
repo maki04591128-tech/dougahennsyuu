@@ -16,6 +16,7 @@ from video_automation.services.animation.preset_service import PresetService
 from video_automation.services.animation.scene_service import SceneService
 from video_automation.services.assets.asset_source_service import AssetSourceService
 from video_automation.services.assets.downloader import Resolver
+from video_automation.services.characters.service import CharacterService
 from video_automation.services.design.service import DesignService
 from video_automation.services.direction.service import DirectionService
 from video_automation.services.llm_tasks.gateway import LLMGateway
@@ -71,6 +72,7 @@ class AppContainer:
     design: DesignService
     transcriber: TranscriptionService
     skills: SkillLibrary
+    characters: CharacterService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -130,8 +132,13 @@ async def build_container(
     voice_characters = VoiceCharacterService(db, voice)
     studio = ScriptStudio(db, llm, voice_characters)
 
+    characters = CharacterService(settings, db, timeline, ffmpeg)
+    render.characters = characters
+
     async def _used_credits(project_id: str) -> str:
-        return (await asset_sources.credits(project_id, used_only=True)).text
+        text = (await asset_sources.credits(project_id, used_only=True)).text
+        extra = await characters.project_credits(project_id)
+        return "\n".join([x for x in [text, *extra] if x])
 
     render.credits_for = _used_credits
     approvals = ApprovalService(settings, db, timeline, render, asset_sources, studio)
@@ -184,4 +191,5 @@ async def build_container(
         design=design,
         transcriber=TranscriptionService(settings, db, ffmpeg, design=design),
         skills=skills,
+        characters=characters,
     )

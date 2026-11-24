@@ -70,14 +70,32 @@ def test_build_ass_and_srt():
     assert "Style: Default_S1,Meiryo,59,&H0000FFFF" in ass
     assert "Dialogue: 1,0:00:00.00,0:00:01.00,Default,A,0,0,0,,{\\fad(80,80)}一行目\\N二行目" in ass
     assert "｛危険｝" in ass and ",Default_S1,B," in ass
-    # 既定: 話者名・話者色の縁取り・帯
-    ass = build_ass(cues, fps, 1920, 1080, SubtitleStyle(), None, speaker_accents={"A": "#4FC3F7"})
-    assert "Style: Default_S1,Meiryo,67,&H00FFFFFF,&H000000FF,&H00685221" in ass  # 縁=暗い水色
-    assert "{\\fs47\\1c&HF7C34F&\\3c&H000000&}A{\\r}\\N一行目" in ass
+    # 既定: 名前は出さず、話者の色を薄めた文字色・暗くした縁取り・話者の書体・帯
+    ass = build_ass(
+        cues,
+        fps,
+        1920,
+        1080,
+        SubtitleStyle(),
+        None,
+        speaker_accents={"A": "#4FC3F7"},
+        speaker_fonts={"A": "BIZ UDPMincho", "B": "Meiryo UI"},
+    )
+    # 文字=薄い水色（#BCE8FC）、縁=暗い水色、書体=話者の書体
+    assert "Style: Default_S1,BIZ UDPMincho,67,&H00FCE8BC,&H000000FF,&H00685221" in ass
+    assert "Style: Default_S2,Meiryo UI,67,&H00FFFFFF" in ass
+    assert "{\\r}" not in ass and ",Default_S1,A," in ass and ",Default_S2,B," in ass
     assert ass.count("Dialogue: 0,") == 2 and "\\p1}m 0 0 l 1920 0" in ass
-    # 話者が1人なら名前は出さない
-    one = build_ass(cues[:1], fps, 1920, 1080, SubtitleStyle(), speaker_accents={"A": "#4FC3F7"})
-    assert "{\\r}" not in one
+    # 名前を出す設定
+    lab = build_ass(
+        cues, fps, 1920, 1080, SubtitleStyle(speaker_label=True), speaker_accents={"A": "#4FC3F7"}
+    )
+    assert "{\\fs47\\1c&HF7C34F&\\3c&H000000&}A{\\r}\\N一行目" in lab
+    # 話者が1人なら書体・色は変えない
+    one = build_ass(
+        cues[:1], fps, 1920, 1080, SubtitleStyle(), speaker_fonts={"A": "BIZ UDPMincho"}
+    )
+    assert "{\\r}" not in one and "BIZ UDPMincho" not in one
     srt = build_srt(cues, fps)
     assert srt.startswith("1\r\n00:00:00,000 --> 00:00:01,001\r\n一行目\r\n二行目\r\n\r\n2\r\n")
 
@@ -86,7 +104,13 @@ def test_build_ass_multi_speaker_override():
     fps = Fraction(30, 1)
     cues = [(0, 30, "A", "一行目")]
     ass = build_ass(
-        cues, fps, 1920, 1080, SubtitleStyle(), speaker_accents={"A": "#4FC3F7"}, multi_speaker=True
+        cues,
+        fps,
+        1920,
+        1080,
+        SubtitleStyle(speaker_label=True),
+        speaker_accents={"A": "#4FC3F7"},
+        multi_speaker=True,
     )
     assert "A{\\r}\\N一行目" in ass
 

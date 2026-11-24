@@ -42,6 +42,10 @@ class CharacterIn(BaseModel):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     # 字幕の縁取り・名前の色（#RRGGBB）。None は自動で割り当てる
     color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    # 立ち絵のパック（GET /characters/packs の id）。None は立ち絵なし
+    tachie_pack: str | None = Field(default=None, max_length=64)
+    # 字幕の書体（話者を書体で区別する）。None は自動で割り当てる
+    subtitle_font: str | None = Field(default=None, max_length=100)
 
 
 class CharacterRead(CharacterIn):

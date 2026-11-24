@@ -214,6 +214,8 @@ class RenderService:
         self.font_for = font_for  # 書体の名前 → ファイル（画面演出の文字に使う）
         # クレジットの文（使っている素材だけ）。素材のサービスが後から設定する
         self.credits_for: Callable[[str], Awaitable[str]] | None = None
+        # 立ち絵（台本のキャラクターに立ち絵があれば、書き出しの前に自動で置く）
+        self.characters: Any = None
         self.settings = settings
         self.db = db
         self.ffmpeg = ffmpeg
@@ -269,6 +271,7 @@ class RenderService:
             height,
             style,
             speaker_accents=await self.subtitles.speaker_accents(script_id),
+            speaker_fonts=await self.subtitles.speaker_fonts(script_id),
             # 範囲を切り出しても、話者名を出すかどうかは台本全体で決める
             multi_speaker=len({c.speaker for c in cues if c.speaker}) >= 2,
         )
@@ -392,6 +395,9 @@ class RenderService:
                 media_end = min(s1, c.end_frame + max(0, handle))
                 media = sec(max(media_end - s0, 1))
                 pad = max(0.0, dur - media)
+                if src_path.lower().endswith(".webm") and a.source == "characters":
+                    # 透過つき VP9（立ち絵）。内蔵の vp9 復号器は透過を捨てるので libvpx で読む
+                    inputs += ["-c:v", "libvpx-vp9"]
                 inputs += ["-ss", ff_seconds(src_in), "-t", ff_seconds(media), "-i", src_path]
             used[c.id] = n
             span[c.id] = (s0, s1, media, pad)
@@ -708,6 +714,18 @@ class RenderService:
         job = self.jobs.submit("render", run)
         await self._set(render_id, job_id=job.id)
 
+    async def _tachie(self, req: RenderRequest) -> None:
+        """台本のキャラクターに立ち絵があれば、立ち絵の動画を作ってタイムラインに置く（既定）。"""
+        if not req.script_id or self.characters is None:
+            return
+        if self.design is not None:
+            from video_automation.schemas.design import Component
+
+            prof = await self.design.profile_for(req.project_id)
+            if prof is not None and not prof.allows(Component.CHARACTER):
+                return
+        await self.characters.apply(req.script_id)
+
     async def _render(
         self, render_id: str, req: RenderRequest, progress: ProgressFn
     ) -> dict[str, Any]:
@@ -718,6 +736,7 @@ class RenderService:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = out_dir / f"{stamp}_{prof.name.value}.mp4"
         await self._set(render_id, status=RenderStatus.RENDERING.value, encoder=encoder)
+        await self._tachie(req)
         rich = await self.rich_plan(req)
         if rich is not None:
             return await self._render_rich(render_id, req, rich, out, encoder, progress)

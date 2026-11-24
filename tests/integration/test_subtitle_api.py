@@ -73,11 +73,14 @@ async def test_full_flow_generate_sync_export(client, settings):
     assert ",Default_S1,ゲスト," in ass["content"]
     path = Path(settings.data_dir) / ass["path"]
     assert path.is_file() and path.read_bytes()[:3] == b"\xef\xbb\xbf"
-    # 話者の色（自動）: 司会=水色、ゲスト=オレンジ。名前と縁取りに使う
-    assert "司会{\\r}\\N" in ass["content"] and "\\1c&HF7C34F&" in ass["content"]
+    # 話者は名前ではなく書体と色で区別する（司会=水色、ゲスト=オレンジ。書体は登場順）
+    assert "司会{\\r}\\N" not in ass["content"]
+    styles = [ln for ln in ass["content"].split("\r\n") if ln.startswith("Style: Default_S")]
+    assert len(styles) == 2 and any("UD Digi Kyokasho NK-B" in x for x in styles)
+    assert any("BIZ UDPMincho" in x for x in styles)
     # プロジェクトの字幕スタイルを保存すると出力に使われる
     st = (await client.get(f"/subtitles/style/{pid}")).json()
-    assert st["speaker_label"] and st["band"]
+    assert not st["speaker_label"] and st["speaker_fonts"] and st["band"]
     st.update(speaker_label=False, band=False, font_size=50)
     assert (await client.put(f"/subtitles/style/{pid}", json=st)).status_code == 200
     ass2 = (await client.post("/subtitles/export", json={"script_id": sid})).json()["content"]

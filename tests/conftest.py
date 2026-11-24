@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -132,3 +133,57 @@ def _cleanup_qt_widgets():
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
     gc.collect()
+
+
+def fake_tachie_pack(root: Path) -> Path:
+    """テスト用の立ち絵パック（色の四角で体・腕・口・目）。"""
+    from PIL import Image
+
+    d = root / "p"
+    (d / "parts").mkdir(parents=True)
+
+    def part(name: str, color: tuple[int, int, int], box: tuple[int, int, int, int]) -> dict:
+        x0, y0, x1, y1 = box
+        Image.new("RGBA", (x1 - x0, y1 - y0), color + (255,)).save(d / "parts" / f"{name}.png")
+        return {"file": f"{name}.png", "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+    meta = {
+        "version": 1,
+        "name": "テスト",
+        "author": "作者",
+        "credit": "立ち絵：作者",
+        "faces": "left",
+        "canvas": [100, 200],
+        "bbox": [10, 0, 90, 200],
+        "stack": [
+            {"fixed": part("body", (200, 200, 200), (20, 40, 80, 200))},
+            {"slot": "arm_r"},
+            {"slot": "mouth"},
+            {"slot": "eyes"},
+        ],
+        "parts": {
+            "arm_r": {
+                "a": part("arm_a", (255, 0, 0), (10, 60, 20, 120)),
+                "b": part("arm_b", (0, 0, 255), (10, 20, 20, 60)),
+            },
+            "mouth": {
+                "c": part("m_c", (0, 0, 0), (45, 30, 55, 32)),
+                "o": part("m_o", (90, 0, 0), (45, 28, 55, 36)),
+            },
+            "eyes": {
+                "open": part("e_o", (0, 0, 0), (40, 16, 60, 22)),
+                "closed": part("e_c", (0, 0, 0), (40, 19, 60, 20)),
+            },
+        },
+        "blink": "closed",
+        "expressions": {"neutral": {"eyes": "open", "mouth": ["c", "o", "o"]}},
+        "poses": {"neutral": {"arm_r": "a"}, "wave": {"arm_r": "b"}},
+        "gesture_arm": {"wave": "arm_r"},
+    }
+    (d / "pack.json").write_text(json.dumps(meta, ensure_ascii=False), "utf-8")
+    return d
+
+
+@pytest.fixture
+def make_tachie_pack():
+    return fake_tachie_pack

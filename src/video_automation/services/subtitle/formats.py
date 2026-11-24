@@ -46,6 +46,15 @@ def _font_size(st: SubtitleStyle, width: int, height: int) -> int:
     return st.font_size or max(16, round(min(width, height) * st.font_size_ratio))
 
 
+def tint(hex_color: str, amount: float = 0.62) -> str:
+    """文字色用に白へ寄せた色（#RRGGBB）。amount=1 で白。"""
+    h = hex_color.lstrip("#")[-6:]
+    r, g, b = (
+        round(int(h[i : i + 2], 16) + (255 - int(h[i : i + 2], 16)) * amount) for i in (0, 2, 4)
+    )
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
 def darken(hex_color: str, factor: float = 0.42) -> str:
     """縁取り用に暗くした色（#RRGGBB）。"""
     h = hex_color.lstrip("#")[-6:]
@@ -59,12 +68,13 @@ def _style_line(
     height: int,
     primary: str | None = None,
     outline: str | None = None,
+    font: str | None = None,
 ) -> str:
     size = _font_size(st, width, height)
     mv = round(height * st.margin_v_ratio)
     mh = round(width * st.margin_h_ratio)
     return (
-        f"Style: {st.name},{st.font_name},{size},{ass_color(primary or st.primary_color)},"
+        f"Style: {st.name},{font or st.font_name},{size},{ass_color(primary or st.primary_color)},"
         f"&H000000FF,{ass_color(outline or st.outline_color)},{ass_color(st.back_color)},"
         f"{-1 if st.bold else 0},0,0,0,100,100,0,0,1,{st.outline:g},{st.shadow:g},"
         f"{st.alignment},{mh},{mh},{mv},1"
@@ -128,17 +138,32 @@ def build_ass(
     title: str = "VideoAutomation",
     speaker_accents: dict[str, str] | None = None,
     multi_speaker: bool | None = None,
+    speaker_fonts: dict[str, str] | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
 
     speaker_colors は話者別の文字色。speaker_accents は話者の色で、名前の表示と
     縁取り（暗くした色）に使う（style.speaker_label / speaker_outline）。
     名前は話者が 2 人以上のときだけ出す。"""
-    speaker_colors = speaker_colors or {}
+    speaker_colors = dict(speaker_colors or {})
     accents = speaker_accents or {}
+    fonts = (speaker_fonts or {}) if style.speaker_fonts else {}
+    multi_spk = (
+        multi_speaker
+        if multi_speaker is not None
+        else len({spk for _, _, spk, _ in cues if spk}) >= 2
+    )
+    if style.speaker_fill and style.speaker_outline and multi_spk:
+        # 話者の色を薄めた文字色（縁取りは話者の色を暗くした色）で、名前なしでも区別できる
+        for spk, col in accents.items():
+            speaker_colors.setdefault(spk, tint(col))
     styles = [_style_line(style, width, height)]
     style_of: dict[str, str] = {}
-    speakers = sorted(set(speaker_colors) | (set(accents) if style.speaker_outline else set()))
+    speakers = sorted(
+        set(speaker_colors)
+        | (set(accents) if style.speaker_outline else set())
+        | (set(fonts) if multi_spk else set())
+    )
     for i, spk in enumerate(speakers):
         name = f"{style.name}_S{i + 1}"
         outline = darken(accents[spk]) if style.speaker_outline and spk in accents else None
@@ -149,6 +174,7 @@ def build_ass(
                 height,
                 speaker_colors.get(spk),
                 outline,
+                fonts.get(spk) if multi_spk else None,
             )
         )
         style_of[spk] = name
@@ -157,11 +183,7 @@ def build_ass(
         if style.fade_in_ms or style.fade_out_ms
         else ""
     )
-    multi = (
-        multi_speaker
-        if multi_speaker is not None
-        else len({spk for _, _, spk, _ in cues if spk}) >= 2
-    )
+    multi = multi_spk
     size = _font_size(style, width, height)
     bottom = style.alignment in (1, 2, 3)
     lines = [

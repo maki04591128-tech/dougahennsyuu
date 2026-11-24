@@ -457,6 +457,19 @@ class ApiClient:
             )
         )
 
+    # ----- 立ち絵 -----
+    def tachie_packs(self) -> list[dict[str, Any]]:
+        return list(self._json(self._http.get("/characters/packs")))
+
+    def tachie_import(self, path: str) -> dict[str, Any]:
+        """PSD（zip）から立ち絵パックを作る（Job の終わりまで待つ）。"""
+        job = self._json(self._http.post("/characters/packs/import", json={"path": path}))
+        return dict(self.wait_job(job["id"], timeout=900))
+
+    def tachie_apply(self, script_id: str) -> dict[str, Any]:
+        job = self._json(self._http.post("/characters/apply", json={"script_id": script_id}))
+        return dict(self.wait_job(job["id"], timeout=3600))
+
     def wait_job(self, job_id: str, timeout: float = 1800.0, interval: float = 1.0) -> Any:
         """Job の終了を待って結果を返す（失敗は例外）。UI のワーカースレッドから呼ぶ。"""
         import time
