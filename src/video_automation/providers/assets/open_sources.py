@@ -1,5 +1,6 @@
 """Freesound（効果音。APIキー必須）・Openverse・Wikimedia Commons（キー不要）。"""
 
+import re
 from typing import Any
 
 from video_automation.providers.assets.base import AssetSource, SourceNotFoundError
@@ -180,21 +181,23 @@ class WikimediaSource(AssetSource):
             "iiextmetadatafilter": self._META,
         }
 
-    # 大きすぎる画像（数万画素の絵画など）は、縮小版も選べるようにする（書き出しが止まらない大きさ）
-    _THUMB_WIDTHS = (2560, 3840)
+    # 大きすぎる画像（数万画素の絵画など）は縮小版も選べるようにする（書き出しが止まらない）。
+    # Wikimedia の縮小版は決まった幅だけ作れる（2560 などは 400 になる）
+    _THUMB_WIDTHS = (1920, 3840)
+    _THUMB_RE = re.compile(r"/\d+px-")
 
     @classmethod
     def _thumbs(cls, ii: dict[str, Any], mt: MediaType) -> list[MediaVariant]:
-        thumb = ii.get("thumburl") or ""
+        thumb = (ii.get("thumburl") or "").split("?", 1)[0]
         w, h = ii.get("width") or 0, ii.get("height") or 0
-        if mt != MediaType.IMAGE or "/640px-" not in thumb or not w or not h:
+        if mt != MediaType.IMAGE or not cls._THUMB_RE.search(thumb) or not w or not h:
             return []
         out = []
         for tw in cls._THUMB_WIDTHS:
-            if w > tw:
+            if w > tw * 1.5:  # 元とほとんど変わらない縮小版は作らない
                 out.append(
                     MediaVariant(
-                        url=thumb.replace("/640px-", f"/{tw}px-"),
+                        url=cls._THUMB_RE.sub(f"/{tw}px-", thumb, count=1),
                         width=tw,
                         height=round(h * tw / w),
                         label=f"{tw}px",
