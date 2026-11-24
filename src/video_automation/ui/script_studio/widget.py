@@ -111,7 +111,10 @@ class ScriptStudioWidget(QWidget):
 
         self.char_table = QTableWidget(0, len(CHAR_COLS))
         self.char_table.setHorizontalHeaderLabels(CHAR_COLS)
-        self.char_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        ch = self.char_table.horizontalHeader()
+        ch.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # 立ち絵の列は名前が読める幅にする（狭い枠でも「…」にならない）
+        ch.setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)
         self.add_char_button = QPushButton("キャラクター追加")
         self.add_char_button.clicked.connect(lambda: self._add_char_row({}))
         self.del_char_button = QPushButton("選択キャラクター削除")
@@ -374,7 +377,12 @@ class ScriptStudioWidget(QWidget):
         combo = QComboBox()
         combo.addItem("（なし）", None)
         for p in self.tachie_packs:
-            combo.addItem(f"{p['name']}（{p.get('author') or '作者不明'}）", p["id"])
+            combo.addItem(str(p["name"]), p["id"])
+            combo.setItemData(
+                combo.count() - 1, f"作者: {p.get('author') or '不明'}", Qt.ItemDataRole.ToolTipRole
+            )
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 24)
         want = c.get("tachie_pack") if "tachie_pack" in c else self._guess_pack(c.get("name"))
         i = combo.findData(want) if want else 0
         combo.setCurrentIndex(max(0, i))
