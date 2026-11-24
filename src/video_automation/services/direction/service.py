@@ -100,6 +100,7 @@ FLOATING_BG_PURPOSES = {"mv", "lyric", "trailer", "promo", "event", "product"}
 CHART_MAX_SEC = 30.0
 CARD_SCALE = 1.25  # 図・カード領域のカードの文字の大きさ（字幕より少し小さい程度）
 HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発話数の上限
+REVEAL_MIN_SEC = 1.2  # カードの項目を順に出すとき、1 項目を出しておく最短の時間
 
 
 @dataclass
@@ -108,6 +109,32 @@ class _Line:
     text: str
     start: int
     end: int
+
+
+def _reveal_steps(shot: Shot, lines: list, start: int, end: int, min_len: int) -> list:
+    """カードの本文を 1 項目ずつ出す区間 [(開始, 終了, 出す項目数)] を返す。
+
+    項目が 2 つ以上で、見出しか要点・まとめの型のときだけ順に出す。各項目は説明している
+    発話（from_line〜to_line）に合わせて出し、発話が足りなければ等分する。
+    どの区間も min_len 未満になるなら順に出さず、全部を一度に出す（None）。
+    """
+    n = len(shot.body)
+    if n < 2 or shot.style == "keyword" or end - start < min_len * n:
+        return [(start, end, None)]
+    lo, hi = shot.from_line, max(shot.from_line, shot.to_line or shot.from_line)
+    starts = [ln.start for ln in lines[lo - 1 : hi]]
+    if len(starts) >= n:
+        # 発話を項目数で区切り、各区切りの最初の発話で次の項目を出す
+        times = [starts[(k * len(starts)) // n] for k in range(n)]
+    else:
+        times = [start + (end - start) * k // n for k in range(n)]
+    times[0] = start
+    times = [max(start, min(t, end)) for t in times]
+    bounds = [*times, end]
+    if any(bounds[k + 1] - bounds[k] < min_len for k in range(n)):
+        times = [start + (end - start) * k // n for k in range(n)]
+        bounds = [*times, end]
+    return [(bounds[k], bounds[k + 1], k + 1) for k in range(n)]
 
 
 def _hex_rgb(c: str) -> tuple[int, int, int]:
@@ -588,38 +615,44 @@ class DirectionService:
             fade = min(8, length // 4)
             if s.kind == ShotKind.CARD:
                 use(Component.CARD)
-                a = await self.titles.card(
-                    CardRequest(
-                        project_id=p.id,
-                        heading=s.heading,
-                        body=s.body,
-                        style=s.style,
-                        accent_color=accent,
-                        panel_color=panel,
-                        text_color=ink,
-                        font=heading_font,
-                        scale=CARD_SCALE,
+                steps = _reveal_steps(s, lines, start, end, frames(REVEAL_MIN_SEC))
+                last = len(steps) - 1
+                for k, (t0, t1, reveal) in enumerate(steps):
+                    a = await self.titles.card(
+                        CardRequest(
+                            project_id=p.id,
+                            heading=s.heading,
+                            body=s.body,
+                            style=s.style,
+                            accent_color=accent,
+                            panel_color=panel,
+                            text_color=ink,
+                            font=heading_font,
+                            scale=CARD_SCALE,
+                            reveal=reveal,
+                        )
                     )
-                )
-                cid = add(
-                    fig_t,
-                    a.id,
-                    start,
-                    length,
-                    transform=native_transform(
-                        a.width or 1,
-                        a.height or 1,
-                        w,
-                        h,
-                        cx=0.5,
-                        cy=zone_cy,
-                        max_h=zone_h,
-                        max_w=main_w,
-                    ),
-                    fade_in_frames=fade,
-                    fade_out_frames=fade,
-                )
-                cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
+                    # 順に出すときは同じ大きさの絵を切り替えるだけ。出入りの動きは最初と最後のみ
+                    cid = add(
+                        fig_t,
+                        a.id,
+                        t0,
+                        t1 - t0,
+                        transform=native_transform(
+                            a.width or 1,
+                            a.height or 1,
+                            w,
+                            h,
+                            cx=0.5,
+                            cy=zone_cy,
+                            max_h=zone_h,
+                            max_w=main_w,
+                        ),
+                        fade_in_frames=min(fade, (t1 - t0) // 3) if k == 0 else 0,
+                        fade_out_frames=min(fade, (t1 - t0) // 3) if k == last else 0,
+                    )
+                    if k == 0:
+                        cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
                 shown.append((start, end))
             elif s.kind == ShotKind.CHART:
                 use(Component.CHART)

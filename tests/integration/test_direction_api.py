@@ -157,8 +157,11 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
         by_track.setdefault(names[cl["track_id"]], []).append(cl)
     fig = sorted(by_track["演出・図"], key=lambda x: x["start_frame"])
     # タイトルの下の一言・図表・まとめ（画面が空かないよう、次が出るまで表示）。
-    # 1 発話目のカードはタイトルと重なり、表示時間が残らないので外れる
-    assert len(fig) == 3
+    # 1 発話目のカードはタイトルと重なり、表示時間が残らないので外れる。
+    # まとめ（2 項目）は 1 項目ずつ出すので、同じ大きさの絵 2 枚を続けて置く
+    assert len(fig) == 4
+    assert fig[2]["end_frame"] == fig[3]["start_frame"]
+    assert (fig[2]["fade_out_frames"], fig[3]["fade_in_frames"]) == (0, 0)
     assert any(x.startswith("1: 表示時間が短すぎる") for x in out["skipped"])
     for a, b in zip(fig[1:], fig[2:], strict=False):
         assert a["end_frame"] <= b["start_frame"]
