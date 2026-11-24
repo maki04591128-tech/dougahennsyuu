@@ -513,7 +513,19 @@ class DirectionService:
                 cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_up"))
 
         # 図・カード・画像（次が出るまで表示し続ける）
-        mains = [s for s in plan.shots if s.kind in MAIN_KINDS]
+        # 置けない画像（素材が未選択）は、表示時間を決める前に外す。後で外すと、その画像の
+        # 時間（最後の図なら動画の終わりまで）が背景だけの空白になる
+        mains = []
+        for s in plan.shots:
+            if s.kind not in MAIN_KINDS:
+                continue
+            if s.kind == ShotKind.IMAGE:
+                img = assets.get(s.asset_id or "")
+                if img is None or img.kind != AssetKind.IMAGE:
+                    q = f"（検索語: {s.query}）" if s.query else ""
+                    skipped.append(f"{s.from_line}: 画像の素材が未選択のため外しました{q}")
+                    continue
+            mains.append(s)
         zone_cy = (ZONE_TOP + ZONE_BOTTOM) / 2
         zone_h = ZONE_BOTTOM - ZONE_TOP
         windows: list[tuple[Shot, int, int]] = []
@@ -635,11 +647,7 @@ class DirectionService:
                     shown_end = stop
                 shown.append((start, shown_end))
             else:  # IMAGE
-                img = assets.get(s.asset_id or "")
-                if img is None or img.kind != AssetKind.IMAGE:
-                    q = f"（検索語: {s.query}）" if s.query else ""
-                    skipped.append(f"{s.from_line}: 画像の素材が未選択のため外しました{q}")
-                    continue
+                img = assets[s.asset_id or ""]  # 置けるものだけ mains に残している
                 use(Component.IMAGE)
                 cid = add(
                     fig_t,

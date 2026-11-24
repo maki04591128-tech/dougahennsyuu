@@ -324,3 +324,32 @@ async def test_long_chart_is_extended_by_repeating_its_still_part(dclient, monke
     rec = (await c.get(f"/projects/{pid}/design")).json()
     chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
     assert not any(v["code"] == "empty_screen" for v in chk["violations"]), (rec, chk)
+
+
+async def test_unplaceable_last_image_does_not_leave_the_end_empty(dclient, fake):
+    """最後の図が素材の無い画像なら、その前の図・カードを終わりまで出し続ける（空白にしない）。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+
+    def responder(body):
+        if "shots" not in (body.get("format") or {}).get("properties", {}):
+            return None
+        return _full(
+            {
+                "title": "",
+                "subtitle": "",
+                "shots": [
+                    {"kind": "card", "from_line": 2, "heading": "要点", "body": ["114GPa"]},
+                    {"kind": "image", "from_line": 4, "query": "diamond"},  # 素材なし
+                ],
+            }
+        )
+
+    fake.chat_responder = responder
+    plan = (await c.post("/direction/plan", json={"script_id": sid})).json()["plan"]
+    out = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    assert any("diamond" in x for x in out["skipped"])
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {t["id"]: t["name"] for t in tl["tracks"]}
+    fig = [x for x in tl["clips"] if names[x["track_id"]] == "演出・図"]
+    assert fig and max(x["end_frame"] for x in fig) == tl["duration_frames"]
