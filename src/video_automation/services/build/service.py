@@ -10,8 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from video_automation.app.logging import get_logger
@@ -98,27 +96,22 @@ class BuildService:
         """作るのに要るもの（声・AI・FFmpeg・Blender）があるか。"""
         c = self.c
         out: list[ReadinessItem] = []
-        try:
-            n = len(await c.voice.speakers())
-            out.append(
-                ReadinessItem(
-                    key="voice",
-                    label="音声（VOICEVOX）",
-                    ok=n > 0,
-                    required=True,
-                    detail=f"話者 {n} 人",
-                )
+        n = 0
+        for st in await c.voice.engines(refresh=True):
+            if st.available:
+                try:
+                    n += len(await c.voice.speakers(st.engine_id))
+                except Exception:  # noqa: BLE001 - 話者が取れないエンジンは数えない
+                    continue
+        out.append(
+            ReadinessItem(
+                key="voice",
+                label="音声（VOICEVOX）",
+                ok=n > 0,
+                required=True,
+                detail=f"話者 {n} 人" if n else "動いていません",
             )
-        except Exception as exc:  # noqa: BLE001 - つながらない理由は画面に出す
-            out.append(
-                ReadinessItem(
-                    key="voice",
-                    label="音声（VOICEVOX）",
-                    ok=False,
-                    required=True,
-                    detail=f"つながりません（{type(exc).__name__}）",
-                )
-            )
+        )
         models = [m for m in await c.providers.list_models()]
         out.append(
             ReadinessItem(
@@ -129,9 +122,11 @@ class BuildService:
                 detail=f"モデル {len(models)} 個" if models else "モデルが見つかりません",
             )
         )
-        ff = c.settings.ffmpeg_path or "ffmpeg"
-        ok = Path(ff).is_file() or shutil.which(ff) is not None
-        out.append(ReadinessItem(key="ffmpeg", label="FFmpeg", ok=ok, required=True))
+        out.append(
+            ReadinessItem(
+                key="ffmpeg", label="FFmpeg（動画の変換）", ok=c.ffmpeg.available, required=True
+            )
+        )
         out.append(
             ReadinessItem(
                 key="blender",
@@ -147,14 +142,17 @@ class BuildService:
 
     async def _style_ids(self) -> dict[str, int]:
         """話者名 → ノーマル（無ければ最初の話し声）のスタイル。"""
-        try:
-            sps = await self.c.voice.speakers()
-        except Exception:  # noqa: BLE001
-            return {}
+        sps = []
+        for st in await self.c.voice.engines(refresh=False):
+            if st.available:
+                try:
+                    sps += await self.c.voice.speakers(st.engine_id)
+                except Exception:  # noqa: BLE001
+                    continue
         out: dict[str, int] = {}
         for sp in sps:
             talk = [s for s in sp.styles if s.is_talk]
-            if talk:
+            if talk and sp.name not in out:
                 normal = next((s for s in talk if s.name == "ノーマル"), talk[0])
                 out[sp.name] = normal.id
         return out

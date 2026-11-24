@@ -1,6 +1,14 @@
-"""動画自動化ブリッジ: Blender の動画編集（Video Sequencer）から動画自動化アプリを操作する。
+"""動画自動化ブリッジ: Blender の中だけで、文章から動画を作る。
 
-サイドバー（N キー）の「動画自動化」タブ:
+サイドバー（N キー）の「動画自動化」タブ、「動画をつくる」パネル:
+- はじめに … 必要なもの（声・AI・FFmpeg）を確かめる。アプリが動いていなければ起動する
+- つくる … 作りたいものを文章で書く（長さ・向きは任意）
+- 構成の確認 … 用途・尺・話し手・手順を見て、1 回承認すると最後まで続けて作る
+- 制作中 … 進み具合。止めることもできる
+- できあがり … 動画をシーケンサーに読み込む。もう一本つくる
+「くわしい設定」の中に、従来の画面（1 手順ずつ実行・素材ごとの読み込み）を残している。
+
+従来の画面（くわしい設定 → 従来の画面）:
 1. 接続 … 同じ PC で動いているアプリ（既定 http://127.0.0.1:8765）につなぐ
 2. 作るもの … 作りたいものを文章で書くと用途（字幕動画・解説・MV など）を判定し、
    その用途のデザインの型をプロジェクトに設定する
@@ -13,19 +21,34 @@
 bpy の操作はタイマー（メインスレッド）からだけ行う。
 """
 
+import json
+import os
 import queue
+import subprocess
+import sys
 import threading
+import time
 from typing import Any
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    EnumProperty,
+    FloatProperty,
+    PointerProperty,
+    StringProperty,
+)
 
+from . import setup_assist as sa
 from .client import (
     DEFAULT_SERVER,
     STEP_LABELS,
     STEPS,
     BridgeError,
     Client,
+    app_candidates,
+    engine_command,
+    find_app_dir,
     plan_strips,
     run_step,
 )
@@ -34,6 +57,8 @@ from .client import (
 _cache: dict[str, list[tuple[str, str, str]]] = {"projects": [], "scripts": [], "purposes": []}
 _notes: list[str] = []  # 検査・演出の補足（画面に並べる）
 _jobs: queue.Queue[tuple[str, Any]] = queue.Queue()
+_ready: list[dict[str, Any]] = []  # 必要なものの確認結果（はじめに）
+_engine: dict[str, Any] = {"proc": None}  # このアドオンが起動したアプリ
 _busy = threading.Event()
 
 
@@ -63,6 +88,47 @@ class VA_Settings(bpy.types.PropertyGroup):
     video: StringProperty(name="書き出した動画", subtype="FILE_PATH")  # type: ignore[valid-type]
     with_subtitles: BoolProperty(  # type: ignore[valid-type]
         name="字幕も置く", default=True, description="台本の字幕をテキストのストリップで置く"
+    )
+    # ---- 動画をつくる ----
+    screen: EnumProperty(  # type: ignore[valid-type]
+        items=[
+            ("START", "はじめに", ""),
+            ("CREATE", "つくる", ""),
+            ("REVIEW", "構成の確認", ""),
+            ("WORKING", "制作中", ""),
+            ("DONE", "できあがり", ""),
+        ],
+        default="START",
+    )
+    length: EnumProperty(  # type: ignore[valid-type]
+        name="長さ",
+        items=[
+            ("0", "おまかせ", "用途から決めます（ショートは 45 秒、ほかは 2 分）"),
+            ("30", "30 秒", ""),
+            ("60", "1 分", ""),
+            ("120", "2 分", ""),
+            ("300", "5 分", ""),
+        ],
+    )
+    orientation: EnumProperty(  # type: ignore[valid-type]
+        name="向き",
+        items=[
+            ("auto", "おまかせ", "用途から決めます"),
+            ("landscape", "横長（16:9）", ""),
+            ("vertical", "縦長（9:16・ショート）", ""),
+        ],
+    )
+    reference: PointerProperty(  # type: ignore[valid-type]
+        name="参考資料",
+        type=bpy.types.Text,
+        description="テキストエディタに貼った資料を台本の参考にします（任意）",
+    )
+    plan_json: StringProperty(default="")  # type: ignore[valid-type]
+    job_id: StringProperty(default="")  # type: ignore[valid-type]
+    progress: FloatProperty(default=0.0, min=0.0, max=1.0)  # type: ignore[valid-type]
+    step: StringProperty(default="")  # type: ignore[valid-type]
+    auto_import: BoolProperty(  # type: ignore[valid-type]
+        name="できたら読み込む", default=True, description="できた動画をシーケンサーに置きます"
     )
 
 
@@ -100,6 +166,25 @@ def _drain() -> float | None:
             elif kind == "cache":
                 key, items = val
                 _cache[key] = items
+            elif kind == "ready":
+                _ready[:] = list(val)
+            elif kind == "plan":
+                st.plan_json = json.dumps(val, ensure_ascii=False)
+                st.screen = "REVIEW"
+            elif kind == "progress":
+                st.progress, st.step = val
+            elif kind == "screen":
+                st.screen = val
+            elif kind == "done":
+                st.video = val.get("video") or ""
+                _notes[:] = list(val.get("notes") or [])[:20]
+                st.screen = "DONE"
+                st.job_id = ""
+                if st.auto_import and st.video:
+                    try:
+                        bpy.ops.va_bridge.import_video()
+                    except RuntimeError as e:
+                        st.status = f"読み込めませんでした: {e}"
     except queue.Empty:
         pass
     _redraw()
@@ -457,12 +542,553 @@ def _end(strip) -> int:
     return int(strip.frame_start + strip.frame_duration)
 
 
-# ---------------------------------------------------------------- 画面
-class VA_PT_panel(bpy.types.Panel):
-    bl_label = "動画自動化"
+# ---------------------------------------------------------------- 動画をつくる
+def _prefs():
+    addon = bpy.context.preferences.addons.get(__package__)
+    return addon.preferences if addon else None
+
+
+def _app_dir() -> str | None:
+    pr = _prefs()
+    if pr and pr.app_dir and find_app_dir([bpy.path.abspath(pr.app_dir)]):
+        return bpy.path.abspath(pr.app_dir)
+    return find_app_dir(
+        app_candidates(
+            os.path.expanduser("~"),
+            os.environ.get("LOCALAPPDATA", ""),
+            os.path.dirname(os.path.abspath(__file__)),
+        )
+    )
+
+
+def _start_engine(server: str) -> str:
+    """アプリ（API）を画面なしで起動し、応答するまで待つ（別スレッドから呼ぶ）。"""
+    app_dir = _app_dir()
+    if app_dir is None:
+        raise BridgeError(
+            "アプリが見つかりません。くわしい設定の「アプリの場所」でフォルダを選んでください"
+        )
+    cmd = engine_command(app_dir)
+    logs = os.path.join(app_dir, "data", "logs")
+    os.makedirs(logs, exist_ok=True)
+    flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+    with open(os.path.join(logs, "blender_engine.log"), "ab") as log:
+        _engine["proc"] = subprocess.Popen(  # noqa: S603 - アプリの Python を固定の引数で起動
+            cmd, cwd=app_dir, stdout=log, stderr=log, stdin=subprocess.DEVNULL, creationflags=flags
+        )
+    c = Client(server)
+    for _ in range(120):
+        if _engine["proc"].poll() is not None:
+            raise BridgeError("アプリが起動直後に止まりました（data/logs/blender_engine.log）")
+        try:
+            c.health()
+            return app_dir
+        except BridgeError:
+            time.sleep(1.0)
+    raise BridgeError("アプリが 2 分以内に応答しませんでした")
+
+
+def _check_ready(server: str, start: bool) -> None:
+    c = Client(server)
+    try:
+        c.health()
+    except BridgeError:
+        if not start:
+            raise
+        _jobs.put(("status", "アプリを起動しています…（初回は 1 分ほど）"))
+        _start_engine(server)
+    _jobs.put(("status", "必要なものを確かめています…"))
+    try:
+        c.call("POST", "/providers/discover", {}, timeout=60)  # ローカル LLM を探す
+    except BridgeError:
+        pass
+    ready = c.readiness()
+    _jobs.put(("ready", ready))
+    missing = [r["label"] for r in ready if r["required"] and not r["ok"]]
+    if missing:
+        _jobs.put(("status", "足りないもの: " + "、".join(missing)))
+    else:
+        _jobs.put(("status", "準備ができました"))
+        _jobs.put(("screen", "CREATE"))
+
+
+# ---------------------------------------------------------------- 導入の補助（はじめに）
+_SETUP_INFO = {
+    "start_voice": ("VOICEVOX を起動", None),
+    "install_voice": ("VOICEVOX を入れる", "voice"),
+    "install_ffmpeg": ("FFmpeg を入れる", "ffmpeg"),
+    "start_ollama": ("Ollama を起動", None),
+    "install_ollama": ("Ollama を入れる", "ollama"),
+    "pull_model": (f"文章を作る AI（{sa.LLM_MODEL}）を入れる", None),
+}
+
+
+def _localappdata() -> str:
+    return os.environ.get("LOCALAPPDATA", "")
+
+
+def _setup_actions() -> list[str]:
+    """はじめにの確認結果から、出すボタン（足りないものを起動する・入れる）を決める。"""
+    out: list[str] = []
+    bad = {r["key"] for r in _ready if not r["ok"]}
+    app = _app_dir()
+    if "voice" in bad:
+        found = sa.find_voicevox(app, _localappdata(), _voice_dir())
+        out.append("start_voice" if found else "install_voice")
+    if "ffmpeg" in bad:
+        out.append("install_ffmpeg")
+    if "llm" in bad:
+        if sa.find_ollama(_localappdata()):
+            out += ["start_ollama", "pull_model"]
+        else:
+            out.append("install_ollama")
+    return out
+
+
+def _voice_dir() -> str:
+    pr = _prefs()
+    return bpy.path.abspath(pr.voicevox_dir) if pr and pr.voicevox_dir else ""
+
+
+def _restart_engine(server: str) -> None:
+    proc = _engine.get("proc")
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        proc.wait(timeout=30)
+        _start_engine(server)
+    else:
+        _jobs.put(("status", "アプリを起動し直してください（FFmpeg を読み込むため）"))
+
+
+def _do_setup(what: str, server: str, app: str | None) -> None:
+    def prog(label):
+        return lambda f: _jobs.put(("progress", (f, label)))
+
+    local = _localappdata()
+    logs = os.path.join(app, "data", "logs") if app else None
+    if logs:
+        os.makedirs(logs, exist_ok=True)
+    if what in ("install_voice", "install_ffmpeg", "install_ollama") and not app:
+        raise BridgeError("アプリの場所が分かりません（くわしい設定で選んでください）")
+    if what == "install_voice":
+        src = sa.SOURCES["voice"]
+        dl = os.path.join(sa.tools_dir(app), "_dl", "voicevox_engine.vvpp")
+        sa.download(src, dl, prog("VOICEVOX をダウンロード中"))
+        sa.extract_zip(dl, os.path.join(sa.tools_dir(app), "voicevox"), prog("VOICEVOX を展開中"))
+        os.remove(dl)
+        what = "start_voice"
+    if what == "start_voice":
+        exe = sa.find_voicevox(app, local, _voice_dir())
+        if exe is None:
+            raise BridgeError("VOICEVOX ENGINE（run.exe）が見つかりません")
+        _jobs.put(("status", "VOICEVOX を起動しています…（30 秒ほど）"))
+        log = os.path.join(logs, "voicevox.log") if logs else None
+        _engine["voice"] = sa.start_process(sa.voicevox_command(exe), os.path.dirname(exe), log)
+        for _ in range(90):
+            try:
+                ready = {r["key"]: r["ok"] for r in Client(server).readiness()}
+                if ready.get("voice"):
+                    break
+            except BridgeError:
+                pass
+            time.sleep(2.0)
+    elif what == "install_ffmpeg":
+        src = sa.SOURCES["ffmpeg"]
+        dl = os.path.join(sa.tools_dir(app), "_dl", "ffmpeg.zip")
+        sa.download(src, dl, prog("FFmpeg をダウンロード中"))
+        sa.extract_zip(dl, os.path.join(sa.tools_dir(app), "ffmpeg"), prog("FFmpeg を展開中"))
+        os.remove(dl)
+        _restart_engine(server)
+    elif what == "install_ollama":
+        src = sa.SOURCES["ollama"]
+        dl = os.path.join(sa.tools_dir(app), "_dl", "OllamaSetup.exe")
+        sa.download(src, dl, prog("Ollama をダウンロード中"))
+        _jobs.put(
+            ("status", "Ollama のインストーラーを開きました。画面の案内に沿って進めてください")
+        )
+        sa.start_process([dl])
+        return
+    elif what == "start_ollama":
+        exe = sa.find_ollama(local)
+        if exe is None:
+            raise BridgeError("Ollama が見つかりません")
+        sa.start_process([exe, "serve"], None, os.path.join(logs, "ollama.log") if logs else None)
+        time.sleep(5.0)
+    elif what == "pull_model":
+        _jobs.put(("status", f"{sa.LLM_MODEL} を入れています（数分〜数十分）…"))
+        _pull_model(prog(f"{sa.LLM_MODEL} をダウンロード中"))
+    _check_ready(server, start=True)
+
+
+def _pull_model(progress) -> None:
+    """Ollama（同じ PC）にモデルを取り込ませる（ollama.com の公式ライブラリから）。"""
+    import urllib.request
+
+    body = json.dumps({"model": sa.LLM_MODEL, "stream": True}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:11434/api/pull", data=body, headers={"Content-Type": "application/json"}
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=3600) as r:
+        for line in r:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("error"):
+                raise BridgeError(f"モデルを入れられませんでした: {ev['error']}")
+            if ev.get("total") and ev.get("completed"):
+                progress(ev["completed"] / ev["total"])
+
+
+class VA_OT_setup(bpy.types.Operator):
+    bl_idname = "va_bridge.setup"
+    bl_label = "準備"
+    bl_description = "足りないものを起動します。入れるときは配布元と大きさを見せて確認します"
+
+    what: StringProperty()  # type: ignore[valid-type]
+
+    def _source(self):
+        key = _SETUP_INFO.get(self.what, ("", None))[1]
+        return sa.SOURCES.get(key) if key else None
+
+    def invoke(self, context, event):
+        if self.what.startswith("install") or self.what == "pull_model":
+            if not getattr(bpy.app, "online_access", True):
+                _settings(context).status = (
+                    "Blender の設定でインターネットへの接続が許可されていません"
+                    "（編集 → プリファレンス → システム → ネットワーク）"
+                )
+                return {"CANCELLED"}
+            return context.window_manager.invoke_props_dialog(self, width=560)
+        return self.execute(context)
+
+    def draw(self, context):
+        lay = self.layout
+        src = self._source()
+        app = _app_dir() or "（アプリの場所が未設定）"
+        if src is not None:
+            lay.label(text=f"{src.label} を入れます", icon="IMPORT")
+            lay.label(text=f"配布元: {src.origin}")
+            lay.label(text=f"大きさ: 約 {sa.human_size(src.size)}")
+            lay.label(text=f"入れる場所: {sa.tools_dir(app)}")
+            lay.label(text=src.terms)
+        else:
+            lay.label(text=f"{sa.LLM_MODEL} を Ollama に入れます", icon="IMPORT")
+            lay.label(text="配布元: Ollama 公式ライブラリ（ollama.com/library/qwen3）")
+            lay.label(text=f"大きさ: 約 {sa.human_size(sa.LLM_MODEL_SIZE)}")
+            lay.label(text="ライセンス: Apache 2.0")
+        lay.label(text="「OK」を押すとダウンロードを始めます", icon="INFO")
+
+    def execute(self, context):
+        st = _settings(context)
+        if self.what not in _SETUP_INFO:
+            return {"CANCELLED"}
+        if not _background(_do_setup, self.what, st.server, _app_dir()):
+            st.status = "ほかの処理が実行中です"
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class VA_OT_start(bpy.types.Operator):
+    bl_idname = "va_bridge.start"
+    bl_label = "はじめる"
+    bl_description = "アプリにつなぎ（動いていなければ起動し）、必要なものが揃っているか確かめます"
+
+    def execute(self, context):
+        st = _settings(context)
+        pr = _prefs()
+        start = pr.auto_start if pr else True
+        if not _background(_check_ready, st.server, start):
+            st.status = "ほかの処理が実行中です"
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class VA_OT_make_plan(bpy.types.Operator):
+    bl_idname = "va_bridge.make_plan"
+    bl_label = "構成を作る"
+    bl_description = "文章から用途・長さ・話し手・手順を決めます（まだ動画は作りません）"
+
+    def execute(self, context):
+        st = _settings(context)
+        text = st.instruction.strip()
+        if not text:
+            st.status = "作りたいものを書いてください"
+            return {"CANCELLED"}
+        ref = st.reference.as_string() if st.reference else ""
+        dur = int(st.length) or None
+        server, orient = st.server, st.orientation
+
+        def work():
+            _jobs.put(("status", "構成を考えています…"))
+            plan = Client(server).build_plan(text, dur, orient, ref)
+            _jobs.put(("plan", plan))
+            _jobs.put(("status", "構成を確認してください"))
+
+        if not _background(work):
+            st.status = "ほかの処理が実行中です"
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class VA_OT_make_run(bpy.types.Operator):
+    bl_idname = "va_bridge.make_run"
+    bl_label = "この内容で作る"
+    bl_description = (
+        "構成の内容を承認し、台本・音声・字幕・演出・書き出しまで続けて作ります。"
+        "途中で承認を求めることはありません"
+    )
+
+    def execute(self, context):
+        st = _settings(context)
+        try:
+            plan = json.loads(st.plan_json)
+        except ValueError:
+            st.status = "先に構成を作ってください"
+            return {"CANCELLED"}
+        server = st.server
+
+        def work():
+            c = Client(server)
+            job = c.build_run(plan["project_id"], plan["script_id"])
+            jid = job["id"]
+            _jobs.put(("progress", (0.0, "始めています…")))
+            _jobs.put(("screen", "WORKING"))
+            _jobs.put(("status", "制作中です（画面は使えます）"))
+            _job_ref["id"] = jid
+            while True:
+                j = c.job(jid)
+                _jobs.put(("progress", (float(j.get("progress") or 0), j.get("message") or "")))
+                if j["status"] == "SUCCEEDED":
+                    _jobs.put(("done", j.get("result") or {}))
+                    _jobs.put(("status", "できあがりました"))
+                    return
+                if j["status"] in ("FAILED", "CANCELLED"):
+                    _jobs.put(("screen", "REVIEW"))
+                    why = "止めました" if j["status"] == "CANCELLED" else (j.get("error") or "")
+                    raise BridgeError(f"作れませんでした: {why}")
+                time.sleep(1.0)
+
+        if not _background(work):
+            st.status = "ほかの処理が実行中です"
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+_job_ref: dict[str, str] = {"id": ""}
+
+
+class VA_OT_make_cancel(bpy.types.Operator):
+    bl_idname = "va_bridge.make_cancel"
+    bl_label = "止める"
+    bl_description = "制作を途中で止めます（作ったところまでは残ります）"
+
+    def execute(self, context):
+        st = _settings(context)
+        if _job_ref["id"]:
+            try:
+                Client(st.server).cancel_job(_job_ref["id"])
+            except BridgeError as e:
+                st.status = f"エラー: {e}"
+                return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class VA_OT_make_goto(bpy.types.Operator):
+    bl_idname = "va_bridge.make_goto"
+    bl_label = "移動"
+    bl_options = {"INTERNAL"}
+
+    screen: StringProperty()  # type: ignore[valid-type]
+
+    def execute(self, context):
+        _settings(context).screen = self.screen
+        return {"FINISHED"}
+
+
+class VA_OT_open_folder(bpy.types.Operator):
+    bl_idname = "va_bridge.open_folder"
+    bl_label = "フォルダを開く"
+    bl_description = "できあがった動画のあるフォルダを開きます"
+
+    def execute(self, context):
+        path = bpy.path.abspath(_settings(context).video)
+        if path and os.path.exists(path):
+            bpy.ops.wm.path_open(filepath=os.path.dirname(path))
+        return {"FINISHED"}
+
+
+def _plan(st) -> dict[str, Any]:
+    try:
+        return json.loads(st.plan_json) if st.plan_json else {}
+    except ValueError:
+        return {}
+
+
+class VA_PT_make(bpy.types.Panel):
+    bl_label = "動画をつくる"
     bl_space_type = "SEQUENCE_EDITOR"
     bl_region_type = "UI"
     bl_category = "動画自動化"
+    bl_order = 0
+
+    def draw(self, context):
+        st = _settings(context)
+        lay = self.layout
+        steps = ["START", "CREATE", "REVIEW", "WORKING", "DONE"]
+        names = ["はじめに", "つくる", "構成の確認", "制作中", "できあがり"]
+        i = steps.index(st.screen)
+        nxt = f"　次: {names[i + 1]}" if i + 1 < len(names) else ""
+        lay.label(text=f"{i + 1}/{len(steps)} {names[i]}{nxt}", icon="SEQUENCE")
+        getattr(self, "_" + st.screen.lower())(lay, st)
+        lay.separator()
+        lay.label(text=st.status, icon="SORTTIME" if _busy.is_set() else "INFO")
+        for n in _notes[:8]:
+            lay.label(text=n)
+
+    def _start(self, lay, st):
+        box = lay.box()
+        box.label(text="必要なものを確かめます", icon="CHECKMARK")
+        for r in _ready:
+            icon = "CHECKMARK" if r["ok"] else ("ERROR" if r["required"] else "INFO")
+            line = r["label"] + (f"（{r['detail']}）" if r.get("detail") else "")
+            box.label(text=line, icon=icon)
+        if _busy.is_set() and st.step:
+            if hasattr(box, "progress"):
+                box.progress(factor=st.progress, type="BAR", text=f"{st.step} {st.progress:.0%}")
+            else:
+                box.label(text=f"{st.step} {st.progress:.0%}")
+        acts = _setup_actions() if _ready else []
+        if acts:
+            col = box.column(align=True)
+            for a in acts:
+                col.operator(VA_OT_setup.bl_idname, text=_SETUP_INFO[a][0], icon="IMPORT").what = a
+        lay.operator(VA_OT_start.bl_idname, icon="PLAY")
+        if _ready and all(r["ok"] for r in _ready if r["required"]):
+            lay.operator(VA_OT_make_goto.bl_idname, text="つくる へ進む").screen = "CREATE"
+
+    def _create(self, lay, st):
+        box = lay.box()
+        box.label(text="作りたいものを文章で書いてください", icon="TEXT")
+        box.prop(st, "instruction", text="")
+        box.label(text="例: ダイヤモンドより硬い物質の解説動画を作って")
+        row = box.row()
+        row.prop(st, "length")
+        row.prop(st, "orientation")
+        box.prop(st, "reference")
+        lay.operator(VA_OT_make_plan.bl_idname, icon="VIEWZOOM")
+
+    def _review(self, lay, st):
+        pl = _plan(st)
+        if not pl:
+            lay.operator(VA_OT_make_goto.bl_idname, text="つくる に戻る").screen = "CREATE"
+            return
+        box = lay.box()
+        box.label(text=pl["title"], icon="FILE_MOVIE")
+        warn = "（ほかの用途かもしれません）" if pl.get("purpose_uncertain") else ""
+        box.label(text=f"用途: {pl['purpose_label']}{warn}")
+        shape = "縦長" if pl["height"] > pl["width"] else "横長"
+        size = f"{pl['width']}x{pl['height']}（{shape}）"
+        box.label(text=f"大きさ: {size}・長さ: 約 {pl['duration_sec']} 秒")
+        for ch in pl["characters"]:
+            extra = "・立ち絵あり" if ch.get("tachie_pack") else ""
+            box.label(text=f"{ch['name']}: {ch['role']}{extra}", icon="USER")
+        col = box.column(align=True)
+        col.label(text="作る手順:")
+        for i, s_ in enumerate(pl["steps"], 1):
+            col.label(text=f"  {i}. {s_}")
+        for n in pl.get("notes") or []:
+            box.label(text=n, icon="INFO")
+        for r in pl.get("readiness") or []:
+            if not r["ok"] and r["required"]:
+                box.label(text=f"足りないもの: {r['label']}", icon="ERROR")
+        lay.prop(st, "auto_import")
+        row = lay.row()
+        row.scale_y = 1.5
+        row.enabled = bool(pl.get("can_run"))
+        row.operator(VA_OT_make_run.bl_idname, icon="PLAY")
+        lay.operator(VA_OT_make_goto.bl_idname, text="書き直す", icon="LOOP_BACK").screen = "CREATE"
+        if not pl.get("can_run"):
+            lay.operator(
+                VA_OT_make_goto.bl_idname, text="はじめに（準備）へ戻る", icon="TOOL_SETTINGS"
+            ).screen = "START"
+
+    def _working(self, lay, st):
+        box = lay.box()
+        box.label(text=st.step or "制作中…", icon="SORTTIME")
+        if hasattr(box, "progress"):
+            box.progress(factor=st.progress, type="BAR", text=f"{st.progress:.0%}")
+        else:
+            box.label(text=f"{st.progress:.0%}")
+        box.label(text="数分〜十数分かかります。Blender はそのまま使えます")
+        lay.operator(VA_OT_make_cancel.bl_idname, icon="CANCEL")
+
+    def _done(self, lay, st):
+        box = lay.box()
+        box.label(text="できあがりました", icon="CHECKMARK")
+        box.prop(st, "video", text="")
+        row = box.row()
+        row.operator(VA_OT_import_video.bl_idname, icon="FILE_MOVIE")
+        row.operator(VA_OT_open_folder.bl_idname, icon="FILE_FOLDER")
+        lay.operator(VA_OT_make_goto.bl_idname, text="もう一本つくる", icon="ADD").screen = "CREATE"
+
+
+class VA_PT_advanced(bpy.types.Panel):
+    bl_label = "くわしい設定"
+    bl_space_type = "SEQUENCE_EDITOR"
+    bl_region_type = "UI"
+    bl_category = "動画自動化"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 1
+
+    def draw(self, context):
+        st = _settings(context)
+        lay = self.layout
+        lay.prop(st, "server")
+        pr = _prefs()
+        if pr is not None:
+            lay.prop(pr, "app_dir")
+            lay.prop(pr, "voicevox_dir")
+            lay.prop(pr, "auto_start")
+        lay.label(text=f"アプリの場所: {_app_dir() or '見つかりません'}")
+
+
+class VA_Preferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    app_dir: StringProperty(  # type: ignore[valid-type]
+        name="アプリの場所",
+        subtype="DIR_PATH",
+        description="VideoAutomation を入れたフォルダ（空なら自動で探します）",
+    )
+    voicevox_dir: StringProperty(  # type: ignore[valid-type]
+        name="VOICEVOX の場所",
+        subtype="DIR_PATH",
+        description="VOICEVOX ENGINE（run.exe）のあるフォルダ（空なら自動で探します）",
+    )
+    auto_start: BoolProperty(  # type: ignore[valid-type]
+        name="アプリを自動で起動する",
+        default=True,
+        description="はじめるときにアプリが動いていなければ、画面なしで起動します",
+    )
+
+    def draw(self, context):
+        self.layout.prop(self, "app_dir")
+        self.layout.prop(self, "voicevox_dir")
+        self.layout.prop(self, "auto_start")
+
+
+# ---------------------------------------------------------------- 画面
+class VA_PT_panel(bpy.types.Panel):
+    """従来の画面（1 手順ずつ実行・素材ごとの読み込み）。くわしい設定の中に置く。"""
+
+    bl_label = "従来の画面"
+    bl_space_type = "SEQUENCE_EDITOR"
+    bl_region_type = "UI"
+    bl_category = "動画自動化"
+    bl_parent_id = "VA_PT_advanced"
+    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         st = _settings(context)
@@ -507,7 +1133,17 @@ class VA_PT_panel(bpy.types.Panel):
 
 
 classes = (
+    VA_Preferences,
     VA_Settings,
+    VA_OT_setup,
+    VA_OT_start,
+    VA_OT_make_plan,
+    VA_OT_make_run,
+    VA_OT_make_cancel,
+    VA_OT_make_goto,
+    VA_OT_open_folder,
+    VA_PT_make,
+    VA_PT_advanced,
     VA_OT_connect,
     VA_OT_classify,
     VA_OT_set_purpose,
@@ -527,6 +1163,10 @@ def register():
 def unregister():
     if bpy.app.timers.is_registered(_drain):
         bpy.app.timers.unregister(_drain)
+    for key in ("proc", "voice"):  # このアドオンが起動したアプリ・VOICEVOX だけを止める
+        proc = _engine.get(key)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
     del bpy.types.Scene.va_bridge
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

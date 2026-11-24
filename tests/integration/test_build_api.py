@@ -91,3 +91,16 @@ async def test_build_needs_music_for_mv(bclient):
     ).json()
     assert plan["purpose"] in ("lyric", "mv") and not plan["can_run"]
     assert any("曲のファイル" in n for n in plan["notes"])
+
+
+async def test_voice_engine_started_after_the_app_is_found(bclient, fake):
+    """アプリより後に VOICEVOX を起動しても、確かめ直して使えるようになる。"""
+    c = bclient
+    fake.nemo.up = False
+    ready = {r["key"]: r for r in (await c.get("/build/readiness")).json()}
+    assert not ready["voice"]["ok"] and ready["voice"]["detail"] == "動いていません"
+    assert (await c.get("/voice/speakers")).status_code != 200
+    fake.nemo.up = True
+    ready = {r["key"]: r for r in (await c.get("/build/readiness")).json()}
+    assert ready["voice"]["ok"]
+    assert (await c.get("/voice/speakers")).status_code == 200

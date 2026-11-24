@@ -86,6 +86,36 @@ class AppContainer:
         await self.db.dispose()
 
 
+def _tools_ffmpeg(settings: Settings) -> str | None:
+    """PATH に無ければ、Blender のアドオンが入れた FFmpeg（アプリの tools/ffmpeg）を使う。"""
+    import os
+    import shutil
+    from pathlib import Path
+
+    if shutil.which("ffmpeg"):
+        return None
+    root = Path(settings.data_dir).resolve().parent / "tools" / "ffmpeg"
+    for name in ("ffmpeg.exe", "ffmpeg"):
+        hits = sorted(root.glob(f"**/bin/{name}"))
+        if hits:
+            return str(hits[0])
+    # PATH に入っていない（画面から起動したアプリには、後から足した PATH が届かない）ときに、
+    # よくある入れ方（winget・Chocolatey・Scoop・C:\ffmpeg）の場所も見る
+    local = Path(os.environ.get("LOCALAPPDATA", "") or "~").expanduser()
+    fixed = [
+        local / "Microsoft" / "WinGet" / "Links" / "ffmpeg.exe",
+        Path("C:/ProgramData/chocolatey/bin/ffmpeg.exe"),
+        Path.home() / "scoop" / "shims" / "ffmpeg.exe",
+        Path("C:/ffmpeg/bin/ffmpeg.exe"),
+    ]
+    for f in fixed:
+        if f.is_file():
+            return str(f)
+    pk = local / "Microsoft" / "WinGet" / "Packages"
+    hits = sorted(pk.glob("*FFmpeg*/**/bin/ffmpeg.exe")) if pk.is_dir() else []
+    return str(hits[0]) if hits else None
+
+
 async def build_container(
     settings: Settings,
     *,
@@ -109,7 +139,7 @@ async def build_container(
     design = DesignService(db)
     subtitles = SubtitleService(settings, db, voice, readings, design)
     jobs = JobManager(bus)
-    ffmpeg = FFmpeg(settings.ffmpeg_path)
+    ffmpeg = FFmpeg(settings.ffmpeg_path or _tools_ffmpeg(settings))
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
     titles = TitleCardService(settings, db, blender, ffmpeg, timeline)

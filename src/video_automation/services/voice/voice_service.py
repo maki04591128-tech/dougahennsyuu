@@ -153,11 +153,19 @@ class VoiceService:
             out.append(self._info[eid].status)
         return out
 
+    async def _cached_or_probe(self, eid: str) -> _EngineInfo:
+        """使えると分かっているエンジンは覚えた情報を使い、使えなかったエンジンは確かめ直す
+        （アプリより後に VOICEVOX を起動したときに、ずっと「使えない」のままにしない）。"""
+        info = self._info.get(eid)
+        if info is None or not info.status.available:
+            info = await self._probe(eid)
+            self._info[eid] = info
+        return info
+
     async def _engine(self, engine_id: str | None) -> tuple[str, VoicevoxClient, _EngineInfo]:
         if engine_id is None:
             for eid in self.clients:
-                info = self._info.get(eid) or await self._probe(eid)
-                self._info[eid] = info
+                info = await self._cached_or_probe(eid)
                 if info.status.available:
                     return eid, self.clients[eid], info
             raise EngineUnavailableError("no voice engine available")
@@ -181,8 +189,7 @@ class VoiceService:
             return await self._engine(engine_id)
         first: tuple[str, VoicevoxClient, _EngineInfo] | None = None
         for eid in self.clients:
-            info = self._info.get(eid) or await self._probe(eid)
-            self._info[eid] = info
+            info = await self._cached_or_probe(eid)
             if not info.status.available:
                 continue
             first = first or (eid, self.clients[eid], info)
