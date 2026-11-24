@@ -11,6 +11,7 @@
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,25 @@ class _Line:
     text: str
     start: int
     end: int
+
+
+KINETIC_TITLE_MAX = 16  # 1 文字ずつ動かす題名の文字数の上限（長いと読み終わる前に消える）
+_NUM = re.compile(r"[0-9０-９]")
+
+
+def _has_number(text: str) -> bool:
+    return bool(_NUM.search(text or ""))
+
+
+def _emphasis_budget(prof: DesignProfile | None) -> int:
+    """数値テロップを強調の動きで出してよい回数（用途の型の許可。動きの弱い型は 2 回まで）。"""
+    if prof is None:
+        return 2
+    n = prof.allowance(Component.EMPHASIS_TEXT)
+    if n == 0:
+        return 0
+    cap = 2 if prof.motion_level <= 1 else 99
+    return cap if n < 0 else min(n, cap)
 
 
 def _reveal_steps(shot: Shot, lines: list, start: int, end: int, min_len: int) -> list:
@@ -542,12 +562,21 @@ class DirectionService:
             use(Component.TITLE_CARD)
             title_end = min(total, max(lines[0].end, frames(3.0)))
             dur = min(sec(title_end), 30.0)
+            # 冒頭の題名だけは 1 文字ずつ跳ねて出す（情報系では 1 本に 1 回。短い 1 行の題名のみ）
+            kinetic = (
+                prof is not None
+                and prof.allows(Component.KINETIC_TEXT)
+                and "\n" not in plan.title
+                and len(plan.title) <= KINETIC_TITLE_MAX
+            )
+            if kinetic:
+                use(Component.KINETIC_TEXT)
             t_asset = await self.titles.create(
                 TitleCardRequest(
                     project_id=p.id,
                     text=plan.title[:100],
                     duration_sec=dur,
-                    animation="pop",
+                    animation="bounce" if kinetic else "pop",
                     # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
                     # 題名の幅は画面幅の 80%×size（title_card.py）
                     size=min(0.9, main_w * 0.95 / 0.8),
@@ -744,6 +773,7 @@ class DirectionService:
 
         # テロップ（その発話の間。重なる分は前を短くする）
         kws = [s for s in plan.shots if s.kind == ShotKind.KEYWORD]
+        emphasis_left = _emphasis_budget(prof)
         spans: list[tuple[Shot, int, int]] = []
         for s in kws:
             start = max(lines[s.from_line - 1].start + frames(0.15), title_end)
@@ -790,7 +820,14 @@ class DirectionService:
                 fade_in_frames=min(6, (end - start) // 4),
                 fade_out_frames=min(6, (end - start) // 4),
             )
-            cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_right"))
+            # 数値の要点は「ポンと飛び出す」動きで強調する（喋りテロップの動き。情報系は 1 本で
+            # 1〜2 回まで）。それ以外は落ち着いた横からの登場
+            if _has_number(s.text) and emphasis_left > 0:
+                emphasis_left -= 1
+                use(Component.EMPHASIS_TEXT)
+                cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
+            else:
+                cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_right"))
 
         res = await self.timeline.submit(
             p.id,

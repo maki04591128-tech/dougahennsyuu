@@ -86,6 +86,29 @@ class FFmpeg:
             err.decode("utf-8", "replace"),
         )
 
+    async def run_capture(self, args: list[str], *, timeout: float = 600) -> bytes:
+        """ffmpeg を実行して標準出力（生のバイト列）を返す。"""
+        ff, _ = self._require()
+        proc = await asyncio.create_subprocess_exec(
+            ff,
+            "-hide_banner",
+            "-nostdin",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        except (asyncio.CancelledError, TimeoutError):
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
+        if proc.returncode != 0:
+            msg = err.decode("utf-8", "replace").strip()[-500:]
+            raise FFmpegError(f"ffmpeg exited {proc.returncode}: {msg}")
+        return out
+
     async def version(self) -> str:
         if self._version is None:
             ff, _ = self._require()

@@ -48,6 +48,7 @@ from video_automation.services.animation.render_anim import (
     defaults_only,
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
+from video_automation.services.rendering.flash_check import check_video
 from video_automation.services.rendering.rich import RichPlan, max_level, plan_rich
 from video_automation.services.subtitle.formats import ass_color, build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
@@ -718,6 +719,19 @@ class RenderService:
             await self._start(render_id)
         return await self.get(render_id)
 
+    async def _flash_guard(self, out: Path) -> None:
+        """書き出した動画の点滅を調べ、安全基準（1 秒 3 回）を超えたら書き出しを止める。
+
+        利用者の指示や用途の型でも外さない（光過敏性発作の安全基準）。超えた動画は消す。"""
+        info = await self.ffmpeg.probe(out)
+        if not info.has_video:
+            return
+        res = await check_video(self.ffmpeg, out, info.fps or 30.0)
+        log.info("flash_check", ok=res.ok, max_per_sec=res.max_per_sec, frames=res.frames)
+        if not res.ok:
+            out.unlink(missing_ok=True)
+            raise CommandError(res.message())
+
     async def _set(self, render_id: str, **values: Any) -> None:
         async with self.db.session_factory() as s:
             row = await s.get(RenderJob, render_id)
@@ -804,6 +818,7 @@ class RenderService:
             loudnorm=req.loudnorm,
         )
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
+        await self._flash_guard(out)
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
@@ -958,6 +973,7 @@ class RenderService:
         )
         for f in (clean, rich_out):
             f.unlink(missing_ok=True)
+        await self._flash_guard(out)
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
