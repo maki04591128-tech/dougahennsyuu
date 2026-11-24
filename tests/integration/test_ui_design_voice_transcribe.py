@@ -174,3 +174,35 @@ def test_every_component_has_a_japanese_name():
     from video_automation.ui.design.widget import PART
 
     assert {c.value for c in Component} <= set(PART)
+
+
+def test_project_widget_creates_and_imports(api, media_dir, settings):
+    from video_automation.ui.project.widget import ProjectWidget
+
+    _qapp()
+    w = ProjectWidget(api)
+    w.show_projects(api.list_projects())
+    n = w.project_list.count()
+    w.create_project()
+    assert "名前" in w.message_label.text()
+    w.name_edit.setText("新しい動画")
+    w.size_combo.setCurrentIndex(1)  # 縦長
+    w.create_project()
+    assert w.project_list.count() == n + 1 and "新しい動画" in w.project_list.currentItem().text()
+    assert "1080×1920" in w.project_list.currentItem().text()
+    pid = w.project_id()
+    p = next(x for x in api.list_projects() if x["id"] == pid)
+    assert (p["width"], p["height"]) == (1080, 1920)
+    # 取り込み（許可されたフォルダの外はエラーを表示）
+    w.path_edit.setText("C:/Windows/notepad.exe")
+    w.import_file()
+    assert "取り込めませんでした" in w.message_label.text()
+    # データのフォルダの中のファイルは取り込める
+    import shutil
+
+    src = settings.data_dir / "clip.mp4"
+    shutil.copy(media_dir / "clip.mp4", src)
+    w.path_edit.setText(str(src))
+    w.import_file()
+    assert "取り込みました" in w.message_label.text() and w.asset_list.count() == 1
+    assert w.asset_list.item(0).text().startswith("[動画]")
