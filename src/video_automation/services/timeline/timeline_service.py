@@ -359,6 +359,9 @@ class TimelineService:
     async def _apply_one(self, s: AsyncSession, p: Project, c: Any) -> None:
         fps = p.fps_num / p.fps_den
         if isinstance(c, AddTrack):
+            # ID は全プロジェクトで一意。既にあれば 500 ではなく命令の誤りとして返す
+            if c.track_id and await s.get(Track, c.track_id) is not None:
+                raise CommandError(f"track id already exists: {c.track_id}")
             n = (
                 await s.execute(
                     select(func.count()).select_from(Track).where(Track.project_id == p.id)
@@ -376,6 +379,8 @@ class TimelineService:
             await s.flush()
             return
         if isinstance(c, AddClip):
+            if c.clip_id and await s.get(Clip, c.clip_id) is not None:
+                raise CommandError(f"clip id already exists: {c.clip_id}")
             track = await self._track(s, p.id, c.track_id)
             asset = await s.get(Asset, c.asset_id)
             if asset is None or asset.project_id != p.id:
