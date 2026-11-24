@@ -40,6 +40,15 @@ ENCODE = [
 ]
 
 
+def layout(w: int, h: int) -> tuple[float, float, float]:
+    """(帯の高さの比, キャラクターの高さの比, 左のキャラクターの足元の x の比)。
+
+    横長は左右の端に大きく、縦長（ショート）は下の左右に小さく置く（字幕・中央の絵に重ねない）。"""
+    if h > w:
+        return 0.42, 0.34, 0.2
+    return BAND_RATIO, HEIGHT_RATIO, 0.115
+
+
 @dataclass
 class Cast:
     pack: Pack
@@ -200,12 +209,13 @@ def render_overlay(
     from PIL import Image
 
     W, H = size
-    band = round(H * BAND_RATIO) // 2 * 2
-    char_h = H * HEIGHT_RATIO
+    band_r, height_r, side_x = layout(W, H)
+    band = round(H * band_r) // 2 * 2
+    char_h = H * height_r
     items = []
     for c in casts:
         toward = 1 if c.side == "left" else -1
-        foot_x = W * (0.115 if c.side == "left" else 0.885)
+        foot_x = W * (side_x if c.side == "left" else 1 - side_x)
         foot_y = band - char_h * SHOW_RATIO + char_h
         items.append(
             (c, Composer(c.pack, toward), Animator(c.schedule, fps, c.seed), toward, foot_x, foot_y)

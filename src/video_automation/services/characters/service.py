@@ -44,7 +44,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.services.characters import motion
-from video_automation.services.characters.overlay import HEIGHT_RATIO, Cast, render_overlay
+from video_automation.services.characters.overlay import Cast, layout, render_overlay
 from video_automation.services.characters.pack import (
     PackError,
     build_pack,
@@ -242,7 +242,7 @@ class CharacterService:
             )
             for seg, af in lines
         ]
-        h = round(p.height * HEIGHT_RATIO)
+        h = round(p.height * layout(p.width, p.height)[1])
         casts = []
         for i, c in enumerate(cast):
             d = self.packs_dir / str(c.tachie_pack)

@@ -127,7 +127,8 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
         speaker_outline=not dark_text,
         # 話者は名前ではなく書体と色で区別する（名前は出さない）
         speaker_label=False,
-        speaker_fonts=prof.allows(Component.SPEAKER_LABEL),
+        # 話者が 2 人以上なら、どの型でも書体と色で区別する（名前は出さないので型の部品ではない）
+        speaker_fonts=True,
         speaker_fill=not dark_text,
     )
 
