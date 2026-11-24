@@ -349,3 +349,47 @@ async def test_mode_validation_and_character_voice_propagation(client, fake):
     # 旧形式の台本 API は互換のまま
     old = await client.post("/scripts", json={"project_id": pid, "text": "A：こんにちは"})
     assert old.status_code == 201
+
+
+async def test_generation_enforces_each_characters_persona(client, fake):
+    chars = [
+        {**CHARS[0], "speaking_style": "一人称は「僕」。相手は「オマエ」と呼ぶ。語尾は「〜のだ」"},
+        {**CHARS[1], "speaking_style": "一人称は「わたくし」。相手は「アンタ」と呼ぶ"},
+    ]
+    sc = await _setup(client, chars=chars)
+    reply = {
+        "scenes": [
+            {
+                "purpose": "導入",
+                "turns": [
+                    {"speaker": "ずんだもん", "text": "これは便利だよ。本当にすごいでしょ。"},
+                    {"speaker": "めたん", "text": "僕もそう思うわ。あなたはどう？"},
+                ],
+            }
+        ],
+        "notes": [],
+    }
+    fixes = {"fixes": [{"id": "T1", "text": "これは便利なのだ。本当にすごいのだ。"}]}
+
+    def responder(b):
+        props = (b.get("format") or {}).get("properties", {})
+        if "fixes" in props:
+            return fixes
+        return reply if kind_of(b) == "scenes" else None
+
+    fake.chat_responder = responder
+    r = await client.post(f"/scripts/{sc['id']}/generate", json={})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    texts = [t["text"] for t in d["segments"]]
+    assert texts == ["これは便利なのだ。本当にすごいのだ。", "わたくしもそう思うわ。アンタはどう？"]
+    assert any("取り違え" in n for n in d["notes"]) and any("書き直し" in n for n in d["notes"])
+    # 生成の指示に口調の規則が入る
+    first = next(b for b in fake.chat_bodies if kind_of(b) == "scenes")
+    assert "一人称は「わたくし」だけ" in prompt_of(first)
+    # 確認でも口調の問題を指摘する（手で戻した場合）
+    tid = d["segments"][1]["id"]
+    r = await client.put(f"/scripts/{sc['id']}/dialogue/{tid}", json={"text": "僕はそう思うわ"})
+    assert r.status_code == 200, r.text
+    v = (await client.post(f"/scripts/{sc['id']}/validate", json={})).json()
+    assert any(i["code"] == "persona_first_person" and i["turn_id"] == tid for i in v["issues"])

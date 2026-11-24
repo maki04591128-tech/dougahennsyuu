@@ -52,6 +52,7 @@ from video_automation.schemas.script_studio import (
 from video_automation.schemas.subtitle import ScriptMode
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.script import prompts as P
+from video_automation.services.script.persona import Persona, check_line, check_lines, parse_style
 
 if TYPE_CHECKING:
     from video_automation.services.voice.characters import VoiceCharacterService
@@ -113,6 +114,87 @@ class ScriptStudio:
                     c = c.model_copy(update={"speaking_style": style.text()[:500]})
             out.append(c)
         return out
+
+    @staticmethod
+    def _personas(chars: list[dict[str, Any]]) -> dict[str, Persona]:
+        """キャラクターの口調の文から、一人称・呼び方・語尾の規則を読む。"""
+        return {c["name"]: parse_style(c["name"], c.get("speaking_style") or "") for c in chars}
+
+    async def _enforce_persona(
+        self, items: list[dict[str, Any]], personas: dict[str, Persona], model_key: str | None
+    ) -> list[str]:
+        """AI が作ったセリフ（{"speaker", "text"} を書き換える）の口調を確かめて直す。
+
+        一人称・呼び方の取り違えは規則で置き換える。語尾が抜けた発話は、LLM にその発話だけ
+        書き直させ、規則に合う案だけを採る（合わなければ元のまま残し、notes で知らせる）。"""
+        notes: list[str] = []
+        swapped: list[str] = []
+        need: list[int] = []
+        for i, it in enumerate(items):
+            p = personas.get(it["speaker"])
+            if p is None or p.empty:
+                continue
+            fixed, iss = check_line(i, it["text"], p)
+            for x in iss:
+                if x.kind != "ending" and x.fixed is not None:
+                    swapped.append(f"{it['speaker']}「{x.found}」→「{x.expected}」")
+                if x.kind == "ending":
+                    need.append(i)
+            it["text"] = fixed
+        if swapped:
+            uniq = sorted(set(swapped))
+            head = f"口調の取り違えを直しました（{len(swapped)} か所）: "
+            notes.append(head + "、".join(uniq[:6]))
+        if not need:
+            return notes
+        ids = {f"T{k + 1}": i for k, i in enumerate(need)}
+        rules = "\n".join(
+            "- " + personas[items[i]["speaker"]].rules_text()
+            for i in {items[i]["speaker"]: i for i in need}.values()
+        )
+        body = (
+            "次のセリフは語尾の規則を守っていません。意味・長さ・内容はそのままに、"
+            "規則どおりの語尾に書き直してください。\n口調の規則:\n"
+            + rules
+            + "\n\nセリフ:\n"
+            + "\n".join(f"[{k}] {items[i]['speaker']}: {items[i]['text']}" for k, i in ids.items())
+        )
+        try:
+            res = await self.llm.complete_json(
+                TaskType.SCRIPT_GENERATION,
+                [
+                    ChatMessage(role="system", content=P.COMMON),
+                    ChatMessage(role="user", content=body),
+                ],
+                P.PERSONA_FIX_SCHEMA,
+                model_key=model_key,
+            )
+            fixes = {
+                (f.get("id") or "").strip("[] ").upper(): (f.get("text") or "").strip()
+                for f in res.data.get("fixes") or []
+            }
+        except LLMError:
+            fixes = {}
+        left = 0
+        for k, i in ids.items():
+            it = items[i]
+            new = fixes.get(k, "")
+            p = personas[it["speaker"]]
+            ok = bool(new) and len(new) <= max(len(it["text"]) * 1.6, len(it["text"]) + 12)
+            if ok:
+                new_fixed, iss = check_line(0, new, p)
+                ok = not iss or all(x.kind != "ending" for x in iss)
+                new = new_fixed
+            if ok:
+                it["text"] = new[:2000]
+            else:
+                left += 1
+        done = len(ids) - left
+        if done:
+            notes.append(f"語尾が設定と違うセリフを {done} 件書き直しました")
+        if left:
+            notes.append(f"語尾が設定と違うセリフが {left} 件残っています（確認で表示します）")
+        return notes
 
     # ---------- 読み出し ----------
     async def _script(self, s: AsyncSession, script_id: str) -> Script:
@@ -665,9 +747,11 @@ class ScriptStudio:
             }
             run = await self._run(s, script_id, "full", P.FULL_VERSION, inp)
         total_chars = int((st.target_duration_sec or 90) * st.chars_per_sec)
+        personas = self._personas(cdata)
         user = [
             P.settings_text(inp["settings"]) or "テーマ: （未指定。一般的な紹介動画）",
             "キャラクター:\n" + P.characters_text(cdata),
+            P.persona_rules_text(personas),
             f"台本全体のセリフの合計は約{total_chars}文字（目標尺に合わせる）。",
         ]
         if fixed:
@@ -700,6 +784,14 @@ class ScriptStudio:
         notes = list(res.data.get("notes") or [])
         if unknown:
             notes.append(f"設定に無い話者を除外しました: {', '.join(unknown)}")
+        fixed_keys = {_norm(x.text) for x in fixed}
+        ai_turns = [
+            t
+            for sc_ in res.data["scenes"]
+            for t in sc_["turns"]
+            if t["speaker"] in names and _norm(t["text"]) not in fixed_keys
+        ]
+        notes += await self._enforce_persona(ai_turns, personas, req.model_key)
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
             chars, _, segs = await self._rows(s, script_id)
@@ -804,9 +896,11 @@ class ScriptStudio:
             elif is_fixed(x):
                 convo.append(f"（固定）{x.speaker}: {x.text}")
         user_total = sum(len(x.text) for x in user_lines)
+        personas = self._personas(cdata)
         body = [
             P.settings_text(inp["settings"]),
             "キャラクター:\n" + P.characters_text(cdata),
+            P.persona_rules_text({ai_char.name: personas[ai_char.name]}),
             f"ユーザーが「{user.name}」を担当し、あなたは「{ai_char.name}」のセリフだけを作ります。"
             f"ユーザーのセリフは一字一句変えません。",
             f"応答方針: {st.response_policy.value}。{ai_char.name}の発話量の目安は合計約"
@@ -847,6 +941,12 @@ class ScriptStudio:
                 notes.append(f"対象外の位置 {r['after']} への応答を除外しました")
                 continue
             replies.setdefault(key, []).extend(t["text"][:2000] for t in r["turns"])
+        flat = [{"speaker": ai_char.name, "text": t} for v in replies.values() for t in v]
+        notes += await self._enforce_persona(flat, personas, req.model_key)
+        pos = 0
+        for key_, v in replies.items():
+            replies[key_] = [x["text"] for x in flat[pos : pos + len(v)]]
+            pos += len(v)
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
             chars, _, segs = await self._rows(s, script_id)
@@ -925,9 +1025,13 @@ class ScriptStudio:
                 "candidates": req.candidates,
             }
             run = await self._run(s, script_id, "regenerate", P.REGEN_VERSION, inp)
+        personas = self._personas(cdata)
         body = [
             P.settings_text(st.model_dump(mode="json")),
             "キャラクター:\n" + P.characters_text(cdata),
+            P.persona_rules_text({seg.speaker: personas[seg.speaker]})
+            if seg.speaker in personas
+            else "",
             "直前の会話:\n" + "\n".join(f"{x.speaker}: {x.text}" for x in before),
             f"書き直す発話（{seg.speaker}）: {seg.text}",
             ("この発話が応答している入力: " + reply_to.text) if reply_to else "",
@@ -957,6 +1061,8 @@ class ScriptStudio:
             )
             raise
         cands = [c.strip()[:2000] for c in res.data["candidates"] if c.strip()][: req.candidates]
+        if seg.speaker in personas:  # 一人称・呼び方の取り違えは規則で直す
+            cands = [check_line(0, c, personas[seg.speaker])[0] for c in cands]
         await self._finish(
             run.id,
             status="SUCCEEDED",
@@ -1059,6 +1165,18 @@ class ScriptStudio:
                         level="info", code="no_voice", message="音声の話者が未設定", turn_id=t.id
                     )
                 )
+        # 口調（一人称・呼び方・語尾）
+        personas = self._personas([c.model_dump() for c in d.characters])
+        _, p_issues = check_lines([(t.speaker, t.text) for t in d.segments], personas)
+        for pi in p_issues:
+            issues.append(
+                ScriptIssue(
+                    level="warning",
+                    code=f"persona_{pi.kind}",
+                    message=f"{d.segments[pi.index].speaker}: {pi.message()}",
+                    turn_id=d.segments[pi.index].id,
+                )
+            )
         for kw in st.must_keywords:
             if not any(kw in t.text for t in d.segments):
                 issues.append(
