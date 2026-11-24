@@ -884,6 +884,12 @@ class RenderService:
         dprof = await self.design.profile_for(req.project_id)
         assert dprof is not None
         pal = dprof.palette
+        if outline.get("title") and rich.parts.get("intro"):
+            # 演出プランが題名カードを置いている。冒頭（コールドオープン）で同じ題名や
+            # キャッチを繰り返すと題名が 2 回出るので、冒頭は付けない
+            rich.parts["intro"] = False
+            rich.params["intro_frames"] = 0
+            rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
         await progress(0.3)
         timeout = max(1800.0, plan.duration_sec * 40)
         try:
@@ -898,8 +904,10 @@ class RenderService:
                     "height": prof.height,
                     "fps_num": fps_num,
                     "fps_den": fps_den,
-                    "title": (outline.get("title") or "") if r0 == 0 else "",
-                    "catch": (outline.get("catch") or "") if r0 == 0 else "",
+                    # 題名は演出プランが題名カードとして置いている。冒頭（コールドオープン）で
+                    # 同じ題名を繰り返すと題名が 2 回出るので、冒頭には渡さない
+                    "title": "",
+                    "catch": "",
                     "chapters": chapters,
                     "cues": cues,
                     "colors": {

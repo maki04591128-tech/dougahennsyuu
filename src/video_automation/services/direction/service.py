@@ -20,7 +20,7 @@ from sqlalchemy import select
 from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
-from video_automation.database.models import Project, Script, ScriptSegment
+from video_automation.database.models import Project, Script, ScriptCharacter, ScriptSegment
 from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError
 from video_automation.schemas.animation import CardRequest, InfographicRequest
 from video_automation.schemas.design import Component, DesignProfile
@@ -73,7 +73,9 @@ log = get_logger("direction")
 
 ZONE_TOP, ZONE_BOTTOM = 0.13, 0.71  # 図・カードの領域（高さ比）
 STRIP_TOP = 0.025  # テロップの上端
-SIDE = 0.035  # テロップの左余白（幅比）
+SIDE = 0.035  # テロップの左右の余白（幅比）
+# 立ち絵があるとき、図・カードを置ける横の範囲（幅比）。左右の端は立ち絵の列（layout-no-overlap）
+TACHIE_MAIN_W = 0.56
 TRACKS = ("演出・背景", "演出・図", "演出・文字")
 BACKGROUNDS = {
     "navy": ("0x0B1D3A", "0x2A5A8A"),
@@ -106,17 +108,27 @@ class _Line:
 
 
 def native_transform(
-    aw: int, ah: int, cw: int, ch: int, *, cx: float, cy: float, max_h: float = 1.0
+    aw: int,
+    ah: int,
+    cw: int,
+    ch: int,
+    *,
+    cx: float,
+    cy: float,
+    max_h: float = 1.0,
+    max_w: float = 0.92,
 ) -> ClipTransform:
     """素材をそのままの大きさ（はみ出すときは縮小）で、中心 (cx, cy)（画面比）に置く。"""
     s = max(aw / cw, ah / ch)
-    k = min(1.0, max_h * ch / ah, 0.92 * cw / aw)
+    k = native_scale(aw, ah, cw, ch, max_h, max_w)
     return ClipTransform(fit=FitMode.FIT, scale=round(s * k, 4), x=cx - 0.5, y=cy - 0.5)
 
 
-def native_scale(aw: int, ah: int, cw: int, ch: int, max_h: float = 1.0) -> float:
+def native_scale(
+    aw: int, ah: int, cw: int, ch: int, max_h: float = 1.0, max_w: float = 0.92
+) -> float:
     """native_transform で置いたときの、素材の画素に対する表示の倍率。"""
-    return min(1.0, max_h * ch / ah, 0.92 * cw / aw)
+    return min(1.0, max_h * ch / ah, max_w * cw / aw)
 
 
 def fit_to_profile(
@@ -195,6 +207,21 @@ class DirectionService:
             )
         lines = [_Line(x.speaker or "", x.text, x.start_frame or 0, x.end_frame or 0) for x in segs]
         return p, sc, lines
+
+    async def _has_tachie(self, script_id: str) -> bool:
+        """台本の登場キャラクターに立ち絵が付いているか（付いていれば左右の端は立ち絵の列）。"""
+        async with self.db.session_factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptCharacter.id)
+                    .where(
+                        ScriptCharacter.script_id == script_id,
+                        ScriptCharacter.tachie_pack.is_not(None),
+                    )
+                    .limit(1)
+                )
+            ).first()
+        return row is not None
 
     # ---------- プラン ----------
     async def _skill_context(self, project_id: str) -> tuple[str, list[str]]:
@@ -319,7 +346,10 @@ class DirectionService:
         # 題名の縁取り: 暗い文字なら背景の明るい色で縁取る
         title_outline = prof.palette.base if prof and is_dark(prof.palette.text) else "#000000"
         strip_top = max(STRIP_TOP, prof.safe_area.top) if prof else STRIP_TOP
-        side = max(SIDE, prof.safe_area.left) if prof else SIDE
+        side = max(SIDE, prof.safe_area.right) if prof else SIDE
+        # 横長で立ち絵があるときは、図・カードを中央の列に収める（左右の端は立ち絵の列）
+        tachie = w >= h and await self._has_tachie(req.script_id)
+        main_w = TACHIE_MAIN_W if tachie else 0.92
         used: dict[Component, int] = {}
         boxes: list[Placement] = []
 
@@ -423,7 +453,7 @@ class DirectionService:
                     st,
                     max(1, title_end - st),
                     transform=native_transform(
-                        sub.width or 1, sub.height or 1, w, h, cx=0.5, cy=0.6
+                        sub.width or 1, sub.height or 1, w, h, cx=0.5, cy=0.6, max_w=main_w
                     ),
                     fade_in_frames=8,
                     fade_out_frames=8,
@@ -478,7 +508,14 @@ class DirectionService:
                     start,
                     length,
                     transform=native_transform(
-                        a.width or 1, a.height or 1, w, h, cx=0.5, cy=zone_cy, max_h=zone_h
+                        a.width or 1,
+                        a.height or 1,
+                        w,
+                        h,
+                        cx=0.5,
+                        cy=zone_cy,
+                        max_h=zone_h,
+                        max_w=main_w,
                     ),
                     fade_in_frames=fade,
                     fade_out_frames=fade,
@@ -511,7 +548,7 @@ class DirectionService:
                 )
                 media = media_frames(a, length)
                 shown_len = min(length, media)
-                tf = ClipTransform(fit=FitMode.FIT, scale=zone_h, y=zone_cy - 0.5)
+                tf = ClipTransform(fit=FitMode.FIT, scale=min(zone_h, main_w), y=zone_cy - 0.5)
                 # 動き終わった後（止まっている部分）。区間が素材より長ければ、ここを繰り返す
                 still_from = min(media - 1, frames(1.2) + 2)
                 seg = media - still_from
@@ -557,7 +594,9 @@ class DirectionService:
                     img.id,
                     start,
                     length,
-                    transform=ClipTransform(fit=FitMode.FIT, scale=zone_h, y=zone_cy - 0.5),
+                    transform=ClipTransform(
+                        fit=FitMode.FIT, scale=min(zone_h, main_w), y=zone_cy - 0.5
+                    ),
                     fade_in_frames=fade,
                     fade_out_frames=fade,
                 )
@@ -591,8 +630,9 @@ class DirectionService:
                 )
             )
             aw, ah = a.width or 1, a.height or 1
-            kx, ky = side + aw / 2 / w, strip_top + ah / 2 / h
+            # 右上に置く（左上は章の見出しの場所。layout-no-overlap の「補助」の枠）
             k = native_scale(aw, ah, w, h)
+            kx, ky = 1 - side - aw * k / 2 / w, strip_top + ah * k / 2 / h
             boxes.append(
                 Placement(
                     Component.KEYWORD,
@@ -611,7 +651,7 @@ class DirectionService:
                 fade_in_frames=min(6, (end - start) // 4),
                 fade_out_frames=min(6, (end - start) // 4),
             )
-            cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_left"))
+            cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_right"))
 
         res = await self.timeline.submit(
             p.id,

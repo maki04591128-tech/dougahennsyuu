@@ -74,6 +74,9 @@ def test_card_layout_and_placement():
     assert t.fit.value == "fit" and t.scale == round(600 / 1920, 4) and abs(t.y + 0.08) < 1e-9
     t = native_transform(1000, 900, 1920, 1080, cx=0.5, cy=0.42, max_h=0.58)
     assert t.scale * 1080 <= 0.58 * 1080 + 1
+    # 立ち絵があるときは横幅も中央の列（0.56）に収める
+    t = native_transform(1800, 300, 1920, 1080, cx=0.5, cy=0.42, max_w=0.56)
+    assert t.scale <= 0.56 + 1e-4
 
 
 def test_infer_unit_and_whitespace():
