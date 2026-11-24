@@ -42,3 +42,35 @@ def test_check_lines_uses_each_speakers_rules():
     out, iss = check_lines([("ずんだもん", "僕はずんだもんなのだ"), ("四国めたん", "僕よ")], ps)
     assert out == ["僕はずんだもんなのだ", "わたくしよ"]
     assert [(i.index, i.kind) for i in iss] == [(1, "first_person")]
+
+
+def test_fit_to_duration_drops_middle_scenes_then_trailing_lines():
+    from video_automation.services.script.studio import _norm, fit_to_duration
+
+    def scene(name, n, chars=28):
+        return {
+            "purpose": name,
+            "turns": [{"speaker": "A", "text": "あ" * chars} for _ in range(n)],
+        }
+
+    # 1 発話 ≒ 28/7+0.3 = 4.3 秒。6 場面×4 発話 ≒ 103 秒 → 目標 30 秒
+    scenes = [scene(f"s{i}", 4) for i in range(6)]
+    out, notes = fit_to_duration(scenes, 30, 7.0)
+    total = sum(28 / 7 + 0.3 for sc in out for _ in sc["turns"])
+    assert total <= 30 * 1.15 and out[0]["purpose"] == "s0" and out[-1]["purpose"] == "s5"
+    assert notes and "省きました" in notes[0]
+    # 目標以内ならそのまま
+    same, n2 = fit_to_duration(scenes[:2], 60, 7.0)
+    assert same == scenes[:2] and n2 == []
+    # 固定セリフを含む場面は省かない
+    fixed = scene("fixed", 4)
+    fixed["turns"][0]["text"] = "これは固定のセリフです"
+    out, _ = fit_to_duration(
+        [scene("a", 4), fixed, scene("b", 4), scene("c", 4)],
+        20,
+        7.0,
+        {_norm("これは固定のセリフです")},
+    )
+    assert any(sc["purpose"] == "fixed" for sc in out)
+    # 元の場面は変えない
+    assert len(scenes) == 6 and all(len(sc["turns"]) == 4 for sc in scenes)

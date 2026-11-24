@@ -85,6 +85,70 @@ def estimated_sec(text: str, chars_per_sec: float) -> float:
     return round(n / chars_per_sec + 0.3, 2)
 
 
+def fit_to_duration(
+    scenes: list[dict[str, Any]],
+    target_sec: float,
+    chars_per_sec: float,
+    keep: set[str] | None = None,
+    tolerance: float = 1.15,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """LLM が目標の尺より長く書いた台本を、場面単位で短くする（場面の中は会話が続いているので、
+    セリフを 1 つずつ抜くより、まとまった場面ごと省く方が話が崩れない）。
+
+    - 最初と最後の場面（導入・まとめ）は残す
+    - 固定セリフ（keep。_norm 済みの文）を含む場面は残す
+    - 中の場面を 1 つ省くたびに見直し、目標の tolerance 倍以内に入ったら止める
+    - それでも長いときは、いちばん長い中の場面の後ろのセリフを、目標に入るまで省く
+    戻り値は (短くした場面, 画面に出す説明)。"""
+    keep = keep or set()
+
+    def sec(sc: dict[str, Any]) -> float:
+        return sum(estimated_sec(t["text"], chars_per_sec) for t in sc["turns"])
+
+    limit = target_sec * tolerance
+    out = [dict(x, turns=list(x["turns"])) for x in scenes]
+    total = sum(sec(x) for x in out)
+    if total <= limit or len(out) == 0:
+        return out, []
+    notes: list[str] = []
+    before = total
+    dropped = 0
+
+    def fixed(sc: dict[str, Any]) -> bool:
+        return any(_norm(t["text"]) in keep for t in sc["turns"])
+
+    while total > limit:
+        middle = [i for i in range(1, len(out) - 1) if not fixed(out[i])]
+        if not middle:
+            break
+        # 省いたあとの尺が目標にいちばん近くなる場面（同じなら後ろの場面）
+        best = min(middle, key=lambda i: (abs(total - sec(out[i]) - target_sec), -i))
+        if total - sec(out[best]) < target_sec * 0.6:  # 短くなりすぎるなら場面ごとは省かない
+            break
+        total -= sec(out.pop(best))
+        dropped += 1
+    cut = 0
+    while total > limit:
+        cand = [i for i in range(len(out)) if len(out[i]["turns"]) > 2 and not fixed(out[i])]
+        if not cand:
+            break
+        i = max(cand, key=lambda k: (0 < k < len(out) - 1, sec(out[k])))
+        t = out[i]["turns"].pop(-2 if i == len(out) - 1 else -1)  # まとめの締めの一言は残す
+        total -= estimated_sec(t["text"], chars_per_sec)
+        cut += 1
+    if dropped or cut:
+        what = "・".join(
+            x
+            for x in (f"場面 {dropped} つ" if dropped else "", f"セリフ {cut} 件" if cut else "")
+            if x
+        )
+        notes.append(
+            f"目標の長さ（約 {target_sec:.0f} 秒）に合わせて{what}を省きました"
+            f"（推定 {before:.0f} 秒 → {total:.0f} 秒）"
+        )
+    return out, notes
+
+
 def is_fixed(seg: ScriptSegment) -> bool:
     return seg.locked or seg.generation_source in (GenerationSource.USER, GenerationSource.EDITED)
 
@@ -752,7 +816,9 @@ class ScriptStudio:
             P.settings_text(inp["settings"]) or "テーマ: （未指定。一般的な紹介動画）",
             "キャラクター:\n" + P.characters_text(cdata),
             P.persona_rules_text(personas),
-            f"台本全体のセリフの合計は約{total_chars}文字（目標尺に合わせる）。",
+            f"台本全体のセリフの合計は約{total_chars}文字（目標尺に合わせる。超えない）。"
+            f"発話は全部で {max(4, round(total_chars / 28))} 個前後、1 発話は平均 25 文字ほど。"
+            f"場面は {max(2, min(6, round((st.target_duration_sec or 90) / 25)))} つ前後。",
         ]
         if fixed:
             user.append(
@@ -785,6 +851,11 @@ class ScriptStudio:
         if unknown:
             notes.append(f"設定に無い話者を除外しました: {', '.join(unknown)}")
         fixed_keys = {_norm(x.text) for x in fixed}
+        if st.target_duration_sec:  # 目標の尺より長く書いたときは場面ごと省く
+            res.data["scenes"], fit_notes = fit_to_duration(
+                res.data["scenes"], st.target_duration_sec, st.chars_per_sec, fixed_keys
+            )
+            notes += fit_notes
         ai_turns = [
             t
             for sc_ in res.data["scenes"]

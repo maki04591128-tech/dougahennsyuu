@@ -12,7 +12,7 @@ COMMON = (
     "（音声で読み上げるので、長い文は句読点で区切ります）。"
 )
 
-FULL_VERSION = "script.full.v3"
+FULL_VERSION = "script.full.v4"
 FULL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
