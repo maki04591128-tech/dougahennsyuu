@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # 台本の読み上げ: 抑揚の強さ（0=エンジンのまま、1=標準、2=強め）と、未指定時の抑揚スケール
     voice_expressiveness: float = Field(default=1.0, ge=0, le=2)
     voice_default_intonation: float = Field(default=1.15, ge=0, le=2)
+    # 台本の読み上げ: セリフの前後の無音（秒）。エンジンの既定（0.1 秒ずつ）だと、セリフの間の
+    # 無音（字幕の同期で会話のリズムに合わせて入れる）と合わせて間延びする
+    voice_edge_silence: float = Field(default=0.05, ge=0, le=0.5)
 
     # ---- Phase 5: 編集・レンダリング ----
     ffmpeg_path: str | None = None  # None=PATH から検出
