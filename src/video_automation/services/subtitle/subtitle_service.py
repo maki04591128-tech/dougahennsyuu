@@ -84,9 +84,13 @@ def sec_to_frame(sec: float, fps: Fraction) -> int:
 
 def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
     """用途の型から字幕の見た目を作る（書体・大きさ・帯の形・帯の色）。"""
+    from video_automation.schemas.design import Component
+    from video_automation.services.design.guard import is_dark
+
     spec = prof.subtitle
     band = spec.band != "none"
     surface = prof.palette.surface.lstrip("#")
+    dark_text = is_dark(prof.palette.text)
     return SubtitleStyle(
         font_name=prof.typography.body_font,
         font_size_ratio=spec.size_ratio,
@@ -94,9 +98,13 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
         band_mode="fitted" if spec.band == "fitted" else "full",
         band_color=f"#B8{surface}",  # 面の色を 72% の不透明度で
         # 帯の無い型は縁取りを太くして背景から分離する
-        outline=2.0 if band else 4.0,
-        shadow=0.0 if band else 1.5,
+        outline=(1.5 if band else 3.0) if dark_text else (2.0 if band else 4.0),
+        shadow=0.0 if (band or dark_text) else 1.5,
         primary_color=prof.palette.text,
+        # 暗い文字（明るい背景の型）は明るい縁取りにする。暗い縁取りだと字が潰れる
+        outline_color=prof.palette.base if dark_text else "#000000",
+        speaker_outline=not dark_text,
+        speaker_label=prof.allows(Component.SPEAKER_LABEL),
     )
 
 

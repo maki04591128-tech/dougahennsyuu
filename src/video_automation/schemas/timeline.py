@@ -402,6 +402,7 @@ class TitleCardRequest(BaseModel):
     outline_color: str = Field(default="#000000", pattern=r"^#[0-9A-Fa-f]{6}$")
     size: float = Field(default=1.0, ge=0.2, le=2.0)
     position: Literal["center", "lower_third", "top"] = "center"
+    font: str | None = Field(default=None, max_length=60)  # 書体のファミリー名（用途の型）
     box: bool = False  # 文字の後ろに半透明の帯
     box_color: str = Field(default="#000000", pattern=r"^#[0-9A-Fa-f]{6}$")
     box_opacity: float = Field(default=0.55, ge=0, le=1)
