@@ -56,8 +56,8 @@ from video_automation.services.voice.voice_service import (
 
 # 話者の既定の色（明るめ。縁取りには暗くして使う）
 SPEAKER_PALETTE = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFD54F"]
-# 話者ごとの字幕の書体（Windows 10/11 に入っている日本語の書体。形の違いが分かるものの順）
-SPEAKER_FONTS = ["UD Digi Kyokasho NK-B", "BIZ UDPMincho", "BIZ UDPGothic", "Meiryo"]
+# 話者ごとの字幕の書体（Windows 11 の日本語の書体。libass で引ける名前。形の違いが分かる順）
+SPEAKER_FONTS = ["UD Digi Kyokasho NK", "BIZ UDPMincho Medium", "BIZ UDPGothic", "Meiryo"]
 
 log = get_logger("subtitle")
 if TYPE_CHECKING:

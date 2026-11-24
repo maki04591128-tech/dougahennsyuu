@@ -76,8 +76,8 @@ async def test_full_flow_generate_sync_export(client, settings):
     # 話者は名前ではなく書体と色で区別する（司会=水色、ゲスト=オレンジ。書体は登場順）
     assert "司会{\\r}\\N" not in ass["content"]
     styles = [ln for ln in ass["content"].split("\r\n") if ln.startswith("Style: Default_S")]
-    assert len(styles) == 2 and any("UD Digi Kyokasho NK-B" in x for x in styles)
-    assert any("BIZ UDPMincho" in x for x in styles)
+    assert len(styles) == 2 and any("UD Digi Kyokasho NK," in x for x in styles)
+    assert any("BIZ UDPMincho Medium" in x for x in styles)
     # プロジェクトの字幕スタイルを保存すると出力に使われる
     st = (await client.get(f"/subtitles/style/{pid}")).json()
     assert not st["speaker_label"] and st["speaker_fonts"] and st["band"]
