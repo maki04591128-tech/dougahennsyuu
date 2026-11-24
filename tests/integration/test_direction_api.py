@@ -284,6 +284,14 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
     chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
     assert chk["ok"], chk
     assert chk["used"]["keyword"] == 2 and chk["used"]["card"] == 1
+    # 冒頭の短い題名は 1 文字ずつ跳ねる（1 回）。数値のテロップはポンと飛び出す（2 回まで）
+    assert chk["used"]["kinetic_text"] == 1 and chk["used"]["emphasis_text"] == 2
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    txt = next(t["id"] for t in tl["tracks"] if t["name"] == "演出・文字")
+    presets = [
+        (x.get("animation") or {}).get("preset") for x in tl["clips"] if x["track_id"] == txt
+    ]
+    assert presets.count("pop_in") == 2, presets
     rec = (await c.app.state.container.design.manifest(pid)).colors
     assert "#4CB3E6" in rec and "#F2B544" in rec
 
