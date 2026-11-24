@@ -1301,6 +1301,12 @@ def unregister():
         proc = _engine.get(key)
         if proc is not None and proc.poll() is None:
             proc.terminate()
-    del bpy.types.Scene.va_bridge
+    # 古い版（scripts/addons に入れた同名のアドオン）と同時に入っていると、片方が先に
+    # 外したものを外そうとして失敗する。外せないものは飛ばす
+    if hasattr(bpy.types.Scene, "va_bridge"):
+        del bpy.types.Scene.va_bridge
     for c in reversed(classes):
-        bpy.utils.unregister_class(c)
+        try:
+            bpy.utils.unregister_class(c)
+        except RuntimeError:
+            pass
