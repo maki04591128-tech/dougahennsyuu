@@ -173,6 +173,15 @@ wheels = [
 ]
 
 [[package]]
+name = "budoux"
+version = "0.10.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/c0/13afabd9b957fd5626af5532ef4e776523b9930850d62422f38d61446c0e/budoux-0.10.4.tar.gz", hash = "sha256:ae2bc1ad1115229adb19aa8b3e45d8a1d43c698bc24a099cca0627e7fb99b0f7", size = 115758, upload-time = "2026-11-16T03:29:32.086Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/39/d54e756bc2a15eaaa4270011a3f587c46189b5d4dd95a3cd46c1387bf783/budoux-0.10.4-py3-none-any.whl", hash = "sha256:032826d6bf9478d9cfa451d11054767f84d7498901e256c2e18295b1f198b2d1", size = 109363, upload-time = "2026-11-16T03:29:30.661Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.11.20"
 source = { registry = "https://pypi.org/simple" }
@@ -2339,6 +2348,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "budoux" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jsonschema" },
@@ -2379,6 +2389,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "budoux", specifier = ">=0.6" },
     { name = "fastapi" },
     { name = "faster-whisper", marker = "extra == 'transcribe'", specifier = ">=1.1" },
     { name = "httpx" },

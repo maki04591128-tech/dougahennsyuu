@@ -37,7 +37,11 @@ def test_wrap_prefers_punctuation_and_particle_boundaries():
     lines = wrap_lines("動画編集の自動化システムで字幕と音声のタイミングを合わせます", 14)
     assert all(len(x) <= 14 for x in lines)
     assert lines[0].endswith("で") or lines[0].endswith("の")  # ひらがな→漢字の境界
-    assert wrap_lines("今日は、とても良い天気でしたね。", 10)[0] == "今日は、"
+    # 2 行に収まるときは長さを揃える（読点で切ると 3 行になる）
+    assert wrap_lines("今日は、とても良い天気でしたね。", 10) == [
+        "今日は、とても",
+        "良い天気でしたね。",
+    ]
 
 
 def test_wrap_respects_line_start_kinsoku():
@@ -130,7 +134,8 @@ def test_make_cues_splits_at_clause_not_greedy():
     cues = make_cues(
         "「ローカル環境を検出」を押すと、OllamaやLM Studioのモデルが見つかるわ", 22, 2, True
     )
-    assert cues == ["「ローカル環境を検出」を押すと、", "OllamaやLM Studioのモデルが\n見つかるわ"]
+    # 2 行目は文節の切れ目で長さを揃える（製品名「LM Studio」の空白では切らない）
+    assert cues == ["「ローカル環境を検出」を押すと、", "OllamaやLM Studioの\nモデルが見つかるわ"]
 
 
 def test_make_cues_keeps_particle_after_quote():
@@ -154,3 +159,18 @@ def test_wrap_avoids_okurigana_compound_and_brackets():
     assert not any(ln.endswith("書き") for ln in lines)
     lines = wrap_lines("台本作成タブに戻って「演出プラン（AI）」", 18)
     assert lines == ["台本作成タブに戻って", "「演出プラン（AI）」"]
+
+
+def test_make_cues_one_sentence_per_cue_and_phrase_breaks():
+    from video_automation.services.subtitle.text import phrase_bounds
+
+    two = "w-BNの押し込み強度は114ギガパスカルと計算されました。ダイヤモンドは97ギガパスカルです。"
+    cues = make_cues(two, 18, 2, True)
+    assert cues[-1] == "ダイヤモンドは97ギガパスカルです"  # 2 文目は別の 1 枚
+    assert "ダイヤ" not in cues[0]
+    # 1 行に収まる短い掛け合いは 1 枚のまま
+    assert make_cues("えっ！本当？", 18, 2, True) == ["えっ！本当？"]
+    if phrase_bounds("あ") is not None or phrase_bounds("今日は晴れ") is not None:
+        # 文節の途中（「押し込み|強度」の途中など）では改行しない
+        lines = cues[0].split("\n")
+        assert lines[0].endswith("は") or lines[0].endswith("の")
