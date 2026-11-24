@@ -573,8 +573,20 @@ class DirectionService:
             if used.get(Component.CHART):
                 colors += chart_colors
             fonts = [Path(f).stem for f in [self.titles.font_path(heading_font)] if f]
+            # 書き出し時の画面演出（rich_direction）が使う、題名と章の区切り
+            outline = {
+                "title": plan.title,
+                "catch": plan.subtitle,
+                "chapters": [
+                    [start, (s.heading or "").strip()]
+                    for s, start, _end in windows
+                    if s.kind in (ShotKind.CARD, ShotKind.CHART) and (s.heading or "").strip()
+                ],
+            }
             await self.design.record(
-                p.id, "direction", manifest_record(used, colors, fonts, boxes, empty)
+                p.id,
+                "direction",
+                manifest_record(used, colors, fonts, boxes, empty, outline=outline),
             )
         log.info("direction_applied", project_id=p.id, clips=clips, skipped=len(skipped))
         return DirectionApplyResult(

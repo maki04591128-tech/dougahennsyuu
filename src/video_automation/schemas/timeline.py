@@ -329,6 +329,15 @@ class Encoder(StrEnum):
     NVENC = "h264_nvenc"
 
 
+class RichLevel(StrEnum):
+    """書き出し時に Blender で付ける画面演出の強さ（用途の型で許された部品だけを使う）。"""
+
+    OFF = "off"
+    SUBTLE = "subtle"  # 控えめ: 章ラベル・ゆっくり寄る・弱いルック
+    STANDARD = "standard"  # 標準: ＋冒頭・図形の転換・強調のパンチ・終わりのアイリス
+    BOLD = "bold"  # 派手: ＋RGB ずらし・フラッシュ・黒帯・強いルック
+
+
 class RenderRequest(BaseModel):
     project_id: str
     profile: RenderProfileName = RenderProfileName.FHD_LANDSCAPE
@@ -343,6 +352,7 @@ class RenderRequest(BaseModel):
     origin: CommandOrigin = CommandOrigin.USER
     # デザインの検査で止まったものを、ユーザーの判断で書き出す（LLM 経由では無効）
     allow_design_violations: bool = False
+    rich_direction: RichLevel = RichLevel.OFF
 
     @model_validator(mode="after")
     def _range(self) -> "RenderRequest":

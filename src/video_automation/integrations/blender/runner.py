@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
-ALLOWED_SCRIPTS = {"title_card", "infographic"}
+ALLOWED_SCRIPTS = {"title_card", "infographic", "rich_direction"}
 CANDIDATES = [
     r"D:\Steam\steamapps\common\Blender\blender.exe",
     r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe",

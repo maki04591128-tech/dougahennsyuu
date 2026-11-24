@@ -21,6 +21,7 @@ from video_automation.app.settings import Settings
 from video_automation.core.jobs.job_manager import JobManager
 from video_automation.database.database import Database
 from video_automation.database.models import Asset, Clip, Project, RenderJob, Script, Track
+from video_automation.integrations.blender.runner import Blender, BlenderError
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
 from video_automation.schemas.animation import ClipAnimation, TransitionType
 from video_automation.schemas.design import DesignCheck
@@ -36,6 +37,7 @@ from video_automation.schemas.timeline import (
     RenderJobRead,
     RenderRequest,
     RenderStatus,
+    RichLevel,
     TrackKind,
 )
 from video_automation.services.animation.render_anim import (
@@ -45,6 +47,7 @@ from video_automation.services.animation.render_anim import (
     defaults_only,
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
+from video_automation.services.rendering.rich import RichPlan, plan_rich
 from video_automation.services.subtitle.formats import build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import (
@@ -89,6 +92,30 @@ def _layout(t: ClipTransform, cw: int, ch: int, label_in: str, label_out: str, i
     )
 
 
+def video_codec_args(encoder: str, quality: int, fast: bool = False) -> list[str]:
+    if encoder == Encoder.NVENC.value:
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p1" if fast else "p5",
+            "-rc",
+            "vbr",
+            "-cq",
+            str(quality),
+            "-b:v",
+            "0",
+        ]
+    return [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast" if fast else "medium",
+        "-crf",
+        str(quality if not fast else 30),
+    ]
+
+
 class RenderService:
     def __init__(
         self,
@@ -99,8 +126,12 @@ class RenderService:
         subtitles: SubtitleService,
         jobs: JobManager,
         design: DesignService | None = None,
+        blender: Blender | None = None,
+        font_for: Callable[[str | None], str | None] | None = None,
     ) -> None:
         self.design = design
+        self.blender = blender
+        self.font_for = font_for  # 書体の名前 → ファイル（画面演出の文字に使う）
         self.settings = settings
         self.db = db
         self.ffmpeg = ffmpeg
@@ -407,28 +438,7 @@ class RenderService:
         if single_frame is not None:
             out_args = ["-map", "[vout]", "-frames:v", "1", "-update", "1", str(output)]
         else:
-            if encoder == Encoder.NVENC.value:
-                venc = [
-                    "-c:v",
-                    "h264_nvenc",
-                    "-preset",
-                    "p1" if fast else "p5",
-                    "-rc",
-                    "vbr",
-                    "-cq",
-                    str(quality),
-                    "-b:v",
-                    "0",
-                ]
-            else:
-                venc = [
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast" if fast else "medium",
-                    "-crf",
-                    str(quality if not fast else 30),
-                ]
+            venc = video_codec_args(encoder, quality, fast)
             out_args = [
                 "-map",
                 "[vout]",
@@ -525,6 +535,24 @@ class RenderService:
             burn_subtitles=req.burn_subtitles,
         )
 
+    async def rich_plan(self, req: RenderRequest) -> RichPlan | None:
+        """画面演出（rich_direction）で使う部品。使わないときは None。"""
+        if req.rich_direction == RichLevel.OFF:
+            return None
+        if self.design is None:
+            raise CommandError("rich direction needs the design service")
+        prof = await self.design.profile_for(req.project_id)
+        if prof is None:
+            raise CommandError("画面演出を付けるには、先に用途を設定してください")
+        if self.blender is None or not self.blender.available:
+            raise CommandError("画面演出を付けるには Blender が必要です")
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, req.project_id)
+            assert p is not None
+            fps = p.fps_num / p.fps_den
+        rp = plan_rich(req.rich_direction, prof, fps)
+        return rp if rp.active else None
+
     async def request(self, req: RenderRequest) -> RenderJobRead:
         """origin=llm の場合は承認待ち（最終レンダリングは承認が必要：仕様 §10）。
 
@@ -533,6 +561,7 @@ class RenderService:
         async with self.db.session_factory() as s:
             if await s.get(Project, req.project_id) is None:
                 raise TimelineNotFoundError(f"project {req.project_id}")
+        await self.rich_plan(req)  # 画面演出を使えるか（用途・Blender）を先に確かめる
         chk = await self.design_check(req)
         if chk is not None and not chk.ok:
             override = req.allow_design_violations and req.origin != CommandOrigin.LLM
@@ -607,6 +636,9 @@ class RenderService:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = out_dir / f"{stamp}_{prof.name.value}.mp4"
         await self._set(render_id, status=RenderStatus.RENDERING.value, encoder=encoder)
+        rich = await self.rich_plan(req)
+        if rich is not None:
+            return await self._render_rich(render_id, req, rich, out, encoder, progress)
         ass = None
         subs: list[str] = []
         if req.script_id:
@@ -654,6 +686,159 @@ class RenderService:
             "height": info.height,
             "encoder": encoder,
             "subtitle_paths": subs,
+        }
+
+    async def _render_rich(
+        self,
+        render_id: str,
+        req: RenderRequest,
+        rich: RichPlan,
+        out: Path,
+        encoder: str,
+        progress: ProgressFn,
+    ) -> dict[str, Any]:
+        """字幕なしで書き出す → Blender で画面演出 → 字幕を焼き込む（字幕は演出で動かない）。"""
+        assert self.blender is not None and self.design is not None
+        prof = RENDER_PROFILES[req.profile]
+        r0 = req.start_frame or 0
+        clean = out.with_suffix(".clean.mp4")
+        rich_out = out.with_suffix(".rich.mp4")
+
+        def part_progress(lo: float, hi: float) -> ProgressFn:
+            async def f(x: float) -> None:
+                await progress(lo + (hi - lo) * x)
+
+            return f
+
+        plan = await self.plan(
+            req.project_id,
+            prof.width,
+            prof.height,
+            clean,
+            encoder=encoder,
+            quality=max(10, req.quality - 4),  # 2 回目の圧縮で落ちる分だけ高めに
+            start_frame=req.start_frame,
+            end_frame=req.end_frame,
+            loudnorm=req.loudnorm,
+        )
+        await self.ffmpeg.run(
+            plan.args, total_sec=plan.duration_sec, progress=part_progress(0.0, 0.25)
+        )
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, req.project_id)
+            assert p is not None
+            fps_num, fps_den = p.fps_num, p.fps_den
+        r1 = r0 + round(plan.duration_sec * fps_num / fps_den)
+        cues: list[dict[str, Any]] = []
+        if req.script_id:
+            for c in await self.subtitles.cues(req.script_id):
+                if c.start_frame is not None and r0 <= c.start_frame < r1:
+                    cues.append(
+                        {
+                            "segment": c.script_segment_id,
+                            "text": c.text,
+                            "start_frame": c.start_frame - r0,
+                        }
+                    )
+        outline = await self.design.outline(req.project_id)
+        chapters = [
+            [int(f) - r0, str(nm)] for f, nm in outline.get("chapters") or [] if r0 <= f < r1
+        ]
+        dprof = await self.design.profile_for(req.project_id)
+        assert dprof is not None
+        pal = dprof.palette
+        await progress(0.3)
+        timeout = max(1800.0, plan.duration_sec * 40)
+        try:
+            res = await self.blender.run_script(
+                "rich_direction",
+                {
+                    "clean_path": str(clean),
+                    "out_path": str(rich_out),
+                    "font": (self.font_for(dprof.typography.heading_font) if self.font_for else "")
+                    or "",
+                    "width": prof.width,
+                    "height": prof.height,
+                    "fps_num": fps_num,
+                    "fps_den": fps_den,
+                    "title": (outline.get("title") or "") if r0 == 0 else "",
+                    "catch": (outline.get("catch") or "") if r0 == 0 else "",
+                    "chapters": chapters,
+                    "cues": cues,
+                    "colors": {
+                        "base": pal.base,
+                        "main": pal.main,
+                        "accent": pal.accent,
+                        "text": pal.text,
+                    },
+                    **rich.args(),
+                },
+                timeout=timeout,
+            )
+        except BlenderError as exc:
+            raise CommandError(f"画面演出の書き出しに失敗しました: {exc}") from exc
+        if not rich_out.is_file():
+            raise CommandError("画面演出の書き出しに失敗しました（出力がありません）")
+        failed = {k: v.get("error") for k, v in (res.get("parts") or {}).items() if not v["ok"]}
+        intro = int(res.get("intro_frames") or 0)
+        await progress(0.85)
+        ass = None
+        subs: list[str] = []
+        if req.script_id:
+            if req.burn_subtitles:
+                # 冒頭の演出の分だけ字幕を後ろへずらす（offset が負＝後ろへ）
+                ass = await self._ass_for(
+                    req.script_id, prof.width, prof.height, out.with_suffix(".burn.ass"), r0 - intro
+                )
+            if req.external_subtitles:
+                for fmt in (SubtitleFormat.SRT, SubtitleFormat.ASS):
+                    r = await self.subtitles.export(
+                        SubtitleExportRequest(script_id=req.script_id, format=fmt)
+                    )
+                    subs.append(r.path)
+        info0 = await self.ffmpeg.probe(rich_out)
+        args = ["-i", str(rich_out)]
+        if ass is not None:
+            args += ["-vf", f"ass='{filter_path(ass)}'", *video_codec_args(encoder, req.quality)]
+        else:
+            args += ["-c:v", "copy"]
+        args += ["-c:a", "copy", "-movflags", "+faststart", str(out)]
+        await self.ffmpeg.run(
+            args, total_sec=info0.duration_sec, progress=part_progress(0.85, 0.99)
+        )
+        for f in (clean, rich_out):
+            f.unlink(missing_ok=True)
+        info = await self.ffmpeg.probe(out)
+        rel = out.relative_to(self.settings.data_dir).as_posix()
+        await self._set(
+            render_id,
+            status=RenderStatus.SUCCEEDED.value,
+            output_path=rel,
+            subtitle_paths=subs,
+            finished_at=datetime.now(UTC),
+        )
+        log.info(
+            "render_rich_done",
+            render_id=render_id,
+            level=rich.level.value,
+            used=res.get("used"),
+            failed=list(failed),
+        )
+        return {
+            "output_path": rel,
+            "duration_sec": info.duration_sec,
+            "width": info.width,
+            "height": info.height,
+            "encoder": encoder,
+            "subtitle_paths": subs,
+            "rich_direction": {
+                "level": rich.level.value,
+                "intro_frames": intro,
+                "used": res.get("used") or {},
+                "failed_parts": failed,
+                "notes": rich.notes,
+                "render_sec": res.get("render_sec"),
+            },
         }
 
     async def get(self, render_id: str) -> RenderJobRead:

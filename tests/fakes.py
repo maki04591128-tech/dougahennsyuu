@@ -481,9 +481,25 @@ def fake_blender(tmp_path) -> str:
             print("Blender 5.3.0"); sys.exit(0)
         a = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
         name = Path(sys.argv[sys.argv.index("--python") + 1]).stem
-        assert name in ("title_card", "infographic"), name
+        assert name in ("title_card", "infographic", "rich_direction"), name
         with open({str(log)!r}, "a", encoding="utf-8") as f:
             f.write(json.dumps({{"script": name, **a}}, ensure_ascii=False) + "\\n")
+        if name == "rich_direction":
+            # 冒頭の演出の分（intro_frames）だけ黒を足し、音を遅らせて書き出す
+            intro = a["params"].get("intro_frames", 0) if a["parts"].get("intro") and (
+                a.get("catch") or a.get("title")) else 0
+            fps = a["fps_num"] / a["fps_den"]
+            d = intro / fps
+            subprocess.run([{ff!r}, "-v", "error", "-y", "-i", a["clean_path"],
+                "-vf", f"tpad=start_duration={{d}}:color=black",
+                "-af", f"adelay={{int(d * 1000)}}:all=1",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", a["out_path"]],
+                check=True)
+            used = {{k: 1 for k, v in a["parts"].items() if v}}
+            Path(a["result_path"]).write_text(json.dumps({{"intro_frames": intro,
+                "used": used, "parts": {{k: {{"ok": True}} for k, v in a["parts"].items() if v}},
+                "render_sec": 0.1}}))
+            sys.exit(0)
         out = Path(a["output_dir"])
         w, h = a["width"], a["height"]
         bw, bh = w // 2, h // 5
