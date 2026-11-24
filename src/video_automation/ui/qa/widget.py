@@ -158,6 +158,7 @@ class QAWidget(QWidget):
             brush = QBrush(QColor(STATUS_COLOR.get(sec["status"], "#ffffff")))
             for col in range(3):
                 top.setBackground(col, brush)
+                top.setForeground(col, QBrush(QColor("#000000")))  # 暗いテーマでも読める
             metrics = ", ".join(
                 f"{k}={v}" for k, v in sec.get("metrics", {}).items() if v not in (None, [], "")
             )
@@ -175,6 +176,7 @@ class QAWidget(QWidget):
                 cb = QBrush(QColor(LEVEL_COLOR.get(chk["level"], "#ffffff")))
                 for col in range(3):
                     child.setBackground(col, cb)
+                    child.setForeground(col, QBrush(QColor("#000000")))
                 top.addChild(child)
             self.tree.addTopLevelItem(top)
             top.setExpanded(sec["status"] in ("failed", "warnings"))

@@ -1,7 +1,7 @@
 """メインウィンドウ (P1-08)。
 
 タブ: プロジェクト / LLM設定 / 音声 / 台本作成（AI） / 台本・字幕 / 素材・BGM /
-編集・書き出し / AIアシスタント / 品質検査。"""
+編集・書き出し / AIアシスタント / 品質検査 / 用途・デザイン / 声の口調 / 文字起こし。"""
 
 from typing import Any
 
@@ -17,11 +17,14 @@ from PySide6.QtWidgets import (
 
 from video_automation.ui.assets.widget import AssetsWidget
 from video_automation.ui.assistant.widget import AssistantWidget
+from video_automation.ui.design.widget import DesignWidget
 from video_automation.ui.llm_settings.widget import LlmSettingsWidget
 from video_automation.ui.qa.widget import QAWidget
 from video_automation.ui.script_studio.widget import ScriptStudioWidget
 from video_automation.ui.subtitle.widget import SubtitleWidget
 from video_automation.ui.timeline.widget import TimelineWidget
+from video_automation.ui.transcribe.widget import TranscribeWidget
+from video_automation.ui.voice.characters import VoiceCharactersWidget
 from video_automation.ui.voice.widget import VoiceWidget
 
 
@@ -61,6 +64,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.assistant, "AIアシスタント")
         self.qa = QAWidget(api)
         self.tabs.addTab(self.qa, "品質検査")
+        self.design = DesignWidget(api)
+        self.tabs.addTab(self.design, "用途・デザイン")
+        self.voice_characters = VoiceCharactersWidget(api)
+        self.tabs.addTab(self.voice_characters, "声の口調")
+        self.transcribe = TranscribeWidget(api)
+        self.tabs.addTab(self.transcribe, "文字起こし")
         self.setCentralWidget(self.tabs)
 
     def refresh(self) -> None:
@@ -89,3 +98,9 @@ class MainWindow(QMainWindow):
             self.assistant.refresh()
         if hasattr(self.api, "run_qa"):
             self.qa.refresh()
+        if hasattr(self.api, "design_profiles"):
+            self.design.refresh()
+        if hasattr(self.api, "voice_characters"):
+            self.voice_characters.refresh()
+        if hasattr(self.api, "transcribe_status"):
+            self.transcribe.refresh()

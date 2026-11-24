@@ -49,6 +49,18 @@ class TimelineWidget(QWidget):
         self.burn_check.setChecked(True)
         self.loudnorm_check = QCheckBox("音量を -14 LUFS に揃える")
         self.loudnorm_check.setChecked(True)
+        self.rich_combo = QComboBox()
+        for label, value in (
+            ("なし", "off"),
+            ("控えめ", "subtle"),
+            ("標準", "standard"),
+            ("派手", "bold"),
+        ):
+            self.rich_combo.addItem(label, value)
+        self.rich_combo.setToolTip(
+            "Blender で付ける画面演出の強さ。用途の型で許された部品だけを使い、"
+            "用途によっては強さが下がります（字幕動画などは付きません）"
+        )
 
         self.from_script_button = QPushButton("台本から配置")
         self.from_script_button.clicked.connect(self.from_script)
@@ -137,6 +149,7 @@ class TimelineWidget(QWidget):
         rform.addRow("プロファイル", self.profile_combo)
         rform.addRow(self.burn_check)
         rform.addRow(self.loudnorm_check)
+        rform.addRow("画面演出", self.rich_combo)
 
         left = QVBoxLayout()
         left.addLayout(form)
@@ -471,6 +484,7 @@ class TimelineWidget(QWidget):
                 self.script_combo.currentData(),
                 burn_subtitles=self.burn_check.isChecked(),
                 loudnorm=self.loudnorm_check.isChecked(),
+                rich_direction=self.rich_combo.currentData() or "off",
             )
         except Exception as exc:
             self._error("書き出し", exc)
