@@ -257,15 +257,18 @@ class SubtitleService:
         async with self.db.session_factory() as s:
             script, project = await self._project_of(s, req.script_id)
             max_chars = req.max_chars_per_line or default_max_chars(project.width, project.height)
-            if req.max_chars_per_line is None and self.design and project.purpose:
-                # 用途の型の 1 行の文字数（読みやすさの上限）を超えない
+            max_lines = req.max_lines or 2
+            if self.design and project.purpose:
                 prof = await self.design.profile_for(project.id)
-                if prof:
+                if prof and req.max_chars_per_line is None:
+                    # 用途の型の 1 行の文字数（読みやすさの上限）を超えない
                     max_chars = min(max_chars, prof.subtitle.max_chars_per_line)
+                if prof and req.max_lines is None:
+                    max_lines = prof.subtitle.max_lines  # 歌詞は 1 行など
             await s.execute(delete(Subtitle).where(Subtitle.script_id == script.id))
             idx = 0
             for seg in await self._segments(s, script.id):
-                for text in make_cues(seg.text, max_chars, req.max_lines, req.strip_period):
+                for text in make_cues(seg.text, max_chars, max_lines, req.strip_period):
                     s.add(
                         Subtitle(
                             script_id=script.id,
