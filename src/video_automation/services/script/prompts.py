@@ -7,12 +7,14 @@ COMMON = (
     "一人称・相手の呼び方・語尾はキャラクターごとに決まっており、台本の最初から最後まで変えません"
     "（他のキャラクターの一人称や語尾が混ざらないよう、発話ごとに話者の設定を確かめます）。"
     "性格は口調だけでなく、反応の仕方（驚く・ツッコむ・まとめる等の役割）にも出します。"
+    "口調の決まり（語尾・一人称）そのものを台本の中で話題にしません（「全部『のだ』だ」のような"
+    "メタな発言をしない）。ほかのキャラクターの口調や乱暴な言い方（「〜ねぇ」等）を真似しません。"
     "事実が不明な点は推測で確定せず、notes に仮定や確認したいことを書きます。"
     "セリフは自然な話し言葉で、1つの発話は120文字以内、1 文は 40 文字程度までにします"
     "（音声で読み上げるので、長い文は句読点で区切ります）。"
 )
 
-FULL_VERSION = "script.full.v4"
+FULL_VERSION = "script.full.v5"
 FULL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -45,7 +47,7 @@ FULL_SCHEMA: dict[str, Any] = {
     "required": ["scenes"],
 }
 
-COUNTERPART_VERSION = "script.counterpart.v3"
+COUNTERPART_VERSION = "script.counterpart.v4"
 COUNTERPART_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
