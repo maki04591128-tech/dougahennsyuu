@@ -32,6 +32,7 @@ from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.script.studio import ScriptStudio
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import TimelineService
+from video_automation.services.voice.characters import VoiceCharacterService
 from video_automation.services.voice.reading_service import ReadingService
 from video_automation.services.voice.voice_service import VoiceService
 
@@ -46,6 +47,7 @@ class AppContainer:
     tester: InferenceTester
     router: TaskRouter
     voice: VoiceService
+    voice_characters: VoiceCharacterService
     subtitles: SubtitleService
     ffmpeg: FFmpeg
     blender: Blender
@@ -110,7 +112,8 @@ async def build_container(
         transport=http_transport,
         resolver=dns_resolver,
     )
-    studio = ScriptStudio(db, llm)
+    voice_characters = VoiceCharacterService(db, voice)
+    studio = ScriptStudio(db, llm, voice_characters)
     approvals = ApprovalService(settings, db, timeline, render, asset_sources, studio)
     await approvals.load_policy()
     orchestrator = Orchestrator(
@@ -125,6 +128,7 @@ async def build_container(
         tester=InferenceTester(providers),
         router=router,
         voice=voice,
+        voice_characters=voice_characters,
         subtitles=subtitles,
         ffmpeg=ffmpeg,
         blender=blender,

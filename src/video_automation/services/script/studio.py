@@ -6,7 +6,7 @@
 
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,9 @@ from video_automation.schemas.subtitle import ScriptMode
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.script import prompts as P
 
+if TYPE_CHECKING:
+    from video_automation.services.voice.characters import VoiceCharacterService
+
 log = get_logger("script")
 _SPACE = re.compile(r"[\s「」『』（）()、。・…！？!?,.\-]")
 
@@ -90,9 +93,26 @@ def _norm(text: str) -> str:
 
 
 class ScriptStudio:
-    def __init__(self, db: Database, llm: LLMGateway) -> None:
+    def __init__(
+        self, db: Database, llm: LLMGateway, voice_characters: "VoiceCharacterService | None" = None
+    ) -> None:
         self.db = db
         self.llm = llm
+        self.voice_characters = voice_characters
+
+    async def _with_voice_style(self, chars: list[CharacterIn]) -> list[CharacterIn]:
+        """声を選んだキャラクターの口調が空なら、その声の口調（登録済みのもの）で埋める。
+        ユーザーが書いた口調は変えない。"""
+        if self.voice_characters is None:
+            return chars
+        out = []
+        for c in chars:
+            if not c.speaking_style.strip() and c.voice.style_id is not None:
+                _, style = await self.voice_characters.for_style(c.voice.style_id)
+                if style is not None and style.text():
+                    c = c.model_copy(update={"speaking_style": style.text()[:500]})
+            out.append(c)
+        return out
 
     # ---------- 読み出し ----------
     async def _script(self, s: AsyncSession, script_id: str) -> Script:
@@ -429,7 +449,7 @@ class ScriptStudio:
             )
             s.add(sc)
             await s.flush()
-            for i, c in enumerate(req.characters):
+            for i, c in enumerate(await self._with_voice_style(req.characters)):
                 s.add(self._char_row(sc.id, i, c))
             await self._commit(s, sc, "作成", first=True)
             sid = sc.id
@@ -459,7 +479,7 @@ class ScriptStudio:
                 await s.execute(
                     delete(ScriptCharacter).where(ScriptCharacter.script_id == script_id)
                 )
-                for i, c in enumerate(req.characters):
+                for i, c in enumerate(await self._with_voice_style(req.characters)):
                     s.add(self._char_row(script_id, i, c, old.get(c.name)))
                     # 音声設定をそのキャラクターのセリフへ反映（音声は作り直しが必要）
                     if c.voice.style_id is not None:
