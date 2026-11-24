@@ -121,6 +121,10 @@ class Settings(BaseSettings):
         return f"http://{self.host}:{self.port}/api/v1"
 
     def ensure_dirs(self) -> None:
+        # 相対パス（既定の "data"）は起動した場所からの絶対パスにする。Blender など別のプログラムに
+        # 渡すパスが、そのプログラムの作業フォルダ基準で解釈されて別の場所に書かれるのを防ぐ
+        if not self.data_dir.is_absolute():
+            self.data_dir = self.data_dir.resolve()
         for sub in ("database", "projects", "assets", "cache", "dictionaries", "logs"):
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
 

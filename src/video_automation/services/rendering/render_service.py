@@ -838,8 +838,8 @@ class RenderService:
         assert self.blender is not None and self.design is not None
         prof = RENDER_PROFILES[req.profile]
         r0 = req.start_frame or 0
-        clean = out.with_suffix(".clean.mp4")
-        rich_out = out.with_suffix(".rich.mp4")
+        clean = out.with_suffix(".clean.mp4").resolve()
+        rich_out = out.with_suffix(".rich.mp4").resolve()
 
         def part_progress(lo: float, hi: float) -> ProgressFn:
             async def f(x: float) -> None:

@@ -588,6 +588,18 @@ def _start_engine(server: str) -> str:
     raise BridgeError("アプリが 2 分以内に応答しませんでした")
 
 
+def _ensure_engine(server: str) -> None:
+    """アプリが応答しなければ（止まっていれば）起動し直す。"""
+    try:
+        Client(server).health()
+    except BridgeError:
+        pr = _prefs()
+        if pr is not None and not pr.auto_start:
+            raise
+        _jobs.put(("status", "アプリを起動しています…"))
+        _start_engine(server)
+
+
 def _check_ready(server: str, start: bool) -> None:
     c = Client(server)
     try:
@@ -821,6 +833,7 @@ class VA_OT_make_plan(bpy.types.Operator):
         server, orient = st.server, st.orientation
 
         def work():
+            _ensure_engine(server)
             _jobs.put(("status", "構成を考えています…"))
             plan = Client(server).build_plan(text, dur, orient, ref)
             _jobs.put(("plan", plan))
@@ -850,6 +863,7 @@ class VA_OT_make_run(bpy.types.Operator):
         server = st.server
 
         def work():
+            _ensure_engine(server)
             c = Client(server)
             job = c.build_run(plan["project_id"], plan["script_id"])
             jid = job["id"]
