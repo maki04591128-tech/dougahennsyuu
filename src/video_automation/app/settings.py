@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     whisper_model_dir: Path | None = None
     whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
 
+    # ローカル LLM のスキル（SKILL.md）。同梱に加えて、このフォルダの <名前>/SKILL.md も読む
+    # （未設定は data_dir/skills）。プロンプトには依頼に関係する節だけを上限の文字数まで入れる
+    skills_enabled: bool = True
+    skills_dir: Path | None = None
+    skills_budget_chars: int = 4000
+    # LLM に渡す文の長さ（Ollama の num_ctx）の上限。プロンプトの長さに合わせて自動で広げる
+    llm_max_context: int = 16384
+
     # ---- Phase 3: 音声合成（VOICEVOX系。Nemo を優先）----
     voicevox_nemo_url: str | None = "http://127.0.0.1:50121"
     voicevox_url: str | None = "http://127.0.0.1:50021"
@@ -96,6 +104,10 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         return f"sqlite+aiosqlite:///{self.database_path.as_posix()}"
+
+    @property
+    def skills_path(self) -> Path:
+        return self.skills_dir or self.data_dir / "skills"
 
     @property
     def log_dir(self) -> Path:

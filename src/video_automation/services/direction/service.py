@@ -62,6 +62,7 @@ from video_automation.services.direction.plan import (
 )
 from video_automation.services.llm_tasks.gateway import LLMGateway
 from video_automation.services.rendering.title_card import TitleCardService
+from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.timeline.timeline_service import (
     CommandError,
     TimelineNotFoundError,
@@ -80,6 +81,12 @@ BACKGROUNDS = {
     "teal": ("0x062A2E", "0x1D6B6B"),
     "plum": ("0x1F0F2E", "0x5A2D6E"),
 }
+# 演出プランを作るときに参考にするスキル
+SKILLS_FOR_PLAN = [
+    "video-design-by-purpose",
+    "blender-video-motion-design",
+    "blender-rich-screen-direction",
+]
 CHART_MAX_SEC = 30.0
 CARD_SCALE = 1.25  # 図・カード領域のカードの文字の大きさ（字幕より少し小さい程度）
 HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発話数の上限
@@ -152,7 +159,9 @@ class DirectionService:
         titles: TitleCardService,
         ffmpeg: FFmpeg,
         design: DesignService | None = None,
+        skills: SkillLibrary | None = None,
     ) -> None:
+        self.skills = skills
         self.design = design
         self.settings = settings
         self.db = db
@@ -183,21 +192,39 @@ class DirectionService:
         return p, sc, lines
 
     # ---------- プラン ----------
+    async def _skill_context(self, project_id: str) -> tuple[str, list[str]]:
+        """演出の決まり（スキル）のうち、この用途に関係する節。"""
+        if self.skills is None:
+            return "", []
+        prof = await self.design.profile_for(project_id) if self.design else None
+        purpose = f"{prof.label} {prof.summary} " if prof else ""
+        query = (
+            f"{purpose}演出 テロップ カード 図表 題名 字幕 配置 動き "
+            "別用途のデザインを混ぜない 背景だけの時間"
+        )
+        # 依頼文ではなく決まった問い合わせなので、しきい値は使わず上位の節を入れる
+        ctx, picked = self.skills.context(
+            query, names=SKILLS_FOR_PLAN, budget=self.settings.skills_budget_chars, min_score=0.0
+        )
+        return ctx, [f"{p.skill} / {p.path}" for p in picked]
+
     async def plan(self, req: DirectionPlanRequest) -> DirectionPlanResult:
-        _, sc, lines = await self._script(req.script_id)
+        p, sc, lines = await self._script(req.script_id)
         texts = [x.text for x in lines]
         if not texts:
             raise CommandError("script has no lines")
         title = sc.title or ""
         model_key = None
+        used_skills: list[str] = []
         if req.use_llm:
+            ctx, used_skills = await self._skill_context(p.id)
             body = f"タイトル案: {title or '（なし）'}\n台本:\n" + prompt_lines(
                 [x.speaker for x in lines], texts
             )
             res = await self.llm.complete_json(  # 形式が合わないときは 2 回まで直させる
                 TaskType.EDIT_PLAN,
                 [
-                    ChatMessage(role="system", content=SYSTEM),
+                    ChatMessage(role="system", content=SYSTEM + ("\n\n" + ctx if ctx else "")),
                     ChatMessage(role="user", content=body),
                 ],
                 PLAN_SCHEMA,
@@ -219,7 +246,9 @@ class DirectionService:
             notes=len(plan.notes),
             model=model_key,
         )
-        return DirectionPlanResult(plan=plan, model_key=model_key, lines=len(texts))
+        return DirectionPlanResult(
+            plan=plan, model_key=model_key, lines=len(texts), skills=used_skills
+        )
 
     # ---------- 適用 ----------
     async def _background(

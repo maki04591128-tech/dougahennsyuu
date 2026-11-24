@@ -2,6 +2,7 @@
 
 Phase 1: ping / Phase 2: discover_models, list_models, select_model
 Phase 8: create_project, get_project_state, plan_edit（計画の変更操作はすべて承認待ちになる）
+スキル: list_skills, read_skill, search_skills（ローカル LLM と同じスキルを MCP からも読める）
 """
 
 from typing import Any
@@ -105,8 +106,30 @@ async def plan_edit(
     }
 
 
+async def list_skills() -> list[dict[str, Any]]:
+    """動画づくりのスキル（決まり・手順）の一覧。名前といつ使うか。"""
+    c = await _get_container()
+    return [
+        {"name": s.name, "description": s.description, "source": s.source} for s in c.skills.all()
+    ]
+
+
+async def read_skill(name: str) -> dict[str, Any]:
+    """スキルの全文（SKILL.md の本文）と見出しの一覧。"""
+    s = (await _get_container()).skills.get(name)
+    if s is None:
+        return {"error": f"skill {name} not found"}
+    return {"name": s.name, "body": s.body, "headings": [x.path for x in s.sections]}
+
+
+async def search_skills(query: str, budget: int = 4000) -> dict[str, Any]:
+    """依頼文に関係するスキルの節を、上限の文字数まで返す。"""
+    ctx, picked = (await _get_container()).skills.context(query, budget=max(500, budget))
+    return {"context": ctx, "sections": [f"{p.skill} / {p.path}" for p in picked]}
+
+
 mcp.tool(name="ping", description="疎通確認用テストツール")(ping)
-for _fn in (create_project, get_project_state, plan_edit):
+for _fn in (create_project, get_project_state, plan_edit, list_skills, read_skill, search_skills):
     mcp.tool(name=_fn.__name__, description=(_fn.__doc__ or "").strip().split("\n")[0])(_fn)
 mcp.tool(name="discover_models", description="ローカルLLM/登録APIのモデルを検出する")(
     discover_models

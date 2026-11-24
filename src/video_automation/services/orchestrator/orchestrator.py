@@ -56,6 +56,7 @@ from video_automation.services.orchestrator.approvals import ApprovalService
 from video_automation.services.orchestrator.diff import fmt_time
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.script.studio import ScriptStudio
+from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.timeline.timeline_service import TimelineService
 
 log = get_logger("orchestrator")
@@ -287,8 +288,16 @@ def _short_errors(exc: ValidationError) -> str:
 
 class Orchestrator:
     def __init__(
-        self, db: Database, llm: LLMGateway, router: ToolRouter, approvals: ApprovalService
+        self,
+        db: Database,
+        llm: LLMGateway,
+        router: ToolRouter,
+        approvals: ApprovalService,
+        skills: SkillLibrary | None = None,
+        skills_budget: int = 4000,
     ) -> None:
+        self.skills = skills
+        self.skills_budget = skills_budget
         self.db = db
         self.llm = llm
         self.router = router
@@ -511,10 +520,18 @@ class Orchestrator:
         self, project_id: str, conversation_id: str, user_id: str, model_key: str | None
     ) -> MessageRead:
         state = await self.state_text(project_id)
-        msgs = [
-            ChatMessage(role="system", content=P.SYSTEM + "\n\nプロジェクトの状態:\n" + state),
-            *await self._history(conversation_id, user_id),
-        ]
+        history = await self._history(conversation_id, user_id)
+        system = P.SYSTEM
+        used_skills: list[str] = []
+        if self.skills is not None:
+            # 依頼（直近のユーザーの発言）に関係するスキルの節だけを付ける（状態より前に置く）
+            ask = next((m.content for m in reversed(history) if m.role == "user"), "")
+            ctx, picked = self.skills.context(ask, budget=self.skills_budget)
+            if ctx:
+                system += "\n\n" + ctx
+                used_skills = [f"{p.skill} / {p.path}" for p in picked]
+        system += "\n\nプロジェクトの状態:\n" + state
+        msgs = [ChatMessage(role="system", content=system), *history]
         res = await self.llm.complete_json(
             TaskType.EDIT_PLAN, msgs, P.PLAN_SCHEMA, model_key=model_key
         )
@@ -534,6 +551,7 @@ class Orchestrator:
                 "actions": [r.model_dump(mode="json") for r in results],
                 "questions": [str(q)[:500] for q in plan.get("questions") or []][:10],
                 "duration_ms": res.duration_ms,
+                "skills": used_skills,
             },
         )
         log.info(

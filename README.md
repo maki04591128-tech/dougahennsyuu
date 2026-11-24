@@ -188,6 +188,24 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
   `install.bat`（uv で Python 3.12 と固定版の依存を導入、ショートカット作成、環境確認）。
 - 台本・字幕タブで既存の台本（台本作成（AI）で作ったもの）を選んで音声・字幕にできる。
 
+## ローカル LLM のスキル
+
+Claude のスキルと同じ形（`<名前>/SKILL.md`。先頭に `name` と `description`）の決まり・手順を、
+ローカル LLM にも使わせる。
+
+- 同梱: `src/video_automation/skills/`（動画のデザイン・演出・VSE・Blender 5 の 5 本）。
+- ユーザーのスキル: `data/skills/<名前>/SKILL.md`（設定 `VA_SKILLS_DIR` で変更可）。同じ名前なら
+  同梱より優先するので、Claude で直したスキルをそのまま置けば使われる。置いたら `POST /skills/reload`。
+- 小さいモデルでも使えるよう、スキル全体ではなく、依頼に関係する節だけを上限
+  （`VA_SKILLS_BUDGET_CHARS`、既定 4000 文字）までプロンプトに入れる。節は見出しごとに分け、
+  依頼文との語の重なり（BM25）で選ぶ。関係の薄い節は入れない。コード例は省く。
+- 使う場面: 演出プランの作成（デザイン・演出の 3 本から、その用途に関係する節）と、
+  AI アシスタント（直近の依頼に関係する節）。使った節は結果の `skills` に残る。
+- プロンプトが長いときは Ollama の `num_ctx` を自動で広げる（上限 `VA_LLM_MAX_CONTEXT`、既定 16384）。
+- API: `GET /skills`・`GET /skills/{名前}`・`POST /skills/search`・`POST /skills/reload`。
+  MCP（mcp_core）: `list_skills`・`read_skill`・`search_skills`。
+- 使わないときは `VA_SKILLS_ENABLED=false`。
+
 ## セットアップ
 
 ```powershell
