@@ -110,6 +110,16 @@ def test_bridge_flow_against_app(server):
         run_step(c, "nope", pid, sid)
     with pytest.raises(BridgeError, match="404"):
         c.call("GET", "/projects/nope")
+    # 文章だけで作る: 必要なものの確認と構成（すぐ返る）
+    c.call("POST", "/providers/discover", {})
+    ready = {r["key"]: r["ok"] for r in c.readiness()}
+    assert ready["voice"] and ready["llm"]
+    pl = c.build_plan("窒化ホウ素の解説動画を作って", 60, "vertical")
+    assert pl["purpose"] == "explainer" and pl["duration_sec"] == 60
+    assert (pl["width"], pl["height"]) == (1080, 1920) and pl["steps"][-1] == "書き出す"
+    j = c.build_run(pl["project_id"], pl["script_id"])
+    assert c.job(j["id"])["kind"] == "build"
+    c.cancel_job(j["id"])
 
 
 def test_unreachable_app_gives_readable_error():
@@ -201,3 +211,21 @@ def test_plan_strips_channels_and_transforms():
     assert im["scale"] == 0.5 and im["opacity"] == 0.8 and im["fade_in"] == 5
     assert by[("text", "こんにちは")]["channel"] == 7 and p["channels"] == (3, 7)
     assert any("動き" in n for n in p["notes"]) and any("見つからない" in n for n in p["notes"])
+
+
+def test_find_app_dir_and_engine_command(tmp_path):
+    app = tmp_path / "VideoAutomation"
+    (app / ".venv" / "Scripts").mkdir(parents=True)
+    assert bridge.find_app_dir([str(app)]) is None  # pyproject.toml が無い
+    (app / "pyproject.toml").write_text("[project]\n")
+    (app / ".venv" / "Scripts" / "python.exe").write_text("")
+    cands = bridge.app_candidates(str(tmp_path), str(tmp_path / "local"), str(tmp_path / "a/b/c"))
+    assert bridge.find_app_dir([*cands, str(app)]) == str(app)
+    cmd = bridge.engine_command(str(app))
+    assert cmd[0].endswith("python.exe") and cmd[1:] == [
+        "-m",
+        "video_automation.app.main",
+        "--headless",
+    ]
+    with pytest.raises(BridgeError):
+        bridge.engine_command(str(tmp_path / "none"))

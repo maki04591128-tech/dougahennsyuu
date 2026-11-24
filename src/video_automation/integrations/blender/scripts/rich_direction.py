@@ -39,7 +39,7 @@ FONT = A.get("font") or ""
 PARTS = {k: bool(v) for k, v in (A.get("parts") or {}).items()}
 P = A.get("params") or {}
 LIMITS = A.get("limits") or {}
-OUT = Path(A["out_path"])
+OUT = Path(A["out_path"]).resolve()  # 相対パスは Blender では別の場所になるため
 WORK = OUT.parent
 REPORT: dict = {"parts": {}, "used": {}}
 

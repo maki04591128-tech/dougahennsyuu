@@ -96,6 +96,33 @@ class Client:
         q = f"?script_id={quote(script_id)}" if script_id else ""
         return self.call("GET", f"/projects/{quote(project_id)}/timeline/blender{q}")
 
+    # ---------- 文章だけで作る（/build） ----------
+    def readiness(self) -> list[dict[str, Any]]:
+        return self.call("GET", "/build/readiness", timeout=15)
+
+    def build_plan(
+        self,
+        instruction: str,
+        duration_sec: int | None = None,
+        orientation: str = "auto",
+        reference: str = "",
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"instruction": instruction, "orientation": orientation}
+        if duration_sec:
+            body["duration_sec"] = duration_sec
+        if reference.strip():
+            body["reference"] = reference[:20000]
+        return self.call("POST", "/build/plan", body, timeout=60)
+
+    def build_run(self, project_id: str, script_id: str) -> dict[str, Any]:
+        return self.call("POST", f"/build/{quote(project_id)}/run", {"script_id": script_id})
+
+    def job(self, job_id: str) -> dict[str, Any]:
+        return self.call("GET", f"/jobs/{quote(job_id)}", timeout=10)
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        return self.call("POST", f"/jobs/{quote(job_id)}/cancel", timeout=10)
+
     def wait_job(
         self,
         job_id: str,
@@ -294,3 +321,46 @@ def plan_strips(
         "fps_den": int(tl["fps_den"]),
         "frames": int(tl.get("duration_frames") or 0),
     }
+
+
+# ---------- アプリ（エンジン）の場所と起動 ----------
+def app_candidates(home: str, localappdata: str, addon_dir: str) -> list[str]:
+    """アプリが入っていそうな場所（上から順に調べる）。"""
+    import os
+
+    out = []
+    if localappdata:
+        out.append(os.path.join(localappdata, "VideoAutomation"))
+    # 開発用: アドオンを tools/blender_addon から入れたとき（リポジトリの直下がアプリ）
+    out.append(os.path.normpath(os.path.join(addon_dir, "..", "..", "..")))
+    if home:
+        out.append(os.path.join(home, "VideoAutomation"))
+    return out
+
+
+def find_python(app_dir: str) -> str | None:
+    """アプリの Python（uv で作った .venv）。無ければ None。"""
+    import os
+
+    for rel in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
+        p = os.path.join(app_dir, *rel)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def find_app_dir(candidates: list[str]) -> str | None:
+    import os
+
+    for d in candidates:
+        if d and os.path.isfile(os.path.join(d, "pyproject.toml")) and find_python(d):
+            return d
+    return None
+
+
+def engine_command(app_dir: str) -> list[str]:
+    """画面なし（API だけ）でアプリを起動するコマンド。"""
+    py = find_python(app_dir)
+    if py is None:
+        raise BridgeError("アプリの Python が見つかりません（インストールし直してください）")
+    return [py, "-m", "video_automation.app.main", "--headless"]
