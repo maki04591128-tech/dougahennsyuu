@@ -7,12 +7,17 @@ from typing import Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_ROOT = Path(__file__).resolve().parents[3]  # src/video_automation/app/settings.py → リポジトリ
+
 APP_NAME = "VideoAutomation"
 APP_VERSION = "0.9.0"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="VA_", env_file=".env", extra="ignore")
+    # .env はアプリのフォルダ（リポジトリ直下）と、起動したフォルダの両方から読む（後者が優先）
+    model_config = SettingsConfigDict(
+        env_prefix="VA_", env_file=(str(_ROOT / ".env"), ".env"), extra="ignore"
+    )
 
     # セキュリティ要件: ローカルAPIは原則localhostにバインド
     host: str = "127.0.0.1"
