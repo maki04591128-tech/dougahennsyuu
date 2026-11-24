@@ -196,6 +196,21 @@ def build_ass(
                 f"{{\\fs{round(size * LABEL_RATIO)}\\1c&H{color}&\\3c&H{edge}&}}"
                 f"{_ass_escape(spk)}{{\\r}}\\N"
             )
+        if style.mode == "lyric":
+            # 歌詞: 下の層に太い縁取りをぼかした光（文字本体は透明）、上の層に文字
+            if style.glow > 0:
+                glow = ass_color(style.glow_color)[4:]
+                lines.append(
+                    f"Dialogue: 0,{t0},{t1},{style.name},{name},0,0,0,,{fade}"
+                    f"{{\\1a&HFF&\\3c&H{glow}&\\3a&H70&"
+                    f"\\bord{max(2.0, size * 0.12):.1f}\\blur{style.glow:g}}}"
+                    f"{_ass_escape(text)}"
+                )
+            lines.append(
+                f"Dialogue: 1,{t0},{t1},{style.name},{name},0,0,0,,{fade}"
+                f"{{\\blur0.6}}{_ass_escape(text)}"
+            )
+            continue
         if style.band and bottom:
             band = _band(style, width, height, text.count("\n") + 1, bool(label), text, spk)
             lines.append(f"Dialogue: 0,{t0},{t1},{style.name},{name},0,0,0,,{fade}{band}")

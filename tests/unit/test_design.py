@@ -252,3 +252,18 @@ def test_blender_colors_are_linear():
     assert _rgba("#FFFFFF") == [1.0, 1.0, 1.0, 1.0]
     r, g, b, _ = _rgba("#808080")
     assert abs(r - 0.2159) < 1e-3  # sRGB 0.5 → 線形 0.216（暗い色を浮かせない）
+
+
+def test_mv_shows_lines_as_lyrics_not_subtitles():
+    mv = style_from_profile(PROFILES[Purpose.MV])
+    assert mv.mode == "lyric" and not mv.band and not mv.speaker_label
+    cues = [(0, 30, "A", "夜をこえて"), (30, 60, "B", "光のほうへ")]
+    ass = build_ass(cues, Fraction(30), 1920, 1080, mv)
+    assert "\\blur" in ass and "\\1a&HFF&" in ass  # 光のにじみの層
+    assert "\\fs" not in ass  # 話者名は出さない
+    # 解説は従来どおり字幕
+    assert style_from_profile(PROFILES[Purpose.EXPLAINER]).mode == "subtitle"
+    m = DesignManifest()
+    m.add(C.LYRIC_TEXT, 2)
+    assert check(PROFILES[Purpose.MV], m).ok
+    assert not check(PROFILES[Purpose.EXPLAINER], m).ok  # 解説では歌詞の部品は使わない

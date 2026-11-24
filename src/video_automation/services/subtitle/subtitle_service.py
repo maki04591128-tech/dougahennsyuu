@@ -88,6 +88,25 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
     from video_automation.services.design.guard import is_dark
 
     spec = prof.subtitle
+    if not prof.allows(Component.SUBTITLE) and prof.allows(Component.LYRIC_TEXT):
+        # 字幕を使わず歌詞を使う型（MV・リリック動画）: 字幕の行を歌詞として見せる
+        lo, hi = spec.size_range
+        return SubtitleStyle(
+            font_name=prof.typography.heading_font,
+            font_size_ratio=min(hi * 1.2, spec.size_ratio * 1.5),
+            band=False,
+            outline=1.0,
+            shadow=0.0,
+            primary_color=prof.palette.text,
+            outline_color=prof.palette.base,
+            margin_v_ratio=max(0.12, prof.safe_area.bottom + 0.06),
+            fade_in_ms=250,
+            fade_out_ms=300,
+            speaker_label=False,
+            speaker_outline=False,
+            mode="lyric",
+            glow_color=prof.palette.main,
+        )
     band = spec.band != "none"
     surface = prof.palette.surface.lstrip("#")
     dark_text = is_dark(prof.palette.text)
