@@ -49,6 +49,21 @@ def layout(w: int, h: int) -> tuple[float, float, float]:
     return BAND_RATIO, HEIGHT_RATIO, 0.115
 
 
+# 動きで外側へはみ出す分（キャラクターの高さに対する比）。外への移動（dx 最大 0.035+0.004）・
+# 外への傾き（最大約 3.5 度 → 上端で約 0.061）・腕の振りの分を見込む
+MOTION_MARGIN = 0.1
+EDGE_PAD = 0.008  # 画面の端との余白（幅に対する比）
+MAX_FOOT_X = 0.3  # 内側へ寄せる上限（これ以上は中央の絵に重なるので寄せない）
+
+
+def safe_foot_x(w: int, char_w: float, char_h: float, side_x: float) -> float:
+    """左のキャラクターの足元の x（画素）。動いても画面の端で切れない位置まで内側へ寄せる。
+
+    char_w はパックの全部品を合わせた範囲の幅（Pack.size[0]）。伸び縮みの分も少し見込む。"""
+    need = char_w / 2 * 1.03 + char_h * MOTION_MARGIN + w * EDGE_PAD
+    return min(max(w * side_x, need), w * MAX_FOOT_X)
+
+
 @dataclass
 class Cast:
     pack: Pack
@@ -215,7 +230,9 @@ def render_overlay(
     items = []
     for c in casts:
         toward = 1 if c.side == "left" else -1
-        foot_x = W * (side_x if c.side == "left" else 1 - side_x)
+        # 部品を合わせた範囲と動きの幅を見込み、画面の端で切れない位置に置く
+        left_x = safe_foot_x(W, c.pack.size[0], char_h, side_x)
+        foot_x = left_x if c.side == "left" else W - left_x
         foot_y = band - char_h * SHOW_RATIO + char_h
         items.append(
             (c, Composer(c.pack, toward), Animator(c.schedule, fps, c.seed), toward, foot_x, foot_y)

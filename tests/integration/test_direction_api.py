@@ -166,7 +166,8 @@ async def test_plan_apply_and_reapply(dclient, fake):
     txt = by_track["演出・文字"]
     assert len(txt) == 2  # タイトル + テロップ 1 つ
     kw = max(txt, key=lambda x: x["start_frame"])
-    assert kw["transform"]["y"] < -0.3 and kw["transform"]["x"] < -0.2  # 左上
+    # 右上（左上は書き出し時の章の見出しの場所なので重ねない）
+    assert kw["transform"]["y"] < -0.3 and kw["transform"]["x"] > 0.2
     assert len(by_track["演出・背景"]) == 1
     assert by_track["演出・背景"][0]["end_frame"] == tl["duration_frames"]
 
@@ -185,6 +186,30 @@ async def test_plan_apply_and_reapply(dclient, fake):
     # 元に戻すと 1 回分（演出全体）が戻る
     assert (await c.post(f"/projects/{pid}/undo")).status_code == 200
     assert len((await c.get(f"/projects/{pid}/timeline")).json()["clips"]) == len(tl["clips"])
+
+    # 立ち絵があると、図・カードは左右の立ち絵の列に掛からない中央の列に収める
+    from sqlalchemy import update
+
+    from video_automation.database.models import ScriptCharacter
+
+    async with c.app.state.db.session_factory() as ss:
+        await ss.execute(
+            update(ScriptCharacter)
+            .where(ScriptCharacter.script_id == sid)
+            .values(tachie_pack="dummy")
+        )
+        await ss.commit()
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl3 = (await c.get(f"/projects/{pid}/timeline")).json()
+    names3 = {t["id"]: t["name"] for t in tl3["tracks"]}
+    fig3 = sorted(
+        [x for x in tl3["clips"] if names3[x["track_id"]] == "演出・図"],
+        key=lambda x: x["start_frame"],
+    )
+    assert len(fig3) == len(fig)
+    for old, new in zip(fig, fig3, strict=True):
+        assert new["transform"]["scale"] <= old["transform"]["scale"] + 1e-9
+        assert new["transform"]["scale"] <= 0.56 + 1e-9 or old["transform"]["scale"] <= 0.56
 
 
 async def test_rule_plan_without_llm_and_errors(dclient):

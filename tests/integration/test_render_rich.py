@@ -24,6 +24,9 @@ def test_plan_rich_is_capped_by_purpose():
     r = plan_rich(RichLevel.BOLD, PROFILES[Purpose.EXPLAINER])
     assert r.level == RichLevel.SUBTLE and r.notes
     assert not r.parts.get("transitions") and not r.parts.get("punch")
+    # 解説では撮影処理（ブルーム・ビネット）を付けない（図・文字の色が濁る）
+    assert "look" not in r.parts
+    assert "look" not in plan_rich(RichLevel.STANDARD, PROFILES[Purpose.PROMO]).parts
     # PR: 派手まで使える。色収差・フラッシュも用途で許されている
     r = plan_rich(RichLevel.BOLD, PROFILES[Purpose.PROMO], fps=60)
     assert r.level == RichLevel.BOLD and r.parts["glitch"] and r.parts["flash"]
@@ -82,14 +85,16 @@ async def test_render_rich_flow(bclient, media_dir, media_settings, tmp_path):
     job = await c.app.state.jobs.wait(r.json()["job_id"])
     assert job.status == "SUCCEEDED", job.error
     rich = job.result["rich_direction"]
-    assert rich["level"] == "bold" and rich["intro_frames"] == 96 and not rich["failed_parts"]
+    # 題名カードがある（演出プランの題名がある）ので、冒頭で題名を繰り返さない
+    assert rich["level"] == "bold" and rich["intro_frames"] == 0 and not rich["failed_parts"]
     call = [x for x in blender_calls(tmp_path) if x["script"] == "rich_direction"][-1]
-    assert call["chapters"] == [[0, "導入"], [60, "本題"]] and call["catch"] == "なぜ？"
+    assert call["chapters"] == [[0, "導入"], [60, "本題"]] and call["title"] == ""
+    assert not call["parts"]["intro"] and call["parts"]["look"]
     assert call["parts"]["letterbox"] and call["colors"]["main"].startswith("#")
     out = Path(media_settings.data_dir) / job.result["output_path"]
     info = await FFmpeg().probe(out)
     assert (info.width, info.height) == (1920, 1080) and info.has_audio
-    assert abs(info.duration_sec - (3.0 + 96 / 30)) < 0.15  # 冒頭の分だけ長い
+    assert abs(info.duration_sec - 3.0) < 0.15
     # 途中の作業ファイルは残さない
     assert not list(out.parent.glob("*.clean.mp4")) and not list(out.parent.glob("*.rich.mp4"))
 

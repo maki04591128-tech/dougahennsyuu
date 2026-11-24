@@ -28,11 +28,12 @@ PART_COMPONENTS: dict[str, tuple[Component, ...]] = {
 }
 
 LEVEL_PARTS: dict[RichLevel, set[str]] = {
-    RichLevel.SUBTLE: {"chapter_labels", "ken_burns", "look"},
+    # 撮影処理（ブルーム・ビネット＝"look"）は派手のときだけ。図・文字の色が濁り、
+    # 画面の端が暗くなるため、解説・講義などの控えめ・標準の演出では付けない
+    RichLevel.SUBTLE: {"chapter_labels", "ken_burns"},
     RichLevel.STANDARD: {
         "chapter_labels",
         "ken_burns",
-        "look",
         "intro",
         "transitions",
         "sfx",

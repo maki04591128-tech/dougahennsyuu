@@ -134,3 +134,17 @@ def test_layout_portrait_is_smaller_and_inward() -> None:
     band, hh, x = layout(1080, 1920)
     assert hh < 0.4 and x > 0.15
     assert layout(1920, 1080)[1] > 0.6
+
+
+def test_safe_foot_x_keeps_moving_tachie_inside_the_screen():
+    from video_automation.services.characters.overlay import MOTION_MARGIN, safe_foot_x
+
+    W, H = 1920, 1080
+    char_h = H * 0.64
+    # 幅の狭い立ち絵はそのままの位置（0.115W）
+    assert safe_foot_x(W, 120, char_h, 0.115) == W * 0.115
+    # 幅の広い立ち絵は、動き（外への移動・傾き・腕）の分も含めて端で切れない位置へ寄せる
+    x = safe_foot_x(W, 420, char_h, 0.115)
+    assert x - 420 / 2 * 1.03 - char_h * MOTION_MARGIN >= 0
+    # ただし中央の絵に重なるほどは寄せない
+    assert safe_foot_x(W, 2000, char_h, 0.115) == W * 0.3
