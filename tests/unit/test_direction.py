@@ -1,7 +1,7 @@
 """演出プランの整形・カードの割り付け・素材の配置位置。"""
 
 from video_automation.schemas.animation import CardRequest
-from video_automation.schemas.direction import DirectionPlan, Shot
+from video_automation.schemas.direction import DirectionPlan, Shot, ShotKind
 from video_automation.services.direction.plan import from_llm, normalize, rule_plan
 from video_automation.services.direction.service import native_transform
 from video_automation.services.rendering.card import card_layout, text_width
@@ -173,3 +173,34 @@ def test_card_body_quotes_and_meta_items_are_removed():
     card = plan.shots[0]
     assert card.heading == "ケーブルの長さ" and card.body == ["短いケーブルを使う", "抵抗が減る"]
     assert any("要点でない文" in n for n in plan.notes)
+
+
+def test_card_reveal_keeps_size_and_draws_only_shown_items(tmp_path):
+    from video_automation.services.rendering.card import card_filter
+
+    full = CardRequest(project_id="p", heading="三つのコツ", body=["明るさ", "通信", "充電"])
+    part = full.model_copy(update={"reveal": 1})
+    lf, lp = card_layout(full, 1920, 1080), card_layout(part, 1920, 1080)
+    assert (lf.width, lf.height) == (lp.width, lp.height)  # 順に出しても位置がずれない
+    vf_full = card_filter(full, lf, tmp_path / "f.ttf", tmp_path)
+    vf_part = card_filter(part, lp, tmp_path / "f.ttf", tmp_path)
+    assert vf_full.count("drawtext") == 4 and vf_part.count("drawtext") == 2
+    assert vf_part.count("@0.62") == 0  # 新しい項目は暗くしない
+    two = card_filter(full.model_copy(update={"reveal": 2}), lf, tmp_path / "f.ttf", tmp_path)
+    assert two.count("drawtext") == 3 and "@0.62" in two  # 前の項目は少し暗く
+
+
+def test_reveal_steps_follow_lines():
+    from types import SimpleNamespace as NS
+
+    from video_automation.services.direction.service import _reveal_steps
+
+    lines = [NS(start=i * 60, end=i * 60 + 55) for i in range(6)]
+    shot = Shot(kind=ShotKind.CARD, from_line=1, to_line=6, heading="h", body=["a", "b", "c"])
+    st = _reveal_steps(shot, lines, 0, 360, 30)
+    assert [r for _, _, r in st] == [1, 2, 3]
+    assert [t0 for t0, _, _ in st] == [0, 120, 240] and st[-1][1] == 360
+    # 短すぎるときは一度に出す
+    assert _reveal_steps(shot, lines, 0, 60, 30) == [(0, 60, None)]
+    one = shot.model_copy(update={"body": ["a"]})
+    assert _reveal_steps(one, lines, 0, 360, 30) == [(0, 360, None)]

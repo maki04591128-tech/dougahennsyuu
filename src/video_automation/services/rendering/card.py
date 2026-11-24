@@ -19,6 +19,7 @@ class TextLine:
     color: str
     x: int
     y: int
+    item: int = -1  # 本文の何番目か（見出しは -1）
 
 
 @dataclass
@@ -29,6 +30,7 @@ class CardLayout:
     lines: list[TextLine] = field(default_factory=list)
     divider: tuple[int, int, int, int] | None = None  # x, y, w, h
     bullets: list[tuple[int, int, int]] = field(default_factory=list)  # x, y, 一辺
+    bullet_items: list[int] = field(default_factory=list)  # bullets と同じ順の本文番号
 
 
 def text_width(text: str, size: int) -> float:
@@ -82,18 +84,19 @@ def card_layout(req: CardRequest, canvas_w: int, canvas_h: int) -> CardLayout:
             y += round(bs * 0.2)
             layout.divider = (x, y, inner, max(2, round(unit * 0.003)))
             y += round(bs * 0.6)
-    for item in req.body:
+    for idx, item in enumerate(req.body):
         bullet = req.style in ("point", "summary")
         text = item
         indent = 0
         if bullet:
             sq = max(6, round(bs * 0.26))
             layout.bullets.append((x + round(bs * 0.1), y + round(bs * 0.5) - sq // 2, sq))
+            layout.bullet_items.append(idx)
             indent = round(bs * 0.75)
         for i, ln in enumerate(_wrap(text, bs, inner - indent)):
             if i:
                 y += round(bs * 1.38)
-            layout.lines.append(TextLine(ln, bs, white, x + indent, y))
+            layout.lines.append(TextLine(ln, bs, white, x + indent, y, idx))
         y += round(bs * 1.5)
     if req.body:
         y -= round(bs * 0.12)
@@ -116,7 +119,17 @@ def _ff_color(hex_color: str, alpha: float = 1.0) -> str:
 
 
 def card_filter(req: CardRequest, layout: CardLayout, font: Path, tmp: Path) -> str:
-    """パネル・色帯・区切り線・文字の順に描く。文字はファイル経由（エスケープ不要）。"""
+    """パネル・色帯・区切り線・文字の順に描く。文字はファイル経由（エスケープ不要）。
+
+    req.reveal があれば、本文はその数だけ描く（大きさは全部を出したときと同じなので、
+    順に出しても位置がずれない）。直前までの項目は少し暗くし、新しい項目を目立たせる。"""
+    shown = len(req.body) if req.reveal is None else req.reveal
+
+    def alpha(item: int) -> float:
+        if req.reveal is None or item < 0 or item == shown - 1:
+            return 1.0
+        return 0.62
+
     parts = [
         f"drawbox=x=0:y=0:w={layout.width}:h={layout.height}:"
         f"color={_ff_color(req.panel_color, req.panel_opacity)}:t=fill:replace=1",
@@ -128,18 +141,23 @@ def card_filter(req: CardRequest, layout: CardLayout, font: Path, tmp: Path) -> 
         parts.append(
             f"drawbox=x={dx}:y={dy}:w={dw}:h={dh}:color={_ff_color(req.accent_color, 0.8)}:t=fill"
         )
-    for bx, by, sz in layout.bullets:
+    for (bx, by, sz), item in zip(layout.bullets, layout.bullet_items, strict=True):
+        if item >= shown:
+            continue
         parts.append(
-            f"drawbox=x={bx}:y={by}:w={sz}:h={sz}:color={_ff_color(req.accent_color)}:t=fill"
+            f"drawbox=x={bx}:y={by}:w={sz}:h={sz}:"
+            f"color={_ff_color(req.accent_color, alpha(item))}:t=fill"
         )
     fontfile = filter_path(font)
     for i, ln in enumerate(layout.lines):
+        if ln.item >= shown:
+            continue
         f = tmp / f"line{i}.txt"
         f.write_text(ln.text, encoding="utf-8")
         parts.append(
             # expansion=none: 「18%」の % を書式として解釈させない
             f"drawtext=fontfile='{fontfile}':textfile='{filter_path(f)}':expansion=none:"
-            f"fontsize={ln.size}:fontcolor={_ff_color(ln.color)}:x={ln.x}:y={ln.y}:"
+            f"fontsize={ln.size}:fontcolor={_ff_color(ln.color, alpha(ln.item))}:x={ln.x}:y={ln.y}:"
             "shadowcolor=0x000000@0.6:shadowx=2:shadowy=2"
         )
     return ",".join(parts)
