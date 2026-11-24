@@ -137,7 +137,7 @@ mcp.tool(name="register_pronunciation", description="読み辞書に単語を登
 
 # ---------------- Phase 4: 字幕 ----------------
 async def generate_subtitles(
-    script_id: str, max_chars_per_line: int | None = None, max_lines: int = 2
+    script_id: str, max_chars_per_line: int | None = None, max_lines: int | None = None
 ) -> list[dict[str, Any]]:
     """台本から字幕を作り、音声の実時間で同期する（音声生成済みであること）。"""
     c = await get_container()

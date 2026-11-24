@@ -97,7 +97,7 @@ class SubtitleStyle(BaseModel):
 class SubtitleGenerateRequest(BaseModel):
     script_id: str
     max_chars_per_line: int | None = Field(default=None, ge=4, le=60)  # None=縦横比から自動
-    max_lines: int = Field(default=2, ge=1, le=4)
+    max_lines: int | None = Field(default=None, ge=1, le=4)  # None=用途の型（無ければ 2）
     strip_period: bool = True  # 文末の「。」を表示しない
 
 
