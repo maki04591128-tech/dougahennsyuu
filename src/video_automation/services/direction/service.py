@@ -47,6 +47,7 @@ from video_automation.schemas.timeline import (
     CommandRequest,
     DeleteClip,
     FitMode,
+    MoveTrack,
     SetClipAnimation,
     TitleCardRequest,
     TrackKind,
@@ -78,6 +79,7 @@ SIDE = 0.035  # テロップの左右の余白（幅比）
 # 立ち絵があるとき、図・カードを置ける横の範囲（幅比）。左右の端は立ち絵の列（layout-no-overlap）
 TACHIE_MAIN_W = 0.56
 TRACKS = ("演出・背景", "演出・図", "演出・文字")
+TACHIE_TRACK = "立ち絵"  # characters.service.TRACK
 BACKGROUNDS = {
     "navy": ("0x0B1D3A", "0x2A5A8A"),
     "charcoal": ("0x15171C", "0x3A3F4A"),
@@ -493,6 +495,13 @@ class DirectionService:
                 track[name] = str(uuid4())
                 cmds.append(AddTrack(kind=TrackKind.VIDEO, name=name, track_id=track[name]))
         bg_t, fig_t, txt_t = (track[n] for n in TRACKS)
+        # 重なり順: 背景 → 図・カード → 立ち絵 → 文字（立ち絵を先に置いていても背景で隠さない）
+        tachie = next(
+            (t for t in tl.tracks if t.name == TACHIE_TRACK and t.kind == TrackKind.VIDEO), None
+        )
+        if tachie is not None:
+            cmds.append(MoveTrack(track_id=tachie.id, index=1000))
+            cmds.append(MoveTrack(track_id=txt_t, index=1000))
         clips = 0
 
         def add(track_id: str, asset_id: str, start: int, length: int, **kw: Any) -> str:

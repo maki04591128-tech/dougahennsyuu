@@ -194,3 +194,29 @@ async def test_duplicate_track_or_clip_id_is_a_command_error(mclient, media_dir)
     t2 = (await _cmd(c, pid2, {"type": "add_track", "kind": "video"})).json()["command"]["track_id"]
     r = await _cmd(c, pid2, {**clip, "track_id": t2, "asset_id": video2["id"], "clip_id": "k1"})
     assert r.status_code == 422 and "already exists" in r.text
+
+
+async def test_move_track_reorders_and_undo_restores(mclient):
+    c = mclient
+    pid = (await c.post("/projects", json={"name": "M"})).json()["id"]
+    ids = []
+    for n in ("立ち絵", "背景", "文字"):
+        r = await _cmd(c, pid, {"type": "add_track", "kind": "video", "name": n})
+        ids.append(r.json()["command"]["track_id"])
+
+    async def order():
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        return [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
+
+    assert await order() == ["立ち絵", "背景", "文字"]
+    # 範囲外の位置は一番上に寄せる。他のトラックは詰める
+    r = await _cmd(c, pid, {"type": "move_track", "track_id": ids[0], "index": 1000})
+    assert r.status_code == 201, r.text
+    assert await order() == ["背景", "文字", "立ち絵"]
+    r = await _cmd(c, pid, {"type": "move_track", "track_id": ids[0], "index": 1})
+    assert await order() == ["背景", "立ち絵", "文字"]
+    await c.post(f"/projects/{pid}/undo")
+    await c.post(f"/projects/{pid}/undo")
+    assert await order() == ["立ち絵", "背景", "文字"]
+    r = await _cmd(c, pid, {"type": "move_track", "track_id": "nope", "index": 0})
+    assert r.status_code >= 400

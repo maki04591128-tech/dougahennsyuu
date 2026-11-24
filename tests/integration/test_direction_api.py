@@ -394,3 +394,23 @@ async def test_too_few_visuals_are_asked_again_once(dclient, fake):
     plan = (await c.post("/direction/plan", json={"script_id": sid})).json()["plan"]
     assert len(calls) == 2 and "少なくとも 2 個" in calls[1]
     assert [s["kind"] for s in plan["shots"]].count("card") == 3
+
+
+async def test_tachie_placed_before_direction_stays_above_background(dclient):
+    """立ち絵を先に置いてから演出を付けても、背景で隠れない（背景 → 図 → 立ち絵 → 文字）。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    r = await c.post(
+        f"/projects/{pid}/commands",
+        json={"command": {"type": "add_track", "kind": "video", "name": "立ち絵"}},
+    )
+    assert r.status_code == 201, r.text
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()
+    for _ in range(2):  # 作り直しても順番は変わらない
+        await _job(
+            c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan["plan"]})
+        )
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        video = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
+        video = [n for n in video if n != "ナレーション"]
+        assert video == ["演出・背景", "演出・図", "立ち絵", "演出・文字"]

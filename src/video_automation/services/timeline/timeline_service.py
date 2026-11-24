@@ -48,6 +48,7 @@ from video_automation.schemas.timeline import (
     CommandStatus,
     DeleteClip,
     MoveClip,
+    MoveTrack,
     ProjectUpdate,
     SetClipAnimation,
     SetClipProps,
@@ -309,6 +310,8 @@ class TimelineService:
             if isinstance(c, AddTrack):
                 c.track_id = c.track_id or str(uuid4())
                 tracks.add(c.track_id)
+            elif isinstance(c, MoveTrack):
+                tracks.add(c.track_id)  # 他のトラックの順番も変わる（_apply で全部を加える）
             elif isinstance(c, AddClip):
                 c.clip_id = c.clip_id or str(uuid4())
                 clips.add(c.clip_id)
@@ -376,6 +379,15 @@ class TimelineService:
                     index=n,
                 )
             )
+            await s.flush()
+            return
+        if isinstance(c, MoveTrack):
+            target = await self._track(s, p.id, c.track_id)
+            q = select(Track).where(Track.project_id == p.id).order_by(Track.index, Track.id)
+            order = [t for t in (await s.execute(q)).scalars() if t.id != target.id]
+            order.insert(min(c.index, len(order)), target)
+            for i, t in enumerate(order):
+                t.index = i
             await s.flush()
             return
         if isinstance(c, AddClip):
@@ -532,6 +544,10 @@ class TimelineService:
 
     async def _apply(self, s: AsyncSession, p: Project, cmd: Any) -> tuple[Snapshot, Snapshot]:
         tracks, clips = self._touched(cmd)
+        each = cmd.commands if isinstance(cmd, Batch) else [cmd]
+        if any(isinstance(c, MoveTrack) for c in each):
+            rows = await s.execute(select(Track.id).where(Track.project_id == p.id))
+            tracks |= set(rows.scalars())
         before = await self._snapshot(s, tracks, clips)
         for c in cmd.commands if isinstance(cmd, Batch) else [cmd]:
             await self._apply_one(s, p, c)
