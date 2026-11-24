@@ -30,6 +30,7 @@ from video_automation.services.orchestrator.orchestrator import Orchestrator, To
 from video_automation.services.qa.qa_service import QAService
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.rendering.title_card import TitleCardService
+from video_automation.services.screencast.service import ScreencastService
 from video_automation.services.script.studio import ScriptStudio
 from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.subtitle.subtitle_service import SubtitleService
@@ -73,6 +74,7 @@ class AppContainer:
     transcriber: TranscriptionService
     skills: SkillLibrary
     characters: CharacterService
+    screencast: ScreencastService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -192,4 +194,5 @@ async def build_container(
         transcriber=TranscriptionService(settings, db, ffmpeg, design=design),
         skills=skills,
         characters=characters,
+        screencast=ScreencastService(settings, db, timeline, ffmpeg),
     )
