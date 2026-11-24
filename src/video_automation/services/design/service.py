@@ -51,9 +51,10 @@ def manifest_record(
     fonts: list[str],
     placements: list[Placement] | None = None,
     empty_spans: list[tuple[float, float]] | None = None,
+    outline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """演出の処理が保存する記録（JSON）。"""
-    return {
+    """演出の処理が保存する記録（JSON）。outline は題名・章の区切り（検査には使わない）。"""
+    rec: dict[str, Any] = {
         "used": {c.value: n for c, n in used.items() if n},
         "colors": sorted(set(c.upper() for c in colors)),
         "fonts": sorted(set(fonts)),
@@ -63,6 +64,9 @@ def manifest_record(
         ],
         "empty_spans": [[round(a, 2), round(b, 2)] for a, b in empty_spans or []],
     }
+    if outline is not None:
+        rec["outline"] = outline
+    return rec
 
 
 class DesignService:
@@ -95,6 +99,13 @@ class DesignService:
             p.design_extras = [c.value for c in dict.fromkeys(design.extras)]
             await s.commit()
         return design
+
+    async def outline(self, project_id: str) -> dict[str, Any]:
+        """演出プランを適用したときに記録した題名・章の区切り（無ければ空）。"""
+        async with self.db.session_factory() as s:
+            p = await self._project(s, project_id)
+            rec = (p.design_manifest or {}).get("direction") or {}
+        return dict(rec.get("outline") or {})
 
     async def profile_for(self, project_id: str) -> DesignProfile | None:
         d = await self.get(project_id)

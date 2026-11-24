@@ -104,7 +104,17 @@ async def build_container(
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
     titles = TitleCardService(settings, db, blender, ffmpeg, timeline)
-    render = RenderService(settings, db, ffmpeg, timeline, subtitles, jobs, design)
+    render = RenderService(
+        settings,
+        db,
+        ffmpeg,
+        timeline,
+        subtitles,
+        jobs,
+        design,
+        blender=blender,
+        font_for=lambda family: titles.font_path(family),
+    )
     asset_sources = AssetSourceService(
         settings,
         db,
