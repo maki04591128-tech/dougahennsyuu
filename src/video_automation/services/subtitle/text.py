@@ -70,6 +70,21 @@ def _is_hira(ch: str) -> bool:
     return "ぁ" <= ch <= "ゟ"
 
 
+def _is_kanji(ch: str) -> bool:
+    return bool(ch) and ("\u4e00" <= ch <= "\u9fff" or ch in "々")
+
+
+def _depth(text: str, i: int) -> int:
+    """text[:i] の中で閉じていないかっこの数。"""
+    d = 0
+    for ch in text[:i]:
+        if ch in "「『（(":
+            d += 1
+        elif ch in "」』）)":
+            d = max(0, d - 1)
+    return d
+
+
 def _is_word(ch: str) -> bool:
     return ch.isascii() and (ch.isalnum() or ch in "_.-'")
 
@@ -83,6 +98,10 @@ def _break_score(text: str, i: int) -> int:
         return 0
     if prev in "」』）)" and _is_hira(nxt):  # 「名前」の … の助詞を切り離さない
         return 1
+    if _depth(text, i) > 0:  # かぎかっこ・かっこの中（「演出プラン（AI）」など）は切らない
+        return 1
+    if _is_hira(prev) and _is_kanji(text[i - 2] if i >= 2 else "") and _is_kanji(nxt):
+        return 1  # 送り仮名 1 文字を挟む複合語（書き出し・取り込み）の途中
     if prev in _STRONG_AFTER or nxt in "「『（(":  # 句読点の後・かぎかっこの前
         return 3
     if _is_hira(prev) and not _is_hira(nxt):
