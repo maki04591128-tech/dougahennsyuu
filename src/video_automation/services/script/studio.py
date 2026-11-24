@@ -171,6 +171,8 @@ class ScriptStudio:
             is_user=c.is_user,
             voice=voice,
             color=c.color,
+            tachie_pack=c.tachie_pack,
+            subtitle_font=c.subtitle_font,
         )
 
     async def detail(self, script_id: str, notes: list[str] | None = None) -> ScriptDetail:
@@ -218,6 +220,8 @@ class ScriptStudio:
                     "voice_style_id": c.voice_style_id,
                     "voice": c.voice,
                     "color": c.color,
+                    "tachie_pack": c.tachie_pack,
+                    "subtitle_font": c.subtitle_font,
                 }
                 for c in chars
             ],
@@ -432,6 +436,8 @@ class ScriptStudio:
             voice_style_id=c.voice.style_id,
             voice=voice or None,
             color=c.color,
+            tachie_pack=c.tachie_pack,
+            subtitle_font=c.subtitle_font,
         )
         if cid is not None:
             row.id = cid

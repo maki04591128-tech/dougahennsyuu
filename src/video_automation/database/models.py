@@ -482,6 +482,9 @@ class ScriptCharacter(Base):
     voice_style_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     voice: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)  # 抑揚など
     color: Mapped[str | None] = mapped_column(String(9), nullable=True)  # 字幕・名前の色
+    # 立ち絵（data/characters/<id> のパック）と字幕の書体（話者を書体で区別する）
+    tachie_pack: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subtitle_font: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 class ScriptScene(Base):

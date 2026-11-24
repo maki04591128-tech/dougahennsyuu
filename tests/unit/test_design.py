@@ -221,7 +221,7 @@ def test_light_profiles_get_light_outline_and_denied_speaker_label_is_off():
     assert not is_dark(lecture.outline_color)  # 明るい背景の型は明るい縁取り
     assert lecture.speaker_outline is False
     explainer = style_from_profile(PROFILES[Purpose.EXPLAINER])
-    assert explainer.outline_color == "#000000" and explainer.speaker_label
+    assert explainer.outline_color == "#000000" and explainer.speaker_fonts
     kids = style_from_profile(PROFILES[Purpose.KIDS])
     assert kids.speaker_label is False  # 子ども向けは話者名を使わない
 

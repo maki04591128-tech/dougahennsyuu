@@ -56,6 +56,8 @@ from video_automation.services.voice.voice_service import (
 
 # 話者の既定の色（明るめ。縁取りには暗くして使う）
 SPEAKER_PALETTE = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFD54F"]
+# 話者ごとの字幕の書体（Windows 10/11 に入っている日本語の書体。形の違いが分かるものの順）
+SPEAKER_FONTS = ["UD Digi Kyokasho NK-B", "BIZ UDPMincho", "BIZ UDPGothic", "Meiryo"]
 
 log = get_logger("subtitle")
 if TYPE_CHECKING:
@@ -123,7 +125,10 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
         # 暗い文字（明るい背景の型）は明るい縁取りにする。暗い縁取りだと字が潰れる
         outline_color=prof.palette.base if dark_text else "#000000",
         speaker_outline=not dark_text,
-        speaker_label=prof.allows(Component.SPEAKER_LABEL),
+        # 話者は名前ではなく書体と色で区別する（名前は出さない）
+        speaker_label=False,
+        speaker_fonts=prof.allows(Component.SPEAKER_LABEL),
+        speaker_fill=not dark_text,
     )
 
 
@@ -432,6 +437,40 @@ class SubtitleService:
             i += 1
         return out
 
+    async def speaker_fonts(self, script_id: str) -> dict[str, str]:
+        """話者の字幕の書体。キャラクターの subtitle_font、無ければ登場順に既定の書体。"""
+        async with self.db.session_factory() as s:
+            chars = list(
+                (
+                    await s.execute(
+                        select(ScriptCharacter)
+                        .where(ScriptCharacter.script_id == script_id)
+                        .order_by(ScriptCharacter.sequence)
+                    )
+                ).scalars()
+            )
+            speakers = list(
+                dict.fromkeys(
+                    (
+                        await s.execute(
+                            select(ScriptSegment.speaker)
+                            .where(ScriptSegment.script_id == script_id)
+                            .order_by(ScriptSegment.sequence)
+                        )
+                    ).scalars()
+                )
+            )
+        out = {c.name: c.subtitle_font for c in chars if c.subtitle_font}
+        order = [c.name for c in chars] + [x for x in speakers if x]
+        free = [f for f in SPEAKER_FONTS if f not in out.values()]
+        i = 0
+        for name in dict.fromkeys(order):
+            if name in out or not free:
+                continue
+            out[name] = free[i % len(free)]
+            i += 1
+        return out
+
     # ---------- 出力 (P4-05 / P4-06 / P4-07) ----------
     async def export(self, req: SubtitleExportRequest) -> SubtitleExportResult:
         async with self.db.session_factory() as s:
@@ -453,6 +492,7 @@ class SubtitleService:
                 req.speaker_colors,
                 title=script.title or "VideoAutomation",
                 speaker_accents=await self.speaker_accents(req.script_id),
+                speaker_fonts=await self.speaker_fonts(req.script_id),
             )
         else:
             content = build_srt(rows, fps)

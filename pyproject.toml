@@ -16,6 +16,9 @@ dependencies = [
     "structlog",
     "mcp>=1.2,<2",
     "jsonschema>=4",
+    "psd-tools>=1.10",  # 立ち絵の PSD を部品に分ける
+    "numpy",
+    "pillow",
 ]
 
 [project.optional-dependencies]

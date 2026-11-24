@@ -71,9 +71,12 @@ class SubtitleStyle(BaseModel):
     margin_h_ratio: float = Field(default=0.05, ge=0, le=0.5)
     fade_in_ms: int = Field(default=80, ge=0, le=2000)
     fade_out_ms: int = Field(default=80, ge=0, le=2000)
-    # 話者の表示: 字幕の上に名前を小さく出し、縁取りを話者の色（暗め）にする
-    speaker_label: bool = True
+    # 話者の表示: 名前は出さず（speaker_label=True で字幕の上に小さく出す）、
+    # 話者ごとに書体・文字色・縁取りの色を変えて区別する
+    speaker_label: bool = False
     speaker_outline: bool = True
+    speaker_fonts: bool = True  # 話者ごとに書体を変える（キャラクターの subtitle_font か自動）
+    speaker_fill: bool = True  # 文字色を話者の色を薄めた色にする（暗い文字の型では使わない）
     # 字幕の後ろに画面幅の半透明の帯を敷く（背景が明るくても読める）
     band: bool = True
     band_color: str = "#8C000000"
