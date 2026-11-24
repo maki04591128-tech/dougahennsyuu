@@ -19,7 +19,8 @@ Resolver = Callable[[str], Awaitable[list[str]]]
 
 _ALLOWED_TYPES = {
     "image": ("image/",),
-    "video": ("video/", "application/octet-stream", "binary/octet-stream"),
+    # Wikimedia Commons の動画は Ogg（application/ogg）で届くことがある
+    "video": ("video/", "application/ogg", "application/octet-stream", "binary/octet-stream"),
     "audio": ("audio/", "application/ogg", "video/ogg", "application/octet-stream"),
 }
 
