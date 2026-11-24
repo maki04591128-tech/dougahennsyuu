@@ -79,3 +79,23 @@ def test_tutorial_plan_context_includes_enhanced_defaults():
     ctx, picked = lib.context(q, names=SKILLS_FOR_PLAN, budget=4000, min_score=0.0)
     assert any(p.skill == "screen-tutorial-direction" for p in picked)
     assert "ズーム" in ctx and "立ち絵" in ctx
+
+
+def test_new_direction_skills_are_bundled_and_found():
+    """重なり防止・応用技法・口調・音声のスキルが同梱され、関係する依頼で選ばれる。"""
+    lib = SkillLibrary(None)
+    for name in (
+        "layout-no-overlap",
+        "advanced-motion-techniques",
+        "character-persona-script",
+        "voice-tempo-intonation",
+    ):
+        assert lib.get(name) is not None, name
+    _, picked = lib.context("立ち絵とテロップが重なる。立ち絵の頭が切れる", budget=3000)
+    assert any(p.skill == "layout-no-overlap" for p in picked)
+    _, picked = lib.context("MV で写真を並べるだけになる。背景が単色", budget=3000)
+    assert any(p.skill == "advanced-motion-techniques" for p in picked)
+    _, picked = lib.context("四国めたんの一人称が僕になっている。口調がおかしい", budget=3000)
+    assert any(p.skill == "character-persona-script" for p in picked)
+    _, picked = lib.context("合成音声のイントネーションと間のテンポが悪い", budget=3000)
+    assert any(p.skill == "voice-tempo-intonation" for p in picked)

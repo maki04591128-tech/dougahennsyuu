@@ -84,6 +84,8 @@ BACKGROUNDS = {
 # 演出プランを作るときに参考にするスキル
 SKILLS_FOR_PLAN = [
     "video-design-by-purpose",
+    "advanced-motion-techniques",
+    "layout-no-overlap",
     "blender-video-motion-design",
     "blender-rich-screen-direction",
     "screen-tutorial-direction",
