@@ -1,13 +1,18 @@
-"""台本分割 (P4-01) と字幕の日本語改行 (P4-02)。形態素解析器に依存しない規則ベース。
+"""台本分割 (P4-01) と字幕の日本語改行 (P4-02)。
 
 改行候補:
 - 強: 句読点・感嘆符・閉じ括弧の直後
-- 弱: ひらがな → 漢字/カタカナ/英数 へ切り替わる位置（助詞の後で語が始まる位置にほぼ一致）
+- 中: 文節の切れ目（BudouX があればその区切り。無ければ、ひらがな → 漢字/カタカナ/英数 へ
+  切り替わる位置で近似する）
+- 弱: それ以外（文節の途中。どうしても収まらないときだけ）
 行頭禁則: 句読点・閉じ括弧・長音・小書き仮名などを行頭に置かない。
+1 枚の字幕には 1 文だけを入れる（1 行に収まる短い掛け合いは例外）。
 """
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any
 
 _SPEAKER_LINE = re.compile(r"^\s*([^\s：:「」]{1,20})\s*[：:]\s*(.+)$")
 _SENTENCE_END = "。！？!?"
@@ -66,6 +71,30 @@ def _sentences(line: str) -> list[str]:
     return [p for p in parts if p]
 
 
+@lru_cache(maxsize=1)
+def _budoux() -> Any:
+    """BudouX の日本語の文節区切り（入っていなければ None で、規則だけで改行する）。"""
+    try:
+        import budoux  # type: ignore[import-untyped]
+
+        return budoux.load_default_japanese_parser()
+    except Exception:  # noqa: BLE001 - 無くても動く（規則ベース）
+        return None
+
+
+@lru_cache(maxsize=2048)
+def phrase_bounds(text: str) -> frozenset[int] | None:
+    """文節の切れ目の位置（text[:i] と text[i:] の間）。BudouX が無ければ None。"""
+    parser = _budoux()
+    if parser is None or not text:
+        return None
+    out, pos = set(), 0
+    for chunk in parser.parse(text)[:-1]:
+        pos += len(chunk)
+        out.add(pos)
+    return frozenset(out)
+
+
 def _is_hira(ch: str) -> bool:
     return "ぁ" <= ch <= "ゟ"
 
@@ -98,31 +127,48 @@ def _break_score(text: str, i: int) -> int:
         return 0
     if prev in "」』）)" and _is_hira(nxt):  # 「名前」の … の助詞を切り離さない
         return 1
+    if _is_word(prev) and _is_hira(nxt):  # 「Ollama」や … の助詞を英単語から切り離さない
+        return 1
     if _depth(text, i) > 0:  # かぎかっこ・かっこの中（「演出プラン（AI）」など）は切らない
         return 1
     if _is_hira(prev) and _is_kanji(text[i - 2] if i >= 2 else "") and _is_kanji(nxt):
         return 1  # 送り仮名 1 文字を挟む複合語（書き出し・取り込み）の途中
     if prev in _STRONG_AFTER or nxt in "「『（(":  # 句読点の後・かぎかっこの前
         return 3
-    if _is_hira(prev) and not _is_hira(nxt):
-        return 2
+    bounds = phrase_bounds(text)
+    if bounds is not None:  # 文節の切れ目だけを良い位置とする（語の途中では切らない）
+        return 2 if i in bounds else 1
     if prev == " ":
+        return 2
+    if _is_hira(prev) and not _is_hira(nxt):
         return 2
     return 1
 
 
 def wrap_lines(text: str, max_chars: int) -> list[str]:
-    """max_chars 以内の行に分割する（候補の中で最も後ろの良い位置で改行）。"""
+    """max_chars 以内の行に分割する。
+
+    残りが 2 行に収まるときは、良い切れ目の中から 2 行の長さが揃う位置を選ぶ
+    （1 行目だけ長く 2 行目が数文字、という偏りを避ける）。それ以外は後ろの良い位置で改行する。"""
     lines: list[str] = []
     rest = text.strip()
     while len(rest) > max_chars:
-        # 句読点（強）は行の1/3以降、それ以外は後ろほど優先
-        window = range(max(1, max_chars // 3), max_chars + 1)
+        n = len(rest)
         best_i, best_s = max_chars, 0
-        for i in window:
-            s = _break_score(rest, i)
-            if s >= best_s and s > 0:
-                best_i, best_s = i, s
+        if n <= max_chars * 2:
+            best_key: tuple[int, float] = (0, 0.0)
+            for i in range(max(1, n - max_chars, n // 4), max_chars + 1):
+                s = _break_score(rest, i)
+                key = (s, -abs(i - n / 2))
+                if s > 0 and key > best_key:
+                    best_key, best_i, best_s = key, i, s
+        if best_s < 2:  # 揃えられる良い切れ目が無い: 後ろの良い位置で改行する
+            best_i, best_s = max_chars, 0
+            # 句読点（強）は行の1/3以降、それ以外は後ろほど優先
+            for i in range(max(1, max_chars // 3), max_chars + 1):
+                s = _break_score(rest, i)
+                if s >= best_s and s > 0:
+                    best_i, best_s = i, s
         if best_s == 0:  # 禁則や長い英単語で切れない場合
             best_i = max_chars - 1 if rest[max_chars] in _NO_LINE_START else max_chars
         lines.append(rest[:best_i].strip())
@@ -148,6 +194,15 @@ def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> 
     動的計画法で切れ目を選ぶ。
     """
     t = text.strip()
+    if not t:
+        return []
+    sents = _sentences(t)
+    if len(sents) > 1 and len(t) > max_chars:
+        # 1 枚に 1 文（1 行に収まる短い掛け合い「えっ！本当？」は 1 枚のまま）
+        out: list[str] = []
+        for x in sents:
+            out += make_cues(x, max_chars, max_lines, strip_period)
+        return out
     if strip_period:
         t = t.rstrip("。.")
     if not t:

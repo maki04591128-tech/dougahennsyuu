@@ -19,6 +19,7 @@ dependencies = [
     "psd-tools>=1.10",  # 立ち絵の PSD を部品に分ける
     "numpy",
     "pillow",
+    "budoux>=0.6",  # 字幕の改行を文節の切れ目で行う（Apache-2.0、モデル同梱・オフライン）
 ]
 
 [project.optional-dependencies]
