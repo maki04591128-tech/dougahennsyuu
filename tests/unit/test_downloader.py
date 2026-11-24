@@ -79,8 +79,17 @@ async def test_size_and_type_limits(tmp_path):
     with pytest.raises(DownloadRejectedError, match="content type"):
         await html.fetch("https://cdn.example.org/a.jpg", tmp_path / "a.jpg", "image")
     assert not list(tmp_path.iterdir())  # .part も残さない
+    # Wikimedia の動画は application/ogg で届く
+    ogv = make(
+        lambda r: httpx.Response(
+            200, content=b"OggS" + b"0" * 10, headers={"Content-Type": "application/ogg"}
+        )
+    )
+    n, ctype = await ogv.fetch("https://cdn.example.org/v.ogv", tmp_path / "v.ogv", "video")
+    assert n == 14 and ctype == "application/ogg"
     await big.aclose()
     await html.aclose()
+    await ogv.aclose()
 
 
 def test_host_allowed():
