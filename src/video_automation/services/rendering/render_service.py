@@ -25,7 +25,7 @@ from video_automation.integrations.blender.runner import Blender, BlenderError
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
 from video_automation.schemas.animation import ClipAnimation, TransitionType
 from video_automation.schemas.design import DesignCheck
-from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat
+from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat, SubtitleStyle
 from video_automation.schemas.timeline import (
     RENDER_PROFILES,
     AssetKind,
@@ -231,6 +231,26 @@ class RenderService:
             return Encoder.NVENC.value if self._nvenc else Encoder.LIBX264.value
         return choice.value
 
+    async def _clear_of_tachie(
+        self, project_id: str, width: int, height: int, style: SubtitleStyle
+    ) -> SubtitleStyle:
+        """縦長で立ち絵を置いたときは、字幕を立ち絵の上に出す（下に並ぶキャラクターに重ねない）。
+
+        横長の立ち絵は左右の端なので、字幕（中央）とは重ならない。"""
+        if height <= width:
+            return style
+        from video_automation.services.characters.overlay import layout
+        from video_automation.services.characters.service import TRACK
+
+        tl = await self.timeline.get_timeline(project_id)
+        track = next((t for t in tl.tracks if t.name == TRACK and not t.muted), None)
+        if track is None or not any(c.track_id == track.id for c in tl.clips):
+            return style
+        need = round(layout(width, height)[1] + 0.03, 3)
+        if style.margin_v_ratio >= need:
+            return style
+        return style.model_copy(update={"margin_v_ratio": need})
+
     async def _ass_for(
         self,
         script_id: str,
@@ -262,6 +282,7 @@ class RenderService:
             if (c.end_frame or 0) > offset_frames
         ]
         style = await self.subtitles.project_style(p.id)
+        style = await self._clear_of_tachie(p.id, width, height, style)
         if not fade:
             style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
         content = build_ass(
