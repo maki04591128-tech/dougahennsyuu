@@ -50,6 +50,19 @@ async def get_render(render_id: str, c: AppContainer = Depends(get_container)):
     return await c.render.get(render_id)
 
 
+@router.get("/{render_id}/files")
+async def render_files(render_id: str, c: AppContainer = Depends(get_container)) -> dict:
+    """書き出した動画・字幕の絶対パス（同じ PC の Blender アドオンが読み込むため）。
+    API は localhost にだけ開いているので、パスが外へ出ることはない。"""
+    r = await c.render.get(render_id)
+    base = c.settings.data_dir
+    return {
+        "status": r.status,
+        "video": str(base / r.output_path) if r.output_path else None,
+        "subtitles": [str(base / x) for x in r.subtitle_paths],
+    }
+
+
 @router.post("/{render_id}/approve", response_model=RenderJobRead)
 async def approve(render_id: str, c: AppContainer = Depends(get_container)):
     return await c.render.decide(render_id, True)

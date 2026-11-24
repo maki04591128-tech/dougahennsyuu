@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "video_automation_bridge"
+version = "0.1.0"
+name = "動画自動化ブリッジ"
+tagline = "Blender の動画編集から動画自動化アプリを操作します"
+maintainer = "dougahennsyuu"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Sequencer"]
+
+[permissions]
+network = "同じPCで動いている動画自動化アプリ（127.0.0.1）と通信します"
+files = "書き出した動画を読み込みます"
