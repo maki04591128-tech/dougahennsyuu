@@ -105,6 +105,18 @@ def _keyword_ok(text: str, source: str) -> bool:
 _META = re.compile(r"^(?:[a-z_][a-z0-9_]*\s*[:：=]|[a-z0-9]+(?:_[a-z0-9]+)+$)")
 
 
+_QUOTES = ("「」", "『』", '""', "“”", "（）", "()")
+
+
+def _unquote(text: str) -> str:
+    """全体を囲んだかぎかっこを外す（小さなモデルは要点を「」で囲むことがある）。"""
+    t = text.strip()
+    for a, b in _QUOTES:
+        if len(t) >= 2 and t[0] == a and t[-1] == b and t.count(a) == 1:
+            return t[1:-1].strip()
+    return t
+
+
 def _trim(text: str, n: int) -> str:
     text = re.sub(r"\s+", " ", text).strip()  # 改行や連続した空白は 1 つの空白に
     return text if len(text) <= n else text[: n - 1] + "…"
@@ -157,11 +169,18 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
         s.from_line = min(max(1, s.from_line), n)
         s.to_line = min(max(s.from_line, s.to_line or s.from_line), n)
         if s.kind == ShotKind.CARD:
-            s.heading = _trim(s.heading, 20)
-            junk = [b for b in s.body if _META.match(b.strip())]
+            s.heading = _trim(_unquote(s.heading), 20)
+            s.body = [_unquote(b) for b in s.body]
+            # 動画そのものの説明（「解説動画」）や、見出し・題名の繰り返しは要点にならない
+            same = {_norm(s.heading), _norm(title)}
+            junk = [
+                b
+                for b in s.body
+                if _META.match(b.strip()) or _norm(b) in same or _norm(b).endswith("解説動画")
+            ]
             if junk:  # 小さなモデルは項目名や指示の言葉を本文に入れることがある
                 notes.append(
-                    f"{s.from_line}: カードの本文から項目名のような文（{len(junk)} 件）を外しました"
+                    f"{s.from_line}: カードの本文から要点でない文（{len(junk)} 件）を外しました"
                 )
             s.body = [_trim(b, 40) for b in s.body if b.strip() and b not in junk][:3]
             if not s.heading and not s.body:

@@ -129,7 +129,7 @@ def fit_to_duration(
             break
         # 省いたあとの尺が目標にいちばん近くなる場面（同じなら後ろの場面）
         best = min(middle, key=lambda i: (abs(total - sec(out[i]) - target_sec), -i))
-        if total - sec(out[best]) < target_sec * 0.6:  # 短くなりすぎるなら場面ごとは省かない
+        if total - sec(out[best]) < target_sec * 0.8:  # 短くなりすぎるなら場面ごとは省かない
             break
         total -= sec(out.pop(best))
         dropped += 1
