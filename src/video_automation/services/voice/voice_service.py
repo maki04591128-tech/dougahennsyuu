@@ -325,6 +325,10 @@ class VoiceService:
         if item.accent_phrases is None and item.expressiveness:
             base_query.accent_phrases = await self._expressive(c, item, base_query.accent_phrases)
             base_query.kana = None
+        if item.expressiveness:  # 台本の読み上げ: 前後の無音を短く（間はタイムラインで作る）
+            edge = self.settings.voice_edge_silence
+            base_query.prePhonemeLength = min(base_query.prePhonemeLength, edge)
+            base_query.postPhonemeLength = min(base_query.postPhonemeLength, edge)
         query = self.apply_prosody(
             base_query,
             item.prosody,

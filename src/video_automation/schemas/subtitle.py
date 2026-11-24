@@ -106,7 +106,11 @@ class SubtitleGenerateRequest(BaseModel):
 
 class SubtitleSyncRequest(BaseModel):
     script_id: str
-    gap_sec: float = Field(default=0.3, ge=0, le=10)  # セグメント間の無音
+    # セグメント間の無音。auto は会話のリズム（話し手の交代・質問・話題の切り替え）で決め、
+    # fixed は gap_sec で一律にする
+    gap_mode: Literal["auto", "fixed"] = "auto"
+    gap_sec: float = Field(default=0.3, ge=0, le=10)  # fixed のときの無音
+    gap_scale: float = Field(default=1.0, ge=0.3, le=3.0)  # auto の間の倍率（速く=小さく）
     min_duration_sec: float = Field(default=0.6, ge=0, le=10)
     # 行の終わりの字幕を、次の字幕が出るまで（最大この秒数）残す。読み切れる時間を確保する
     hold_sec: float = Field(default=0.5, ge=0, le=5)

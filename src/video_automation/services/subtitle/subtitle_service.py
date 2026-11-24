@@ -8,7 +8,7 @@
 from collections.abc import Awaitable, Callable
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +44,7 @@ from video_automation.schemas.voice import (
     VoiceGenerateRequest,
 )
 from video_automation.services.subtitle.formats import build_ass, build_srt
+from video_automation.services.subtitle.pacing import line_gap
 from video_automation.services.subtitle.text import default_max_chars, make_cues, split_script
 from video_automation.services.voice.reading import emphasis_terms, normalize_for_speech
 from video_automation.services.voice.timing import mora_times
@@ -347,8 +348,22 @@ class SubtitleService:
                 by_seg.setdefault(c.script_segment_id, []).append(c)
 
             cursor = 0  # フレーム
-            gap = sec_to_frame(req.gap_sec, fps)
+            prev: Any = None
             for seg in segs:
+                if prev is not None:  # 前のセリフとの間（一律にせず、会話のリズムで）
+                    if req.gap_mode == "fixed":
+                        cursor += sec_to_frame(req.gap_sec, fps)
+                    else:
+                        g = line_gap(
+                            prev.speaker or "",
+                            prev.text,
+                            seg.speaker or "",
+                            seg.text,
+                            scene_changed=seg.scene_index != prev.scene_index,
+                            scale=req.gap_scale,
+                        )
+                        cursor += sec_to_frame(g, fps)
+                prev = seg
                 audio = await s.get(AudioFile, seg.audio_file_id)
                 if audio is None:
                     raise SubtitleStateError(f"audio file missing for segment {seg.sequence}")
@@ -358,7 +373,7 @@ class SubtitleService:
                 for cue, (a, b) in zip(by_seg.get(seg.id, []), spans, strict=True):
                     cue.start_frame = cursor + sec_to_frame(a, fps)
                     cue.end_frame = max(cue.start_frame + 1, cursor + sec_to_frame(b, fps))
-                cursor += length + gap
+                cursor += length
 
             # 最短表示時間：次のキュー開始までの範囲で延長。重なりは除去（半開区間）
             min_len = sec_to_frame(req.min_duration_sec, fps)

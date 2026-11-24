@@ -60,8 +60,18 @@ async def test_full_flow_generate_sync_export(client, settings):
     for c in cues:
         s = by_id[c["script_segment_id"]]
         assert s["start_frame"] <= c["start_frame"] and c["end_frame"] <= s["end_frame"] + 18
-    # セグメント間に 0.3s(=9frame) の間
-    assert seg_rows[1]["start_frame"] == seg_rows[0]["end_frame"] + 9
+    # セグメント間の間は会話のリズムで決める（同じ人が次の文へ 0.22s ≒ 7frame、
+    # 話題の切り替え（シーンが変わる）0.85s ≒ 26frame）
+    assert seg_rows[1]["start_frame"] == seg_rows[0]["end_frame"] + 7
+    assert seg_rows[2]["start_frame"] == seg_rows[1]["end_frame"] + 26
+    # 一律の間にもできる
+    await client.post(
+        "/subtitles/synchronize",
+        json={"script_id": sid, "hold_sec": 0, "gap_mode": "fixed", "gap_sec": 0.3},
+    )
+    fixed_rows = (await client.get(f"/scripts/{sid}")).json()["segments"]
+    assert fixed_rows[1]["start_frame"] == fixed_rows[0]["end_frame"] + 9
+    await client.post("/subtitles/synchronize", json={"script_id": sid, "hold_sec": 0})
 
     ass = (
         await client.post(
