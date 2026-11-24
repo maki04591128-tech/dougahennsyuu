@@ -9,6 +9,7 @@
 適用は 1 つの編集（Batch）としてまとめ、元に戻せる。LLM 経由（MCP）の適用は承認が必要。
 """
 
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,7 +61,7 @@ from video_automation.services.direction.plan import (
     prompt_lines,
     rule_plan,
 )
-from video_automation.services.llm_tasks.gateway import LLMGateway
+from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.timeline.timeline_service import (
@@ -313,9 +314,43 @@ class DirectionService:
             raw = from_llm(res.data)
             if not raw.shots:  # AI が何も出さなかったときは規則の演出（数値のテロップ）で補う
                 raw.shots = rule_plan(texts, title).shots
+            plan = normalize(raw, texts, title)
+            # 図・カードが少なすぎる（同じカードが出続けて画面が止まる）ときは 1 回だけ直させる。
+            # 目安は 4 発話に 1 つ（SYSTEM の「2〜4 発話に 1 つ」の下限）
+            need = max(2, -(-len(texts) // 4)) if len(texts) >= 4 else 1
+            have = sum(1 for x in plan.shots if x.kind in MAIN_KINDS)
+            if have < need:
+                more = (
+                    f"card / chart / image が {have} 個しかありません。{len(texts)} 発話なので、"
+                    f"少なくとも {need} 個にしてください（2〜4 発話に 1 つ、話題の変わり目ごと）。"
+                    "最後の発話には style=summary のまとめのカードを置いてください。"
+                    "同じ JSON の形で、演出全体を出し直してください。"
+                )
+                try:
+                    res2 = await self.llm.complete_json(
+                        TaskType.EDIT_PLAN,
+                        [
+                            ChatMessage(
+                                role="system", content=SYSTEM + ("\n\n" + ctx if ctx else "")
+                            ),
+                            ChatMessage(role="user", content=body),
+                            ChatMessage(
+                                role="assistant", content=json.dumps(res.data, ensure_ascii=False)
+                            ),
+                            ChatMessage(role="user", content=more),
+                        ],
+                        PLAN_SCHEMA,
+                        model_key=req.model_key,
+                        temperature=0.3,
+                        retries=1,
+                    )
+                    plan2 = normalize(from_llm(res2.data), texts, title)
+                    if sum(1 for x in plan2.shots if x.kind in MAIN_KINDS) > have:
+                        plan = plan2
+                except LLMError:
+                    pass  # 直せなければ最初の案のまま
         else:
-            raw = rule_plan(texts, title)
-        plan = normalize(raw, texts, title)
+            plan = normalize(rule_plan(texts, title), texts, title)
         log.info(
             "direction_plan",
             script_id=req.script_id,

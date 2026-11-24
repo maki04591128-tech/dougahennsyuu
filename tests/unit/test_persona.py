@@ -93,3 +93,7 @@ def test_other_characters_ending_is_removed_and_ellipsis_is_not_a_sentence_break
     # まとめて調べるときも、ほかのキャラクターの語尾を直す
     out, iss = check_lines([("四国めたん", "そうなのだ。"), ("ずんだもん", "そうなのだ。")], ps)
     assert out == ["そうなの。", "そうなのだ。"] and [i.index for i in iss] == [0]
+    # 終助詞が付いても見つける（「実在するのだよ」→「実在するのよ」）
+    m = ps["四国めたん"]
+    assert check_line(0, "実在するのだよ。", m, fe)[0] == "実在するのよ。"
+    assert check_line(0, "進むのだね！", m, fe)[0] == "進むのね！"

@@ -185,14 +185,24 @@ def _ending_ok(sentence: str, endings: list[str]) -> bool:
     return any(e in tail for e in endings)
 
 
+_PARTICLES = set("よねなぞわさ")  # 語尾の後ろに付く終助詞
+
+
+def _ends_with(core: str, e: str) -> bool:
+    return core.endswith(e) or (core[-1:] in _PARTICLES and core[:-1].endswith(e))
+
+
 def _strip_foreign(sentence: str, e: str) -> str | None:
     """文末のほかのキャラクターの語尾を、意味を変えずに外す（「〜のだ」→「〜の」）。"""
     core = sentence.rstrip(_TRAIL)
     tail = sentence[len(core) :]
+    particle = ""
+    if core[-1:] in _PARTICLES and core[:-1].endswith(e):  # 「〜のだよ」「〜のだね」
+        core, particle = core[:-1], core[-1]
     if not core.endswith(e):
         return None
-    if e.endswith("のだ"):  # 「進められているのだ」→「進められているの」
-        return core[:-1] + tail
+    if e.endswith("のだ"):  # 「進められているのだ」→「〜いるの」、「〜のだよ」→「〜のよ」
+        return core[:-1] + particle + tail
     return None
 
 
@@ -230,7 +240,7 @@ def check_line(
         for m in _SENT.finditer(fixed):
             sent = m.group(0)
             core = sent.rstrip(_TRAIL)
-            hit = next((e for e in bad_end if core.endswith(e)), None)
+            hit = next((e for e in bad_end if _ends_with(core, e)), None)
             if hit is not None:
                 issues.append(PersonaIssue(index, "foreign_ending", hit, "", None))
                 stripped = _strip_foreign(sent, hit)
