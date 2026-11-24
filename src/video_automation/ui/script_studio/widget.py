@@ -125,6 +125,7 @@ class ScriptStudioWidget(QWidget):
 
         form = QFormLayout()
         form.addRow("プロジェクト", self.project_combo)
+        self.project_combo.currentIndexChanged.connect(self.open_latest)
         form.addRow("モード", self.mode_combo)
         form.addRow("タイトル", self.title_edit)
         form.addRow("テーマ", self.topic_edit)
@@ -295,9 +296,27 @@ class ScriptStudioWidget(QWidget):
         except Exception as exc:  # noqa: BLE001
             self._error(exc)
             return
+        self.project_combo.blockSignals(True)
         self.project_combo.clear()
         for p in projects:
             self.project_combo.addItem(p["name"], p["id"])
+        self.project_combo.blockSignals(False)
+        self.open_latest()
+
+    def open_latest(self, *_: Any) -> None:
+        """選んだプロジェクトの最後に作った台本を開く（なければ空のまま）。"""
+        pid = self.project_combo.currentData()
+        if not pid or not hasattr(self.api, "list_scripts"):
+            return
+        try:
+            scripts = self.api.list_scripts(pid)
+            if not scripts:
+                return
+            d = self.api.studio_detail(scripts[-1]["id"])
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
+            return
+        self.show_detail(d, "保存済みの台本を開きました")
 
     def _add_char_row(self, c: dict[str, Any]) -> None:
         r = self.char_table.rowCount()
@@ -682,6 +701,7 @@ class ScriptStudioWidget(QWidget):
                 if col not in (2, 3):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setBackground(color)
+                item.setForeground(QBrush(QColor("#000000")))  # 暗いテーマでも読める
                 if t["locked"]:
                     item.setFont(bold)
                 self.turn_table.setItem(r, col, item)

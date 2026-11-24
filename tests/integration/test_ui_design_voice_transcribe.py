@@ -187,10 +187,15 @@ def test_project_widget_creates_and_imports(api, media_dir, settings):
     assert "名前" in w.message_label.text()
     w.name_edit.setText("新しい動画")
     w.size_combo.setCurrentIndex(1)  # 縦長
+    changed: list[bool] = []
+    w.projects_changed.connect(lambda: changed.append(True))
     w.create_project()
+    assert changed == [True]  # ほかのタブの一覧も新しくなる
     assert w.project_list.count() == n + 1 and "新しい動画" in w.project_list.currentItem().text()
     assert "1080×1920" in w.project_list.currentItem().text()
     pid = w.project_id()
+    w.show_projects(api.list_projects())  # 一覧を新しくしても選択はそのまま
+    assert w.project_id() == pid
     p = next(x for x in api.list_projects() if x["id"] == pid)
     assert (p["width"], p["height"]) == (1080, 1920)
     # 取り込み（許可されたフォルダの外はエラーを表示）

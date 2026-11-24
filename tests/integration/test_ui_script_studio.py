@@ -190,6 +190,7 @@ def test_script_studio_widget_flow():
     assert "初心者" in w.notes_label.text()
     assert w.turn_table.rowCount() == 2 and w.turn_table.item(0, 5).text() == "🔒"
     assert w.turn_table.item(0, 4).text() == "ユーザー"
+    assert w.turn_table.item(0, 3).foreground().color().name() == "#000000"  # 明るい背景に黒い文字
     assert w.version_combo.count() == 2
 
     # 固定・ユーザー入力は再生成しない
@@ -306,3 +307,26 @@ def test_script_studio_async_runner_reports_errors():
         time.sleep(0.05)
     assert w.generate_button.isEnabled()
     assert "LLM が見つかりません" in w.status_label.text()
+
+
+def test_script_studio_opens_latest_script_of_project():
+    from PySide6.QtWidgets import QApplication
+
+    from video_automation.ui.script_studio.widget import ScriptStudioWidget
+
+    QApplication.instance() or QApplication([])
+
+    class Api(FakeApi):
+        def list_scripts(self, pid):
+            return [{"id": "old"}, {"id": "s1"}]
+
+        def studio_detail(self, sid):
+            self.calls.append(("detail", sid))
+            return _detail(self.segs, 2)
+
+    api = Api()
+    w = ScriptStudioWidget(api)
+    w.run_async = False
+    w.refresh()  # 保存済みの台本（最後に作ったもの）を開く
+    assert ("detail", "s1") in api.calls
+    assert w.turn_table.rowCount() == 2 and "開きました" in w.status_label.text()
