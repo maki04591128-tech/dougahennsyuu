@@ -103,7 +103,7 @@ class RichPlan:
 def plan_rich(requested: RichLevel, prof: DesignProfile, fps: float = 30.0) -> RichPlan:
     notes: list[str] = []
     cap = max_level(prof)
-    level = requested
+    level = cap if requested == RichLevel.AUTO else requested
     if ORDER.index(level) > ORDER.index(cap):
         notes.append(f"用途「{prof.label}」では演出の強さを {cap.value} までに下げました")
         level = cap

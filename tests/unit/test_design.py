@@ -267,3 +267,15 @@ def test_mv_shows_lines_as_lyrics_not_subtitles():
     m.add(C.LYRIC_TEXT, 2)
     assert check(PROFILES[Purpose.MV], m).ok
     assert not check(PROFILES[Purpose.EXPLAINER], m).ok  # 解説では歌詞の部品は使わない
+
+
+def test_rich_auto_uses_purpose_cap():
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import RichLevel
+    from video_automation.services.design.profiles import profile
+    from video_automation.services.rendering.rich import max_level, plan_rich
+
+    for pur in (Purpose.MV, Purpose.TUTORIAL, Purpose.SUBTITLE):
+        prof = profile(pur)
+        rp = plan_rich(RichLevel.AUTO, prof)
+        assert rp.level == max_level(prof)

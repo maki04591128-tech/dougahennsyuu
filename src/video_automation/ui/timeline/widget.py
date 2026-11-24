@@ -51,6 +51,7 @@ class TimelineWidget(QWidget):
         self.loudnorm_check.setChecked(True)
         self.rich_combo = QComboBox()
         for label, value in (
+            ("自動（用途に合わせた強さ）", "auto"),
             ("なし", "off"),
             ("控えめ", "subtle"),
             ("標準", "standard"),
@@ -492,7 +493,7 @@ class TimelineWidget(QWidget):
                 self.script_combo.currentData(),
                 burn_subtitles=self.burn_check.isChecked(),
                 loudnorm=self.loudnorm_check.isChecked(),
-                rich_direction=self.rich_combo.currentData() or "off",
+                rich_direction=self.rich_combo.currentData() or "auto",
                 credits=self.credits_combo.currentData() or "text",
             )
         except Exception as exc:

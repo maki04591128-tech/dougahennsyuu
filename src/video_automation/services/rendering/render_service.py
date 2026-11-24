@@ -48,7 +48,7 @@ from video_automation.services.animation.render_anim import (
     defaults_only,
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
-from video_automation.services.rendering.rich import RichPlan, plan_rich
+from video_automation.services.rendering.rich import RichPlan, max_level, plan_rich
 from video_automation.services.subtitle.formats import ass_color, build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import (
@@ -627,6 +627,19 @@ class RenderService:
         """画面演出（rich_direction）で使う部品。使わないときは None。"""
         if req.rich_direction == RichLevel.OFF:
             return None
+        if req.rich_direction == RichLevel.AUTO:
+            # 既定: 用途の型で許される最も強い演出（用途が無い・Blender が無いときは付けない）
+            if self.design is None or self.blender is None or not self.blender.available:
+                return None
+            aprof = await self.design.profile_for(req.project_id)
+            if aprof is None:
+                return None
+            async with self.db.session_factory() as s:
+                p = await s.get(Project, req.project_id)
+                assert p is not None
+                fps = p.fps_num / p.fps_den
+            rp = plan_rich(max_level(aprof), aprof, fps)
+            return rp if rp.active else None
         if self.design is None:
             raise CommandError("rich direction needs the design service")
         prof = await self.design.profile_for(req.project_id)
