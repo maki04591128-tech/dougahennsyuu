@@ -113,3 +113,18 @@ def test_from_llm_aliases():
     )
     assert p.shots[0].heading == "見出し" and p.shots[0].body == ["a", "b"]
     assert p.shots[1].from_line == 2 and p.shots[1].text == "114GPa"
+
+
+def test_normalize_drops_field_names_in_card_body():
+    # 小さなモデルが項目名や指示の言葉を本文に書いた例（実機の gemma4 で出た）
+    body = [
+        "title: 富士山の豆知識",
+        "subtitle: 知るとかっこいい！",
+        "card_body_style_summary",
+        "標高は3776メートル",
+        "CPU: 速い",
+    ]
+    plan = DirectionPlan(shots=[Shot(kind="card", from_line=1, heading="日本一の標高", body=body)])
+    out = normalize(plan, LINES)
+    assert out.shots[0].body == ["標高は3776メートル", "CPU: 速い"]  # 大文字の略語は残す
+    assert any("項目名" in n for n in out.notes)

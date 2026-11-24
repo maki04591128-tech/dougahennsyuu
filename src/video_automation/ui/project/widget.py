@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -29,6 +30,9 @@ KIND = {"video": "動画", "audio": "音声", "image": "画像"}
 
 
 class ProjectWidget(QWidget):
+    # プロジェクトを作ったとき（ほかのタブの一覧も新しくする）
+    projects_changed = Signal()
+
     def __init__(self, api: Any, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.api = api
@@ -95,6 +99,8 @@ class ProjectWidget(QWidget):
         layout.addWidget(self.message_label)
 
     def show_projects(self, projects: list[dict[str, Any]], select: str | None = None) -> None:
+        if select is None:  # 一覧を新しくしても、選んでいたプロジェクトはそのまま
+            select = self.project_id()
         self.projects = projects
         self.project_list.blockSignals(True)
         self.project_list.clear()
@@ -125,10 +131,8 @@ class ProjectWidget(QWidget):
             return
         self.name_edit.clear()
         self.show_projects(projects, p.get("id"))
-        self.message_label.setText(
-            f"「{p['name']}」を作りました。ほかのタブでこのプロジェクトを選んで進めます"
-            "（各タブは「接続確認 / 更新」で一覧が新しくなります）"
-        )
+        self.message_label.setText(f"「{p['name']}」を作りました。ほかのタブでも選べます")
+        self.projects_changed.emit()
 
     def browse(self) -> None:
         start = str(Path.home() / "Videos")

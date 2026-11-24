@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         self.project_list = project_tab.project_list
         self.refresh_button = project_tab.refresh_button
         self.refresh_button.clicked.connect(self.refresh)
+        project_tab.projects_changed.connect(self.refresh)
 
         self.llm_settings = LlmSettingsWidget(api)
         self.tabs = QTabWidget()
@@ -64,6 +65,13 @@ class MainWindow(QMainWindow):
         self.transcribe = TranscribeWidget(api)
         self.tabs.addTab(self.transcribe, "文字起こし")
         self.setCentralWidget(self.tabs)
+        self.tabs.currentChanged.connect(self._on_tab)
+
+    def _on_tab(self, index: int) -> None:
+        """タブを開いたとき、ほかのタブでの変更（演出の配置など）を読み直す。"""
+        w = self.tabs.widget(index)
+        if w is self.timeline:
+            self.timeline.load_project()
 
     def refresh(self) -> None:
         try:

@@ -101,6 +101,10 @@ def _keyword_ok(text: str, source: str) -> bool:
     return bool(t) and t in src
 
 
+# 「title: …」「card_body_style_summary」のような、項目名・指示の言葉そのもの
+_META = re.compile(r"^(?:[a-z_][a-z0-9_]*\s*[:：=]|[a-z0-9]+(?:_[a-z0-9]+)+$)")
+
+
 def _trim(text: str, n: int) -> str:
     text = re.sub(r"\s+", " ", text).strip()  # 改行や連続した空白は 1 つの空白に
     return text if len(text) <= n else text[: n - 1] + "…"
@@ -154,7 +158,12 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
         s.to_line = min(max(s.from_line, s.to_line or s.from_line), n)
         if s.kind == ShotKind.CARD:
             s.heading = _trim(s.heading, 20)
-            s.body = [_trim(b, 40) for b in s.body if b.strip()][:3]
+            junk = [b for b in s.body if _META.match(b.strip())]
+            if junk:  # 小さなモデルは項目名や指示の言葉を本文に入れることがある
+                notes.append(
+                    f"{s.from_line}: カードの本文から項目名のような文（{len(junk)} 件）を外しました"
+                )
+            s.body = [_trim(b, 40) for b in s.body if b.strip() and b not in junk][:3]
             if not s.heading and not s.body:
                 notes.append(f"{s.from_line}: 文の無いカードを外しました")
                 continue
