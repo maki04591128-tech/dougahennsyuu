@@ -142,7 +142,7 @@ def test_timeline_widget_flow():
         {
             "burn_subtitles": False,
             "loudnorm": True,
-            "rich_direction": "off",
+            "rich_direction": "auto",
             "credits": "text",
         },
     )
