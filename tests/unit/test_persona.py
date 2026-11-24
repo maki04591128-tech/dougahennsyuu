@@ -74,3 +74,22 @@ def test_fit_to_duration_drops_middle_scenes_then_trailing_lines():
     assert any(sc["purpose"] == "fixed" for sc in out)
     # 元の場面は変えない
     assert len(scenes) == 6 and all(len(sc["turns"]) == 4 for sc in scenes)
+
+
+def test_other_characters_ending_is_removed_and_ellipsis_is_not_a_sentence_break():
+    from video_automation.services.script.persona import foreign_endings
+
+    ps = {n: _p(n) for n in ("ずんだもん", "四国めたん")}
+    fe = foreign_endings(ps, "四国めたん")
+    assert set(fe) == {"のだ", "なのだ"} and foreign_endings(ps, "ずんだもん") == ()
+    fixed, iss = check_line(
+        0, "実用化が進められているのだ。合成体が代表例なのだ！", ps["四国めたん"], fe
+    )
+    assert fixed == "実用化が進められているの。合成体が代表例なの！"
+    assert [i.kind for i in iss] == ["foreign_ending", "foreign_ending"]
+    # 「…」は言いよどみで、文の区切りではない（語尾の抜けと数えない）
+    z = ps["ずんだもん"]
+    assert check_line(0, "え、そんなの…何だかんだで、僕はまだ知らんのだ！", z)[1] == []
+    # まとめて調べるときも、ほかのキャラクターの語尾を直す
+    out, iss = check_lines([("四国めたん", "そうなのだ。"), ("ずんだもん", "そうなのだ。")], ps)
+    assert out == ["そうなの。", "そうなのだ。"] and [i.index for i in iss] == [0]

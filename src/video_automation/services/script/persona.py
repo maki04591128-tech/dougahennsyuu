@@ -50,7 +50,8 @@ SECOND_PERSONS = [
 _PLURAL = ("たち", "達", "がた", "方", "ら", "ども")
 # 「私立」「私鉄」「君主」など、代名詞ではない語の始まり
 _NOT_PRONOUN_NEXT = set("立鉄服物有用的語信設営邸刑書費財道案主臨")
-_SENT = re.compile(r"[^。！？!?…\n]+[。！？!?…]*")
+# 文の区切り（「…」は言いよどみで文の途中にも出るので区切りにしない）
+_SENT = re.compile(r"[^。！？!?\n]+[。！？!?…]*")
 _TRAIL = "。！？!?…〜ーっッ♪☆★w～、 　）)」』"
 
 
@@ -88,6 +89,8 @@ class PersonaIssue:
     def message(self) -> str:
         if self.kind == "ending":
             return f"語尾「{self.expected}」がありません: {self.found}"
+        if self.kind == "foreign_ending":
+            return f"ほかのキャラクターの語尾「{self.found}」を使っています"
         what = "一人称" if self.kind == "first_person" else "相手の呼び方"
         return f"{what}が「{self.found}」になっています（設定は「{self.expected}」）"
 
@@ -182,8 +185,23 @@ def _ending_ok(sentence: str, endings: list[str]) -> bool:
     return any(e in tail for e in endings)
 
 
-def check_line(index: int, text: str, p: Persona) -> tuple[str, list[PersonaIssue]]:
-    """1 発話を調べる。戻り値は (規則で直した文, 問題の一覧)。"""
+def _strip_foreign(sentence: str, e: str) -> str | None:
+    """文末のほかのキャラクターの語尾を、意味を変えずに外す（「〜のだ」→「〜の」）。"""
+    core = sentence.rstrip(_TRAIL)
+    tail = sentence[len(core) :]
+    if not core.endswith(e):
+        return None
+    if e.endswith("のだ"):  # 「進められているのだ」→「進められているの」
+        return core[:-1] + tail
+    return None
+
+
+def check_line(
+    index: int, text: str, p: Persona, foreign: tuple[str, ...] = ()
+) -> tuple[str, list[PersonaIssue]]:
+    """1 発話を調べる。戻り値は (規則で直した文, 問題の一覧)。
+
+    foreign はほかのキャラクターに決まっている語尾（めたんが「〜のだ」を使わないように）。"""
     issues: list[PersonaIssue] = []
     fixed = text
     if p.first:
@@ -205,6 +223,26 @@ def check_line(index: int, text: str, p: Persona) -> tuple[str, list[PersonaIssu
                 issues.append(PersonaIssue(index, "second_person", w, to or p.second[0], swapped))
             if swapped:
                 fixed = swapped
+    own = set(p.endings)
+    bad_end = sorted((e for e in foreign if e not in own), key=len, reverse=True)
+    if bad_end:
+        out, last, changed = [], 0, False
+        for m in _SENT.finditer(fixed):
+            sent = m.group(0)
+            core = sent.rstrip(_TRAIL)
+            hit = next((e for e in bad_end if core.endswith(e)), None)
+            if hit is not None:
+                issues.append(PersonaIssue(index, "foreign_ending", hit, "", None))
+                stripped = _strip_foreign(sent, hit)
+                if stripped is not None:
+                    out.append(fixed[last : m.start()] + stripped)
+                    last = m.end()
+                    changed = True
+        if changed:
+            fixed = "".join(out) + fixed[last:]
+            for x in issues:
+                if x.kind == "foreign_ending":
+                    x.fixed = fixed
     if p.endings:
         sents = [s.strip() for s in _SENT.findall(fixed) if s.strip()]
         # 相づち・感嘆だけの短い文（「えっ！」「うん」）は語尾の対象にしない
@@ -226,7 +264,14 @@ def check_lines(
         if p is None or p.empty:
             out.append(text)
             continue
-        fixed, iss = check_line(i, text, p)
+        fixed, iss = check_line(i, text, p, foreign_endings(personas, speaker))
         out.append(fixed)
         issues += iss
     return out, issues
+
+
+def foreign_endings(personas: dict[str, Persona], speaker: str) -> tuple[str, ...]:
+    """speaker 以外のキャラクターに決まっている語尾。"""
+    own = set(personas[speaker].endings) if speaker in personas else set()
+    out = {e for n, p in personas.items() if n != speaker for e in p.endings if e not in own}
+    return tuple(sorted(out))
