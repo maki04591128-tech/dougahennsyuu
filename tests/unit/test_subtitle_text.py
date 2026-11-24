@@ -123,3 +123,10 @@ def test_make_cues_keeps_particle_after_quote():
 
 def test_make_cues_short_sentence_is_one_cue():
     assert make_cues("これは短い文です。", 22, 2, True) == ["これは短い文です"]
+
+
+def test_wrap_avoids_okurigana_compound_and_brackets():
+    lines = wrap_lines("Blenderへの入れ方から書き出しまで、全部見せてもらうわよ", 18)
+    assert not any(ln.endswith("書き") for ln in lines)
+    lines = wrap_lines("台本作成タブに戻って「演出プラン（AI）」", 18)
+    assert lines == ["台本作成タブに戻って", "「演出プラン（AI）」"]
