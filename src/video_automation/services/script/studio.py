@@ -4,6 +4,7 @@
 変更のたびに版（スナップショット）を残し、過去の版の確認・差分・復元ができる。
 """
 
+import json
 import re
 import time
 from typing import TYPE_CHECKING, Any
@@ -84,6 +85,9 @@ class FixedTurnError(ScriptStudioError):
     """固定セリフ（ロック・ユーザー入力・手修正）を AI で変えようとした。"""
 
     code = "turn_is_fixed"
+
+
+SHORTEN_RATIO = 1.3  # 目標の尺のこの倍を超えて長く書いたら、短く書き直させる
 
 
 def estimated_sec(text: str, chars_per_sec: float) -> float:
@@ -800,6 +804,43 @@ class ScriptStudio:
             return await self._generate_counterpart(script_id, req, propose)
         raise ScriptStudioError("MANUAL scripts are not generated (change the mode first)")
 
+    async def _shorten(
+        self,
+        msgs: list[ChatMessage],
+        data: dict[str, Any],
+        est: float,
+        st: Any,
+        total_chars: int,
+        model_key: str | None,
+    ) -> dict[str, Any] | None:
+        """長すぎる台本を、同じ形のまま短く書き直させる。うまくいかなければ None。"""
+        ask = (
+            f"この台本は長すぎます（推定 {round(est)} 秒。"
+            f"目標は約 {round(st.target_duration_sec)} 秒）。"
+            f"同じ JSON の形で、セリフの合計を約{total_chars}文字に短くした台本を出してください。"
+            "話の流れ（導入・本題・まとめ）は残し、本題の項目を減らす場合は、"
+            "導入やまとめで言う数（「5つのコツ」など）も実際の項目の数に合わせてください。"
+        )
+        try:
+            res = await self.llm.complete_json(
+                TaskType.SCRIPT_GENERATION,
+                [
+                    *msgs,
+                    ChatMessage(role="assistant", content=json.dumps(data, ensure_ascii=False)),
+                    ChatMessage(role="user", content=ask),
+                ],
+                P.FULL_SCHEMA,
+                model_key=model_key,
+            )
+        except LLMError:
+            return None
+        scenes = res.data.get("scenes") or []
+        turns = [t for sc_ in scenes for t in sc_.get("turns") or []]
+        if not turns:
+            return None
+        new = sum(estimated_sec(t.get("text", ""), st.chars_per_sec) for t in turns)
+        return res.data if new < est else None
+
     async def _generate_full(
         self, script_id: str, req: ScriptGenerateRequest, propose: bool
     ) -> ScriptDetail | ProposalRead:
@@ -859,6 +900,22 @@ class ScriptStudio:
         if unknown:
             notes.append(f"設定に無い話者を除外しました: {', '.join(unknown)}")
         fixed_keys = {_norm(x.text) for x in fixed}
+        if st.target_duration_sec:
+            # ずっと長く書いたときは、場面を機械的に省く前に 1 回だけ短く書き直させる
+            # （省くと「5 つのコツ」と言いながら 3 つしか無い、のように話が崩れるため）
+            est = sum(
+                estimated_sec(t["text"], st.chars_per_sec)
+                for sc_ in res.data["scenes"]
+                for t in sc_["turns"]
+            )
+            if est > st.target_duration_sec * SHORTEN_RATIO:
+                short = await self._shorten(msgs, res.data, est, st, total_chars, req.model_key)
+                if short is not None:
+                    res.data = short
+                    notes.append(
+                        f"長すぎた台本（推定 {round(est)} 秒）を目標の約 "
+                        f"{round(st.target_duration_sec)} 秒に合わせて書き直させました"
+                    )
         if st.target_duration_sec:  # 目標の尺より長く書いたときは場面ごと省く
             res.data["scenes"], fit_notes = fit_to_duration(
                 res.data["scenes"], st.target_duration_sec, st.chars_per_sec, fixed_keys
