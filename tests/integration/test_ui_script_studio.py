@@ -362,6 +362,11 @@ def test_script_studio_tachie_column(qtbot_like=None):
     w._add_char_row({"name": "ずんだもん", "tachie_pack": None, "subtitle_font": "Meiryo"})
     combo = w.char_table.cellWidget(0, 8)
     assert isinstance(combo, QComboBox) and combo.currentData() == "shikoku_metan"
+    # 狭い列でも読めるよう名前だけを出し、作者はツールチップに
+    assert combo.currentText() == "四国めたん"
+    from PySide6.QtCore import Qt
+
+    assert combo.itemData(combo.currentIndex(), Qt.ItemDataRole.ToolTipRole) == "作者: 坂本アヒル"
     chars = w.characters()
     assert chars[0]["tachie_pack"] == "shikoku_metan"
     assert chars[1]["tachie_pack"] is None and chars[1]["subtitle_font"] == "Meiryo"
