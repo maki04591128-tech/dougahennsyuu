@@ -70,12 +70,18 @@ def _is_hira(ch: str) -> bool:
     return "ぁ" <= ch <= "ゟ"
 
 
+def _is_word(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch in "_.-'")
+
+
 def _break_score(text: str, i: int) -> int:
     """text[:i] と text[i:] の間で改行する適切さ。0=不可。"""
     if i <= 0 or i >= len(text) or text[i] in _NO_LINE_START:
         return 0
     prev, nxt = text[i - 1], text[i]
-    if prev in _STRONG_AFTER:
+    if _is_word(prev) and _is_word(nxt):  # 英単語・数字の途中では切らない
+        return 0
+    if prev in _STRONG_AFTER or nxt in "「『（(":  # 句読点の後・かぎかっこの前
         return 3
     if _is_hira(prev) and not _is_hira(nxt):
         return 2
@@ -96,7 +102,7 @@ def wrap_lines(text: str, max_chars: int) -> list[str]:
             s = _break_score(rest, i)
             if s >= best_s and s > 0:
                 best_i, best_s = i, s
-        if best_s == 0:  # 禁則で切れない場合は1文字前へ
+        if best_s == 0:  # 禁則や長い英単語で切れない場合
             best_i = max_chars - 1 if rest[max_chars] in _NO_LINE_START else max_chars
         lines.append(rest[:best_i].strip())
         rest = rest[best_i:].strip()

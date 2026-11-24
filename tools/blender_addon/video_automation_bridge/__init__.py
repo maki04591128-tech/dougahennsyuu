@@ -292,6 +292,7 @@ class VA_OT_import_video(bpy.types.Operator):
         if scene.frame_end < end:
             scene.frame_end = end - 1
         st.status = f"チャンネル {ch}〜{ch + 1} に読み込みました{note}"
+        st.status += _show_in_sequencer(context, scene)
         return {"FINISHED"}
 
 
@@ -316,8 +317,21 @@ class VA_OT_import_timeline(bpy.types.Operator):
         plan = plan_strips(tl, subtitles=st.with_subtitles)
         res = place_strips(context.scene, plan)
         _notes[:] = res["notes"]
-        st.status = res["message"]
+        st.status = res["message"] + _show_in_sequencer(context, context.scene)
         return {"FINISHED"}
+
+
+def _show_in_sequencer(context, scene) -> str:
+    """Blender 5 はシーケンサーに表示するシーンを作業画面ごとに選ぶ。未選択なら今のシーンにする。"""
+    ws = getattr(context, "workspace", None)
+    if ws is None or not hasattr(ws, "sequencer_scene"):
+        return ""  # 4.x は今のシーンがそのまま表示される
+    if ws.sequencer_scene is None:
+        ws.sequencer_scene = scene
+        return ""
+    if ws.sequencer_scene != scene:
+        return f"（シーケンサーには「{ws.sequencer_scene.name}」が表示されています）"
+    return ""
 
 
 def _set_range(strip, start: int, end: int) -> None:

@@ -88,3 +88,14 @@ def test_build_ass_multi_speaker_override():
         cues, fps, 1920, 1080, SubtitleStyle(), speaker_accents={"A": "#4FC3F7"}, multi_speaker=True
     )
     assert "A{\\r}\\N一行目" in ass
+
+
+def test_wrap_lines_keeps_english_words():
+    # 実機の使い方動画で「VideoAutomatio / n」と切れた
+    text = "今日は、動画を自動で作るアプリ「VideoAutomation」の使い方を紹介するのだ！"
+    lines = wrap_lines(text, 22)
+    assert all(len(x) <= 22 for x in lines)
+    assert any("VideoAutomation" in x for x in lines)
+    assert "".join(lines) == text.replace(" ", "")
+    # 1 行より長い英単語は切るしかない
+    assert wrap_lines("a" * 30, 10) == ["a" * 10, "a" * 10, "a" * 10]
