@@ -224,6 +224,13 @@ def check_line(
             fixed = fixed[m.end() :]
             issues.append(PersonaIssue(index, "stray_ending", e, "", fixed))
             break
+    # 「減るのか？のだ」のように、文を言い終えた後に語尾だけを付け足す癖も外す
+    for e in sorted((x for x in {*p.endings, *foreign} if len(x) >= 2), key=len, reverse=True):
+        m = re.search(rf"([？?！!。])\s*{re.escape(e)}[。！!]?\s*$", fixed)
+        if m and m.start() > 0:
+            fixed = fixed[: m.start() + 1]
+            issues.append(PersonaIssue(index, "stray_ending", e, "", fixed))
+            break
     if p.first:
         allowed = set(p.first)
         bad = [(i, w) for i, w in _find(fixed, FIRST_PERSONS) if w not in allowed]

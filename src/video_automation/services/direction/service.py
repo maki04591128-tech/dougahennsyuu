@@ -548,7 +548,9 @@ class DirectionService:
                     text=plan.title[:100],
                     duration_sec=dur,
                     animation="pop",
-                    size=0.9,
+                    # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
+                    # 題名の幅は画面幅の 80%×size（title_card.py）
+                    size=min(0.9, main_w * 0.95 / 0.8),
                     position="center",
                     text_color=ink,
                     outline_color=title_outline,

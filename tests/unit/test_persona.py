@@ -107,3 +107,10 @@ def test_stray_leading_ending_is_removed():
     # 語尾だけの発話・文の途中の語尾はそのまま
     assert check_line(0, "のだ！", z)[0] == "のだ！"
     assert check_line(0, "そうなのだ、すごいのだ。", z)[1] == []
+
+
+def test_ending_appended_after_the_sentence_is_removed():
+    z = _p("ずんだもん")
+    fixed, iss = check_line(0, "すぐ減っちゃうのだろう？のだ", z)
+    assert fixed == "すぐ減っちゃうのだろう？" and iss[0].kind == "stray_ending"
+    assert check_line(0, "僕、今日から実践してみよう。のだ", z)[0] == "僕、今日から実践してみよう。"

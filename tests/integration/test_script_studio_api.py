@@ -393,3 +393,26 @@ async def test_generation_enforces_each_characters_persona(client, fake):
     assert r.status_code == 200, r.text
     v = (await client.post(f"/scripts/{sc['id']}/validate", json={})).json()
     assert any(i["code"] == "persona_first_person" and i["turn_id"] == tid for i in v["issues"])
+
+
+async def test_far_too_long_script_is_rewritten_shorter_once(client, fake):
+    sc = await _setup(client, settings={"topic": "x", "target_duration_sec": 10})
+    long_turn = {"speaker": "めたん", "text": "とても長い説明をします。" * 12}
+    asked = []
+
+    def responder(b):
+        if kind_of(b) != "scenes":
+            return None
+        p = prompt_of(b)
+        asked.append("長すぎます" in p)
+        if "長すぎます" in p:
+            assert "実際の項目の数に合わせて" in p
+            return json.dumps(full_reply(), ensure_ascii=False)
+        return json.dumps(full_reply([long_turn] * 3), ensure_ascii=False)
+
+    fake.chat_responder = responder
+    r = await client.post(f"/scripts/{sc['id']}/generate", json={})
+    assert r.status_code == 200, r.text
+    assert asked == [False, True]  # 1 回だけ書き直させる
+    texts = [s["text"] for s in r.json()["segments"]]
+    assert long_turn["text"] not in texts and len(texts) == 3
