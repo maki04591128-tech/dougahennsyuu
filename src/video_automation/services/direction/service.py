@@ -50,7 +50,7 @@ from video_automation.schemas.timeline import (
     TitleCardRequest,
     TrackKind,
 )
-from video_automation.services.design.guard import Placement
+from video_automation.services.design.guard import Placement, is_dark
 from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction.plan import (
     PLAN_SCHEMA,
@@ -279,6 +279,8 @@ class DirectionService:
         chart_colors = prof.palette.chart if prof else [accent, "#FFB74D", "#81C784", "#F06292"]
         muted = prof.palette.text_muted if prof else "#6F829E"
         heading_font = prof.typography.heading_font if prof else None
+        # 題名の縁取り: 暗い文字なら背景の明るい色で縁取る
+        title_outline = prof.palette.base if prof and is_dark(prof.palette.text) else "#000000"
         strip_top = max(STRIP_TOP, prof.safe_area.top) if prof else STRIP_TOP
         side = max(SIDE, prof.safe_area.left) if prof else SIDE
         used: dict[Component, int] = {}
@@ -359,6 +361,8 @@ class DirectionService:
                     size=0.9,
                     position="center",
                     text_color=ink,
+                    outline_color=title_outline,
+                    font=heading_font,
                 )
             )
             add(txt_t, t_asset.id, 0, min(title_end, media_frames(t_asset, title_end)))
@@ -458,6 +462,7 @@ class DirectionService:
                         highlight=s.highlight,
                         colors=chart_colors,
                         muted_color=muted,
+                        font=heading_font,
                         text_color=ink,
                         box_color=panel,
                     )

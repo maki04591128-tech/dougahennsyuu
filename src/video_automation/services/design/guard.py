@@ -77,6 +77,13 @@ class DesignManifest:
         self.used[c] = self.used.get(c, 0) + n
 
 
+def is_dark(color: str) -> bool:
+    """色が暗いか（相対輝度 0.4 未満）。文字の縁取りを明暗どちらにするかに使う。"""
+    h = color.lstrip("#")[-6:]
+    r, g, b = (int(h[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.4
+
+
 def font_key(name: str) -> str:
     """書体名・ファイル名を同じ書体の比較用に揃える（meiryob / Meiryo → meiryo）。"""
     k = re.sub(r"[\s\-_]", "", name.lower()).replace("udp", "ud")

@@ -211,3 +211,16 @@ def test_card_font_follows_profile(tmp_path, monkeypatch):
     assert font_key("BIZ UDPGothic") == font_key("BIZ-UDGothicB")
     svc.settings.title_font_path = "/x/custom.ttf"  # 設定の指定が優先
     assert svc.font_path("BIZ UDPGothic") == "/x/custom.ttf"
+
+
+def test_light_profiles_get_light_outline_and_denied_speaker_label_is_off():
+    from video_automation.services.design.guard import is_dark
+
+    lecture = style_from_profile(PROFILES[Purpose.LECTURE])
+    assert is_dark(lecture.primary_color)
+    assert not is_dark(lecture.outline_color)  # 明るい背景の型は明るい縁取り
+    assert lecture.speaker_outline is False
+    explainer = style_from_profile(PROFILES[Purpose.EXPLAINER])
+    assert explainer.outline_color == "#000000" and explainer.speaker_label
+    kids = style_from_profile(PROFILES[Purpose.KIDS])
+    assert kids.speaker_label is False  # 子ども向けは話者名を使わない

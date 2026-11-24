@@ -176,6 +176,7 @@ class InfographicRequest(BaseModel):
     # 強調する項目（その棒だけ colors[0]、他は muted_color）。None は色分け
     highlight: int | None = Field(default=None, ge=0, le=7)
     muted_color: str = Field(default="#6F829E", pattern=_HEX)
+    font: str | None = Field(default=None, max_length=60)  # 書体のファミリー名（用途の型）
 
     @model_validator(mode="after")
     def _labels(self) -> "InfographicRequest":
