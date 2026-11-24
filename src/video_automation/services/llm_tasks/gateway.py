@@ -92,12 +92,35 @@ class LLMGateway:
                 await self.providers.unload_others(key)
             except ProviderError:
                 pass
+        ctx = await self._context_length(key, messages)
         t0 = time.perf_counter()
         res = await provider.generate(
             model_id,
-            GenerateRequest(messages=messages, json_schema=schema, temperature=temperature),
+            GenerateRequest(
+                messages=messages,
+                json_schema=schema,
+                temperature=temperature,
+                context_length=ctx,
+            ),
         )
         return res.text or "", (time.perf_counter() - t0) * 1000
+
+    async def _context_length(self, key: str, messages: list[ChatMessage]) -> int | None:
+        """プロンプトが切れないよう、渡す文の長さ（num_ctx）を決める。
+
+        日本語は 1 文字 ≒ 1 トークンとして多めに見積もり、出力の分を足して 4096 単位に切り上げる。
+        モデルの上限と設定の上限（llm_max_context）を超えない。短いときは指定しない（既定のまま）。
+        """
+        need = sum(len(m.content or "") for m in messages) + 4096
+        if need <= 4096 + 2048:
+            return None
+        ctx = -(-need // 4096) * 4096
+        try:
+            cap = (await self.providers.get_model(key)).capabilities.context_length
+        except Exception:  # noqa: BLE001 - 上限が分からなければ設定の上限だけで決める
+            cap = None
+        limit = min(self.settings.llm_max_context, cap or self.settings.llm_max_context)
+        return max(4096, min(ctx, limit))
 
     async def complete_json(
         self,

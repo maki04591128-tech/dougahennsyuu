@@ -53,6 +53,7 @@ class DirectionPlanResult(BaseModel):
     plan: DirectionPlan
     model_key: str | None = None
     lines: int
+    skills: list[str] = Field(default_factory=list)  # 参考にしたスキルの節（スキル / 見出し）
 
 
 class DirectionApplyRequest(BaseModel):

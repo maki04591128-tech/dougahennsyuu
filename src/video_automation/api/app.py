@@ -20,6 +20,7 @@ from video_automation.api.routes import (
     qa,
     render,
     script_studio,
+    skills,
     subtitles,
     timeline,
     transcribe,
@@ -283,6 +284,7 @@ def create_app(
     app.include_router(direction.router, prefix=prefix)
     app.include_router(design.router, prefix=prefix)
     app.include_router(transcribe.router, prefix=prefix)
+    app.include_router(skills.router, prefix=prefix)
     app.include_router(design.projects, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

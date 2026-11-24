@@ -95,6 +95,8 @@ async def test_plan_apply_and_reapply(dclient, fake):
         if "shots" not in props:
             return None
         seen["prompt"] = body["messages"][-1]["content"]
+        seen["system"] = body["messages"][0]["content"]
+        seen["num_ctx"] = (body.get("options") or {}).get("num_ctx")
         return _full(
             {
                 "title": "w-BNは最強？",
@@ -131,6 +133,10 @@ async def test_plan_apply_and_reapply(dclient, fake):
     res = r.json()
     assert res["lines"] == 5 and res["model_key"] == QWEN
     assert "[2] B：w-BNの押し込み強度" in seen["prompt"] and "w-BNの硬さ" in seen["prompt"]
+    # 演出の決まり（スキル）の関係する節がプロンプトに入り、どの節を使ったかが返る
+    assert "参考（スキル）" in seen["system"] and "【video-design-by-purpose /" in seen["system"]
+    assert res["skills"] and all(" / " in x for x in res["skills"])
+    assert seen["num_ctx"] and seen["num_ctx"] % 4096 == 0  # 長いプロンプトは num_ctx を広げる
     plan = res["plan"]
     assert [s["kind"] for s in plan["shots"]] == ["card", "chart", "keyword", "image", "card"]
     assert any("500GPa" in n for n in plan["notes"])

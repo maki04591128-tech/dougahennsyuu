@@ -30,6 +30,7 @@ from video_automation.services.qa.qa_service import QAService
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.script.studio import ScriptStudio
+from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import TimelineService
 from video_automation.services.transcribe.service import TranscriptionService
@@ -69,6 +70,7 @@ class AppContainer:
     direction: DirectionService
     design: DesignService
     transcriber: TranscriptionService
+    skills: SkillLibrary
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -96,6 +98,7 @@ async def build_container(
     voice = VoiceService(settings, db, transport=http_transport)
     router = TaskRouter()
     llm = LLMGateway(settings, db, providers, router)
+    skills = SkillLibrary(settings.skills_path)
     readings = ReadingService(db, voice, llm)
     design = DesignService(db)
     subtitles = SubtitleService(settings, db, voice, readings, design)
@@ -134,7 +137,12 @@ async def build_container(
     approvals = ApprovalService(settings, db, timeline, render, asset_sources, studio)
     await approvals.load_policy()
     orchestrator = Orchestrator(
-        db, llm, ToolRouter(timeline, studio, render, asset_sources, approvals), approvals
+        db,
+        llm,
+        ToolRouter(timeline, studio, render, asset_sources, approvals),
+        approvals,
+        skills=skills if settings.skills_enabled else None,
+        skills_budget=settings.skills_budget_chars,
     )
     return AppContainer(
         settings=settings,
@@ -163,7 +171,17 @@ async def build_container(
         orchestrator=orchestrator,
         qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs),
         readings=readings,
-        direction=DirectionService(settings, db, llm, timeline, titles, ffmpeg, design),
+        direction=DirectionService(
+            settings,
+            db,
+            llm,
+            timeline,
+            titles,
+            ffmpeg,
+            design,
+            skills=skills if settings.skills_enabled else None,
+        ),
         design=design,
         transcriber=TranscriptionService(settings, db, ffmpeg, design=design),
+        skills=skills,
     )
