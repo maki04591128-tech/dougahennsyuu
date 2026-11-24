@@ -68,3 +68,14 @@ def test_user_skill_overrides_bundled_and_bad_names_are_skipped(tmp_path):
     s = lib.get("same")
     assert s is not None and s.source == "user" and "ユーザーの本文" in s.body
     assert lib.get("Bad_Name") is None and len(lib.all()) == 1
+
+
+def test_tutorial_plan_context_includes_enhanced_defaults():
+    from video_automation.services.direction.service import SKILLS_FOR_PLAN
+
+    lib = SkillLibrary(None)
+    assert "screen-tutorial-direction" in SKILLS_FOR_PLAN and lib.get("screen-tutorial-direction")
+    q = "操作説明・ハウツー 手順と画面 演出 字幕 既定で入れる演出 画面録画 ズーム 章の切り替え 立ち絵 BGM 効果音"
+    ctx, picked = lib.context(q, names=SKILLS_FOR_PLAN, budget=4000, min_score=0.0)
+    assert any(p.skill == "screen-tutorial-direction" for p in picked)
+    assert "ズーム" in ctx and "立ち絵" in ctx

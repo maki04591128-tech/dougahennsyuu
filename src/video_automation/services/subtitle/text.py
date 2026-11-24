@@ -81,6 +81,8 @@ def _break_score(text: str, i: int) -> int:
     prev, nxt = text[i - 1], text[i]
     if _is_word(prev) and _is_word(nxt):  # 英単語・数字の途中では切らない
         return 0
+    if prev in "」』）)" and _is_hira(nxt):  # 「名前」の … の助詞を切り離さない
+        return 1
     if prev in _STRONG_AFTER or nxt in "「『（(":  # 句読点の後・かぎかっこの前
         return 3
     if _is_hira(prev) and not _is_hira(nxt):
@@ -111,13 +113,56 @@ def wrap_lines(text: str, max_chars: int) -> list[str]:
     return lines
 
 
+def _fits(text: str, max_chars: int, max_lines: int) -> bool:
+    return len(wrap_lines(text, max_chars)) <= max_lines
+
+
+# キューの切れ目の良さ（_break_score）ごとの減点。句読点で切るのが最も自然
+_CUE_BREAK_COST = {3: 0.0, 2: 4.0, 1: 12.0}
+
+
 def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> list[str]:
-    """1セグメントの字幕キュー（各要素は改行 \\n を含む表示テキスト）。"""
+    """1セグメントの字幕キュー（各要素は改行 \\n を含む表示テキスト）。
+
+    1 枚に収まる文はそのまま 1 枚にする。収まらない文は、句読点などの意味の切れ目で
+    分け、短すぎる切れ端（「見つかるわ」だけの 1 枚など）や、語と助詞の間で切らないよう
+    動的計画法で切れ目を選ぶ。
+    """
     t = text.strip()
     if strip_period:
         t = t.rstrip("。.")
-    lines = wrap_lines(t, max_chars)
-    return ["\n".join(lines[i : i + max_lines]) for i in range(0, len(lines), max_lines)]
+    if not t:
+        return []
+    if _fits(t, max_chars, max_lines):
+        return ["\n".join(wrap_lines(t, max_chars))]
+    n = len(t)
+    cap = max_chars * max_lines
+    cands = [i for i in range(1, n) if _break_score(t, i) > 0]
+    pts = [0, *cands, n]
+    best: dict[int, tuple[float, int]] = {0: (0.0, -1)}
+    for b in pts[1:]:
+        for a in pts:
+            if a >= b or a not in best or b - a > cap:
+                continue
+            chunk = t[a:b].strip()
+            if not chunk or not _fits(chunk, max_chars, max_lines):
+                continue
+            cost = best[a][0] + 3.0  # 枚数は少ないほど良い
+            if b < n:
+                cost += _CUE_BREAK_COST[_break_score(t, b)]
+            if len(chunk) < max(6, max_chars // 3):  # 短すぎる切れ端
+                cost += 10.0
+            if b not in best or cost < best[b][0]:
+                best[b] = (cost, a)
+    if n not in best:  # 切れ目が見つからない（長い英単語など）: 行で詰める
+        lines = wrap_lines(t, max_chars)
+        return ["\n".join(lines[i : i + max_lines]) for i in range(0, len(lines), max_lines)]
+    cuts, b = [], n
+    while b > 0:
+        a = best[b][1]
+        cuts.append(t[a:b].strip())
+        b = a
+    return ["\n".join(wrap_lines(c, max_chars)) for c in reversed(cuts)]
 
 
 def default_max_chars(width: int, height: int) -> int:

@@ -99,9 +99,11 @@ async def test_multiline_cue_split_follows_mora_timing(client):
     cues = (
         await client.post("/subtitles/synchronize", json={"script_id": sid, "hold_sec": 0})
     ).json()
-    assert [c["text"] for c in cues][:2] == ["あいうえおかきくけこ、", "さしすせそたちつてとな"]
+    texts = [c["text"] for c in cues]
+    assert texts[0] == "あいうえおかきくけこ、"  # 読点で切る
+    assert "".join(texts) == "あいうえおかきくけこ、さしすせそたちつてとなにぬねのはひふへほ"
     d = [c["end_frame"] - c["start_frame"] for c in cues]
-    assert abs(d[1] / d[0] - 11 / 10) < 0.05  # 10モーラ : 11モーラ
+    assert abs(d[1] / d[0] - len(texts[1]) / 10) < 0.05  # モーラ数の比
 
 
 async def test_portrait_and_ntsc_fps(client):
