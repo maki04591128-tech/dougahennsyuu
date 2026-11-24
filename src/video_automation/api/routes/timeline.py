@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from video_automation.api.dependencies import get_container
 from video_automation.app.bootstrap import AppContainer
+from video_automation.database.models import Asset
 from video_automation.schemas.common import JobRead
 from video_automation.schemas.project import ProjectRead
 from video_automation.schemas.timeline import (
@@ -36,6 +37,38 @@ async def update_project(
 @router.get("/timeline", response_model=TimelineRead)
 async def timeline(project_id: str, c: AppContainer = Depends(get_container)):
     return await c.timeline.get_timeline(project_id)
+
+
+@router.get("/timeline/blender")
+async def timeline_for_blender(
+    project_id: str, script_id: str | None = None, c: AppContainer = Depends(get_container)
+) -> dict[str, Any]:
+    """Blender アドオンが素材ごとに読み込むためのタイムライン。素材は同じ PC の絶対パスで返す
+    （API は localhost にだけ開いているので、パスが外へ出ることはない）。字幕は台本の字幕。"""
+    tl = await c.timeline.get_timeline(project_id)
+    paths: dict[str, str] = {}
+    async with c.db.session_factory() as s:
+        for a in tl.assets:
+            row = await s.get(Asset, a.id)
+            if row is not None:
+                paths[a.id] = str(c.timeline.asset_path(row))
+    cues: list[dict[str, Any]] = []
+    if script_id:
+        for q in await c.subtitles.cues(script_id):
+            if q.start_frame is not None and q.end_frame is not None:
+                cues.append(
+                    {
+                        "text": q.text,
+                        "speaker": q.speaker,
+                        "start_frame": q.start_frame,
+                        "end_frame": q.end_frame,
+                    }
+                )
+    data = tl.model_dump(mode="json")
+    for a in data["assets"]:
+        a["abs_path"] = paths.get(a["id"])
+    data["cues"] = cues
+    return data
 
 
 @router.post("/timeline/from_script", response_model=CommandRead, status_code=201)

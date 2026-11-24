@@ -92,6 +92,10 @@ class Client:
         q = f"?script_id={quote(script_id)}" if script_id else ""
         return self.call("GET", f"/projects/{quote(project_id)}/design/check{q}")
 
+    def timeline_for_blender(self, project_id: str, script_id: str | None) -> dict[str, Any]:
+        q = f"?script_id={quote(script_id)}" if script_id else ""
+        return self.call("GET", f"/projects/{quote(project_id)}/timeline/blender{q}")
+
     def wait_job(
         self,
         job_id: str,
@@ -178,3 +182,115 @@ def run_step(
         files = c.call("GET", f"/render/{quote(r['id'])}/files")
         return {"message": "書き出しました", "render_id": r["id"], "video": files.get("video")}
     raise BridgeError(f"unknown step: {step}")
+
+
+# ---------- 素材ごとの読み込み（タイムライン → VSE のストリップ） ----------
+def plan_strips(
+    tl: dict[str, Any], base_channel: int = 1, subtitles: bool = True
+) -> dict[str, Any]:
+    """アプリのタイムラインを、VSE に置くストリップの一覧にする（bpy を使わない部分）。
+
+    チャンネルは下から: 音声トラック → 映像トラック（index の小さい＝奥から）→ 字幕。
+    映像トラックの動画素材に音があれば、その音は音声の段に置く。
+    フレームは 0 始まり（Blender は 1 始まりなので、置くときに +1 する）。
+    再現しないもの（アニメーション・入りの切り替え・ぼかし背景）は notes に書く。
+    """
+    assets = {a["id"]: a for a in tl.get("assets", [])}
+    tracks = sorted(tl.get("tracks", []), key=lambda t: (t["kind"] != "audio", t["index"]))
+    clips = tl.get("clips", [])
+    ch: dict[str, int] = {}
+    n = base_channel
+    audio_ch = None
+    for t in tracks:
+        if t["kind"] == "audio":
+            ch[t["id"]] = n
+            n += 1
+    # 映像の音（映像トラックの動画）を置く段
+    if any(
+        assets.get(c["asset_id"], {}).get("kind") == "video"
+        and assets.get(c["asset_id"], {}).get("has_audio")
+        and ch.get(c["track_id"]) is None
+        for c in clips
+    ):
+        audio_ch = n
+        n += 1
+    for t in tracks:
+        if t["kind"] != "audio":
+            ch[t["id"]] = n
+            n += 1
+    sub_ch = n
+    W, H = int(tl["width"]), int(tl["height"])
+    strips: list[dict[str, Any]] = []
+    notes: list[str] = []
+    missing: set[str] = set()
+    muted = {t["id"] for t in tracks if t.get("muted")}
+    kinds = {t["id"]: t["kind"] for t in tracks}
+    anim = 0
+    for c in sorted(clips, key=lambda c: (ch.get(c["track_id"], 0), c["start_frame"])):
+        a = assets.get(c["asset_id"])
+        if a is None or not a.get("abs_path"):
+            missing.add(c["asset_id"])
+            continue
+        tr = c.get("transform") or {}
+        base = {
+            "name": a["name"][:60],
+            "path": a["abs_path"],
+            "start": int(c["start_frame"]),
+            "end": int(c["end_frame"]),
+            "source_in": int(c.get("source_in_frame") or 0),
+            "fade_in": int(c.get("fade_in_frames") or 0),
+            "fade_out": int(c.get("fade_out_frames") or 0),
+            "mute": c["track_id"] in muted,
+        }
+        if kinds.get(c["track_id"]) == "audio" or a["kind"] == "audio":
+            strips.append(
+                {**base, "type": "sound", "channel": ch[c["track_id"]], "volume": c["volume"]}
+            )
+            continue
+        if c.get("animation"):
+            anim += 1
+        fit = tr.get("fit", "fill")
+        if fit == "blur":
+            fit = "fit"
+        strips.append(
+            {
+                **base,
+                "type": "movie" if a["kind"] == "video" else "image",
+                "channel": ch[c["track_id"]],
+                "fit": fit.upper(),
+                "scale": float(tr.get("scale", 1.0)),
+                "offset_x": float(tr.get("x", 0.0)) * W,
+                "offset_y": -float(tr.get("y", 0.0)) * H,  # アプリは下が +、Blender は上が +
+                "opacity": float(tr.get("opacity", 1.0)),
+            }
+        )
+        if a["kind"] == "video" and a.get("has_audio") and c["volume"] > 0 and audio_ch:
+            strips.append({**base, "type": "sound", "channel": audio_ch, "volume": c["volume"]})
+    if subtitles:
+        for q in tl.get("cues", []):
+            strips.append(
+                {
+                    "type": "text",
+                    "name": q["text"][:30],
+                    "text": q["text"],
+                    "channel": sub_ch,
+                    "start": int(q["start_frame"]),
+                    "end": int(q["end_frame"]),
+                    "font_size": round(H * 0.05),
+                }
+            )
+    if anim:
+        notes.append(f"演出の動き・切り替え（{anim} 個）は再現せず、止まった状態で置きました")
+    if missing:
+        notes.append(f"見つからない素材が {len(missing)} 個ありました（置いていません）")
+    top = max([s["channel"] for s in strips], default=base_channel)
+    return {
+        "strips": strips,
+        "notes": notes,
+        "channels": (base_channel, top),
+        "width": W,
+        "height": H,
+        "fps_num": int(tl["fps_num"]),
+        "fps_den": int(tl["fps_den"]),
+        "frames": int(tl.get("duration_frames") or 0),
+    }
