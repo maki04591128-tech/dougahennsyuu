@@ -178,3 +178,19 @@ async def test_project_update_and_validate(mclient, media_dir):
     assert (r.json()["width"], r.json()["height"]) == (1080, 1920)
     v = (await c.get(f"/projects/{pid}/validate")).json()
     assert not v["valid"] and v["issues"][0]["message"] == "timeline is empty"
+
+
+async def test_duplicate_track_or_clip_id_is_a_command_error(mclient, media_dir):
+    """トラック・クリップの ID は全プロジェクトで一意。重なったら 500 ではなく 422 を返す。"""
+    c = mclient
+    pid, video, _, _ = await _setup(c, media_dir)
+    pid2, video2, _, _ = await _setup(c, media_dir)
+    r = await _cmd(c, pid, {"type": "add_track", "kind": "video", "track_id": "scr"})
+    assert r.status_code == 201
+    r = await _cmd(c, pid2, {"type": "add_track", "kind": "video", "track_id": "scr"})
+    assert r.status_code == 422 and "already exists" in r.text
+    clip = {"type": "add_clip", "track_id": "scr", "asset_id": video["id"], "start_frame": 0}
+    assert (await _cmd(c, pid, {**clip, "clip_id": "k1"})).status_code == 201
+    t2 = (await _cmd(c, pid2, {"type": "add_track", "kind": "video"})).json()["command"]["track_id"]
+    r = await _cmd(c, pid2, {**clip, "track_id": t2, "asset_id": video2["id"], "clip_id": "k1"})
+    assert r.status_code == 422 and "already exists" in r.text
