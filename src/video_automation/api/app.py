@@ -22,6 +22,7 @@ from video_automation.api.routes import (
     script_studio,
     subtitles,
     timeline,
+    transcribe,
     voice,
 )
 from video_automation.api.websocket import events
@@ -77,6 +78,11 @@ from video_automation.services.timeline.timeline_service import (
     ForbiddenPathError,
     TimelineError,
     TimelineNotFoundError,
+)
+from video_automation.services.transcribe.service import (
+    TranscribeError,
+    TranscribeNotFoundError,
+    TranscribeUnavailableError,
 )
 from video_automation.services.voice.voice_service import (
     EngineUnavailableError,
@@ -229,6 +235,11 @@ def create_app(
         status = 503 if isinstance(exc, NoModelError) else 502
         return _err(status, exc.code, str(exc)[:300])
 
+    @app.exception_handler(TranscribeError)
+    async def transcribe_error(_: Request, exc: TranscribeError) -> JSONResponse:
+        status = {TranscribeNotFoundError: 404, TranscribeUnavailableError: 503}.get(type(exc), 422)
+        return _err(status, exc.code, str(exc)[:300])
+
     @app.exception_handler(DesignError)
     async def design_error(_: Request, exc: DesignError) -> JSONResponse:
         if isinstance(exc, DesignViolationError):
@@ -271,6 +282,7 @@ def create_app(
     app.include_router(motion.visual, prefix=prefix)
     app.include_router(direction.router, prefix=prefix)
     app.include_router(design.router, prefix=prefix)
+    app.include_router(transcribe.router, prefix=prefix)
     app.include_router(design.projects, prefix=prefix)
     app.include_router(events.router, prefix=prefix)
     return app

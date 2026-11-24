@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     acestep_url: str = "http://127.0.0.1:8001"
     acestep_path: Path | None = None
 
+    # 文字起こし（faster-whisper）。モデルはこのフォルダから読むだけで、自動でダウンロードしない
+    whisper_model_dir: Path | None = None
+    whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
+
     # ---- Phase 3: 音声合成（VOICEVOX系。Nemo を優先）----
     voicevox_nemo_url: str | None = "http://127.0.0.1:50121"
     voicevox_url: str | None = "http://127.0.0.1:50021"
