@@ -126,3 +126,11 @@ def test_render_overlay_webm_with_alpha(tmp_path: Path, make_tachie_pack) -> Non
         check=True,
     )
     assert "1" in probe.stdout  # 透過つき
+
+
+def test_layout_portrait_is_smaller_and_inward() -> None:
+    from video_automation.services.characters.overlay import layout
+
+    band, hh, x = layout(1080, 1920)
+    assert hh < 0.4 and x > 0.15
+    assert layout(1920, 1080)[1] > 0.6
