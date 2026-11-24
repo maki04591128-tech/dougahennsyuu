@@ -54,11 +54,17 @@ def _chars(words: list[Word]) -> tuple[str, list[tuple[float, float]]]:
     return "".join(out), times
 
 
-def align_lyrics(lyrics: list[str], words: list[Word], min_sec: float = 0.6) -> list[Line]:
+def align_lyrics(
+    lyrics: list[str],
+    words: list[Word],
+    min_sec: float = 0.6,
+    duration: float | None = None,
+) -> list[Line]:
     """歌詞の各行に、文字起こしの時刻を付ける。
 
     歌詞全体と文字起こし全体を文字単位で照合し、行ごとに一致した文字の最初と最後の時刻を
-    使う。一致が無い行は前後の行の間に割り当てる。"""
+    使う。一致が無い行は前後の行の間に割り当てる。歌声がほとんど聞き取れなかったときは、
+    聞き取れた範囲（何も無ければ曲の長さ duration）に等分する（冒頭に詰め込まない）。"""
     lines = [x.strip() for x in lyrics if x.strip()]
     if not lines:
         return []
@@ -97,7 +103,13 @@ def align_lyrics(lyrics: list[str], words: list[Word], min_sec: float = 0.6) -> 
             raw.append((max(0.0, t[0][0] - per * first[i]), t[-1][1] + per * tail))
         else:
             raw.append(None)
-    total_end = words[-1].end if words else min_sec * len(lines)
+    if words:
+        total_end = words[-1].end
+    elif duration:
+        total_end = duration
+    else:
+        total_end = min_sec * len(lines)
+    start0 = words[0].start if words else 0.0
     out: list[Line] = []
     for i, text in enumerate(lines):
         r = raw[i]
@@ -114,12 +126,16 @@ def align_lyrics(lyrics: list[str], words: list[Word], min_sec: float = 0.6) -> 
         nxt = next((j for j in range(i + 1, len(out)) if raw[j] is not None), None)
         if nxt is not None and line.end > out[nxt].start:
             line.end = max(line.start + 0.1, out[nxt].start)
-    _spread_unmatched(out, raw, total_end, min_sec)
+    _spread_unmatched(out, raw, total_end, min_sec, start0)
     return out
 
 
 def _spread_unmatched(
-    out: list[Line], raw: list[tuple[float, float] | None], total_end: float, min_sec: float
+    out: list[Line],
+    raw: list[tuple[float, float] | None],
+    total_end: float,
+    min_sec: float,
+    start0: float = 0.0,
 ) -> None:
     """一致の無い行（続くこともある）に、前後の一致した行の間を等分して割り当てる。"""
     i = 0
@@ -130,7 +146,7 @@ def _spread_unmatched(
         j = i
         while j < len(out) and raw[j] is None:
             j += 1
-        a = out[i - 1].end if i else 0.0
+        a = out[i - 1].end if i else min(start0, max(0.0, total_end - min_sec * (j - i)))
         b = out[j].start if j < len(out) else max(total_end, a + min_sec * (j - i))
         step = max(0.1, (b - a) / (j - i))
         for k in range(i, j):
