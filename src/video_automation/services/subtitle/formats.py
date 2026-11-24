@@ -191,8 +191,9 @@ def build_ass(
         label = ""
         if style.speaker_label and multi and spk:
             color = ass_color(accents.get(spk, style.primary_color))[4:]
+            edge = ass_color(style.outline_color)[4:]  # 縁取りは字幕と同じ色
             label = (
-                f"{{\\fs{round(size * LABEL_RATIO)}\\1c&H{color}&\\3c&H000000&}}"
+                f"{{\\fs{round(size * LABEL_RATIO)}\\1c&H{color}&\\3c&H{edge}&}}"
                 f"{_ass_escape(spk)}{{\\r}}\\N"
             )
         if style.band and bottom:
