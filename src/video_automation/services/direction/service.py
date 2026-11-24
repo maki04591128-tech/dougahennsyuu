@@ -461,6 +461,9 @@ class DirectionService:
                         decimals=0 if all(float(v).is_integer() for v in s.values) else 1,
                         duration_sec=min(CHART_MAX_SEC, sec(length)),
                         animation_sec=1.2,
+                        # 表示区間が長さの上限を超えるときは、止まった後半を繰り返して埋める
+                        # ので、素材自体は消えない（最後のクリップで消す）
+                        fade_out_sec=0.0 if sec(length) > CHART_MAX_SEC else 0.3,
                         highlight=s.highlight,
                         colors=chart_colors,
                         muted_color=muted,
@@ -471,17 +474,40 @@ class DirectionService:
                 )
                 media = media_frames(a, length)
                 shown_len = min(length, media)
+                tf = ClipTransform(fit=FitMode.FIT, scale=zone_h, y=zone_cy - 0.5)
+                # 動き終わった後（止まっている部分）。区間が素材より長ければ、ここを繰り返す
+                still_from = min(media - 1, frames(1.2) + 2)
+                seg = media - still_from
+                fill = length > shown_len and seg >= frames(1.0)
                 add(
                     fig_t,
                     a.id,
                     start,
                     shown_len,
-                    transform=ClipTransform(fit=FitMode.FIT, scale=zone_h, y=zone_cy - 0.5),
+                    transform=tf,
                     fade_in_frames=fade,
-                    # 図の素材が表示区間より短いとき（長さの上限）は、急に消さずに消す
-                    fade_out_frames=min(8, shown_len // 4) if shown_len < length else 0,
+                    # 繰り返せないほど短いときだけ、急に消さずに消す
+                    fade_out_frames=min(8, shown_len // 4)
+                    if shown_len < length and not fill
+                    else 0,
                 )
-                shown.append((start, start + shown_len))
+                shown_end = start + shown_len
+                if fill:
+                    pos, stop = start + shown_len, start + length
+                    while pos < stop:
+                        n = min(seg, stop - pos)
+                        add(
+                            fig_t,
+                            a.id,
+                            pos,
+                            n,
+                            source_in_frame=still_from,
+                            transform=tf,
+                            fade_out_frames=min(8, n // 4) if pos + n >= stop else 0,
+                        )
+                        pos += n
+                    shown_end = stop
+                shown.append((start, shown_end))
             else:  # IMAGE
                 img = assets.get(s.asset_id or "")
                 if img is None or img.kind != AssetKind.IMAGE:
