@@ -41,6 +41,7 @@ from video_automation.schemas.timeline import (
     CommandRequest,
     DeleteClip,
     FitMode,
+    MoveTrack,
     TrackKind,
 )
 from video_automation.services.characters import motion
@@ -60,6 +61,7 @@ from video_automation.services.timeline.timeline_service import (
 
 log = get_logger("characters")
 TRACK = "立ち絵"
+TEXT_TRACK = "演出・文字"  # 演出の文字トラック（direction の TRACKS と同じ名前）
 OVERLAY_VERSION = 1
 ProgressFn = Callable[[float], Awaitable[None]]
 
@@ -274,6 +276,10 @@ class CharacterService:
         tid = track.id if track else str(uuid4())
         if track is None:
             cmds.append(AddTrack(kind=TrackKind.VIDEO, name=TRACK, track_id=tid))
+            # 演出の文字（タイトル・テロップ）は立ち絵より上に重ねる
+            txt = next((t for t in tl.tracks if t.name == TEXT_TRACK), None)
+            if txt is not None:
+                cmds.append(MoveTrack(track_id=txt.id, index=1000))
         cid = str(uuid4())
         cmds.append(
             AddClip(

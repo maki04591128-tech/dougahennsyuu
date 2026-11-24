@@ -206,7 +206,7 @@ class ScriptStudio:
                 continue
             fixed, iss = check_line(i, it["text"], p, foreign_endings(personas, it["speaker"]))
             for x in iss:
-                if x.kind == "foreign_ending" and x.fixed is not None:
+                if x.kind in ("foreign_ending", "stray_ending") and x.fixed is not None:
                     swapped.append(f"{it['speaker']}の語尾「{x.found}」")
                 elif x.kind != "ending" and x.fixed is not None:
                     swapped.append(f"{it['speaker']}「{x.found}」→「{x.expected}」")

@@ -57,11 +57,19 @@ async def test_apply_tachie_track_and_cache(client, make_tachie_pack):
         for i, name in enumerate(speakers):
             s.add(ScriptCharacter(script_id=sid, sequence=i, name=name, tachie_pack="testpack"))
         await s.commit()
+    # 演出の文字トラックが先にあれば、立ち絵はその下に入る（タイトル・テロップを隠さない）
+    r = await client.post(
+        f"/projects/{pid}/commands",
+        json={"command": {"type": "add_track", "kind": "video", "name": "演出・文字"}},
+    )
+    assert r.status_code == 201, r.text
     job = await client.post("/characters/apply", json={"script_id": sid})
     done = await c.jobs.wait(job.json()["id"])
     assert done.status == "SUCCEEDED", done.error
     assert done.result["applied"] and not done.result["cached"]
     tl = (await client.get(f"/projects/{pid}/timeline")).json()
+    top = max((t for t in tl["tracks"] if t["kind"] == "video"), key=lambda t: t["index"])
+    assert top["name"] == "演出・文字"
     track = next(t for t in tl["tracks"] if t["name"] == "立ち絵")
     clips = [x for x in tl["clips"] if x["track_id"] == track["id"]]
     assert len(clips) == 1 and clips[0]["transform"]["y"] > 0  # 画面の下に寄せる

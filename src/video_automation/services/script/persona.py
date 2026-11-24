@@ -91,6 +91,8 @@ class PersonaIssue:
             return f"語尾「{self.expected}」がありません: {self.found}"
         if self.kind == "foreign_ending":
             return f"ほかのキャラクターの語尾「{self.found}」を使っています"
+        if self.kind == "stray_ending":
+            return f"語尾「{self.found}」だけを文の頭に置いています"
         what = "一人称" if self.kind == "first_person" else "相手の呼び方"
         return f"{what}が「{self.found}」になっています（設定は「{self.expected}」）"
 
@@ -214,6 +216,14 @@ def check_line(
     foreign はほかのキャラクターに決まっている語尾（めたんが「〜のだ」を使わないように）。"""
     issues: list[PersonaIssue] = []
     fixed = text
+    # 「のだ、長く使えるのだ」のように語尾だけを文頭に置く癖（口調の真似の誤り）を外す
+    # 1 文字の語尾（「わ」「ね」）は感動詞と紛れるので対象にしない
+    for e in sorted((x for x in {*p.endings, *foreign} if len(x) >= 2), key=len, reverse=True):
+        m = re.match(rf"\s*{re.escape(e)}[、,！!。　 ]+", fixed)
+        if m and len(fixed) > m.end():
+            fixed = fixed[m.end() :]
+            issues.append(PersonaIssue(index, "stray_ending", e, "", fixed))
+            break
     if p.first:
         allowed = set(p.first)
         bad = [(i, w) for i, w in _find(fixed, FIRST_PERSONS) if w not in allowed]

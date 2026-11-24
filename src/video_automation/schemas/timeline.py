@@ -114,6 +114,15 @@ class AddTrack(BaseModel):
     track_id: str | None = None
 
 
+class MoveTrack(BaseModel):
+    """トラックの重なり順を変える。index は下からの位置（0 が最も下、大きいほど上に描く）。
+    範囲外は端に寄せる。"""
+
+    type: Literal["move_track"] = "move_track"
+    track_id: str
+    index: int = Field(ge=0, le=1000)
+
+
 class AddClip(BaseModel):
     type: Literal["add_clip"] = "add_clip"
     track_id: str
@@ -195,6 +204,7 @@ class SetClipAnimation(BaseModel):
 
 _Cmd = (
     AddTrack
+    | MoveTrack
     | AddClip
     | MoveClip
     | TrimClip

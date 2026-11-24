@@ -97,3 +97,13 @@ def test_other_characters_ending_is_removed_and_ellipsis_is_not_a_sentence_break
     m = ps["四国めたん"]
     assert check_line(0, "実在するのだよ。", m, fe)[0] == "実在するのよ。"
     assert check_line(0, "進むのだね！", m, fe)[0] == "進むのね！"
+
+
+def test_stray_leading_ending_is_removed():
+    z = _p("ずんだもん")
+    fixed, iss = check_line(0, "のだ、長く使えるのだな、バッテリーは長持ちするのだ。", z)
+    assert fixed == "長く使えるのだな、バッテリーは長持ちするのだ。"
+    assert [i.kind for i in iss] == ["stray_ending"]
+    # 語尾だけの発話・文の途中の語尾はそのまま
+    assert check_line(0, "のだ！", z)[0] == "のだ！"
+    assert check_line(0, "そうなのだ、すごいのだ。", z)[1] == []

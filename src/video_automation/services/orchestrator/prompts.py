@@ -16,6 +16,7 @@ questions に確認したいことを書きます。存在しない ID を作ら
 - edit_timeline: タイムラインの変更。args = {"description": 変更の説明, "command": 命令}
   命令（type で種類を指定。複数なら {"type":"batch","commands":[...]}）:
   - {"type":"add_track","kind":"video|audio|text","name":名前,"track_id":任意の新ID}
+  - {"type":"move_track","track_id":,"index":下からの位置（0 が最も下。大きいほど上に重なる）}
   - {"type":"add_clip","track_id":,"asset_id":,"start_frame":,"duration_frames":（画像は必須）,"clip_id":任意の新ID,"fade_in_frames":,"fade_out_frames":,"volume":0-4（音声・動画のみ）}
   - {"type":"move_clip","clip_id":,"start_frame":,"track_id":（別トラックへ移す場合）}
   - {"type":"trim_clip","clip_id":,"start_frame":,"end_frame":}
