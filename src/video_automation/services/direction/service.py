@@ -416,6 +416,7 @@ class DirectionService:
                 skipped.append(f"{s.from_line}: 表示時間が短すぎる {s.kind.value} を外しました")
                 continue
             windows.append((s, start, end))
+        shown: list[tuple[int, int]] = []  # 実際に図・カード・画像を出した区間
         for s, start, end in windows:
             length = end - start
             fade = min(8, length // 4)
@@ -446,6 +447,7 @@ class DirectionService:
                     fade_out_frames=fade,
                 )
                 cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
+                shown.append((start, end))
             elif s.kind == ShotKind.CHART:
                 use(Component.CHART)
                 a = await self.titles.infographic(
@@ -468,14 +470,18 @@ class DirectionService:
                     )
                 )
                 media = media_frames(a, length)
+                shown_len = min(length, media)
                 add(
                     fig_t,
                     a.id,
                     start,
-                    min(length, media),
+                    shown_len,
                     transform=ClipTransform(fit=FitMode.FIT, scale=zone_h, y=zone_cy - 0.5),
                     fade_in_frames=fade,
+                    # 図の素材が表示区間より短いとき（長さの上限）は、急に消さずに消す
+                    fade_out_frames=min(8, shown_len // 4) if shown_len < length else 0,
                 )
+                shown.append((start, start + shown_len))
             else:  # IMAGE
                 img = assets.get(s.asset_id or "")
                 if img is None or img.kind != AssetKind.IMAGE:
@@ -493,6 +499,7 @@ class DirectionService:
                     fade_out_frames=fade,
                 )
                 cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.5))
+                shown.append((start, end))
 
         # テロップ（その発話の間。重なる分は前を短くする）
         kws = [s for s in plan.shots if s.kind == ShotKind.KEYWORD]
@@ -552,7 +559,7 @@ class DirectionService:
             ),
         )
         # 背景だけ（題名・図・カード・画像が無い）区間
-        covered = sorted([(0, title_end)] + [(w0, w1) for _, w0, w1 in windows])
+        covered = sorted([(0, title_end)] + shown)
         empty: list[tuple[float, float]] = []
         cur = 0
         for w0, w1 in covered:
