@@ -204,3 +204,21 @@ def test_reveal_steps_follow_lines():
     assert _reveal_steps(shot, lines, 0, 60, 30) == [(0, 60, None)]
     one = shot.model_copy(update={"body": ["a"]})
     assert _reveal_steps(one, lines, 0, 360, 30) == [(0, 360, None)]
+
+
+def test_card_items_copied_from_lines_are_dropped():
+    lines = ["まずは、画面の明るさは自動調整にして、最低限に抑えるの。", "なるほどなのだ。"]
+    plan = DirectionPlan(
+        title="t",
+        shots=[
+            Shot(
+                kind=ShotKind.CARD,
+                from_line=1,
+                heading="明るさ",
+                body=["画面の明るさは自動調整にして、最低限に抑えるの。", "明るさは自動に"],
+            )
+        ],
+    )
+    out = normalize(plan, lines)
+    assert out.shots[0].body == ["明るさは自動に"]
+    assert any("そのまま写した" in n for n in out.notes)

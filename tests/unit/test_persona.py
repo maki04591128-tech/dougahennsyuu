@@ -114,3 +114,15 @@ def test_ending_appended_after_the_sentence_is_removed():
     fixed, iss = check_line(0, "すぐ減っちゃうのだろう？のだ", z)
     assert fixed == "すぐ減っちゃうのだろう？" and iss[0].kind == "stray_ending"
     assert check_line(0, "僕、今日から実践してみよう。のだ", z)[0] == "僕、今日から実践してみよう。"
+
+
+def test_foreign_ending_before_a_comma_is_fixed():
+    z, m = _p("ずんだもん"), _p("四国めたん")
+    personas = {"ずんだもん": z, "四国めたん": m}
+    from video_automation.services.script.persona import foreign_endings
+
+    fixed, iss = check_line(
+        0, "工夫で長持ちさせられるのだよ、貴女。", m, foreign_endings(personas, "四国めたん")
+    )
+    assert fixed == "工夫で長持ちさせられるのよ、貴女。"
+    assert any(i.kind == "foreign_ending" for i in iss)
