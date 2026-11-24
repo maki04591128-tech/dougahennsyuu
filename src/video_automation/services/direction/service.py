@@ -86,7 +86,10 @@ SKILLS_FOR_PLAN = [
     "video-design-by-purpose",
     "blender-video-motion-design",
     "blender-rich-screen-direction",
+    "screen-tutorial-direction",
 ]
+# 画面録画を見せる用途（screen-tutorial-direction の既定の演出を優先して読ませる）
+_SCREEN_PURPOSES = {"tutorial", "explainer"}
 CHART_MAX_SEC = 30.0
 CARD_SCALE = 1.25  # 図・カード領域のカードの文字の大きさ（字幕より少し小さい程度）
 HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発話数の上限
@@ -202,6 +205,9 @@ class DirectionService:
             f"{purpose}演出 テロップ カード 図表 題名 字幕 配置 動き "
             "別用途のデザインを混ぜない 背景だけの時間"
         )
+        if prof and prof.purpose in _SCREEN_PURPOSES:
+            # 画面録画の解説は、強化版の演出（ズーム・強調・章・音・立ち絵）を既定にする
+            query += " 既定で入れる演出 画面録画 ズーム 章の切り替え 立ち絵 BGM 効果音"
         # 依頼文ではなく決まった問い合わせなので、しきい値は使わず上位の節を入れる
         ctx, picked = self.skills.context(
             query, names=SKILLS_FOR_PLAN, budget=self.settings.skills_budget_chars, min_score=0.0

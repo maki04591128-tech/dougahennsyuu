@@ -48,7 +48,8 @@ def test_wrap_respects_line_start_kinsoku():
 
 def test_make_cues_groups_lines_and_strips_period():
     cues = make_cues("あ" * 30 + "。", 10, 2, strip_period=True)
-    assert cues == ["あ" * 10 + "\n" + "あ" * 10, "あ" * 10]
+    assert len(cues) == 2 and "".join(c.replace("\n", "") for c in cues) == "あ" * 30
+    assert all(len(c.split("\n")) <= 2 and max(map(len, c.split("\n"))) <= 10 for c in cues)
     assert make_cues("短い。", 10, 2, strip_period=False) == ["短い。"]
     assert default_max_chars(1920, 1080) == 22 and default_max_chars(1080, 1920) == 14
 
@@ -99,3 +100,26 @@ def test_wrap_lines_keeps_english_words():
     assert "".join(lines) == text.replace(" ", "")
     # 1 行より長い英単語は切るしかない
     assert wrap_lines("a" * 30, 10) == ["a" * 10, "a" * 10, "a" * 10]
+
+
+def test_make_cues_splits_at_clause_not_greedy():
+    cues = make_cues(
+        "「ローカル環境を検出」を押すと、OllamaやLM Studioのモデルが見つかるわ", 22, 2, True
+    )
+    assert cues == ["「ローカル環境を検出」を押すと、", "OllamaやLM Studioのモデルが\n見つかるわ"]
+
+
+def test_make_cues_keeps_particle_after_quote():
+    cues = make_cues(
+        "今日は、動画を自動で作るアプリ「VideoAutomation」の使い方を紹介するのだ！", 22, 2, True
+    )
+    assert all(not c.startswith("の") for c in cues)
+    assert all(len(line) <= 22 for c in cues for line in c.split("\n"))
+    assert (
+        "".join(c.replace("\n", "") for c in cues)
+        == "今日は、動画を自動で作るアプリ「VideoAutomation」の使い方を紹介するのだ！"
+    )
+
+
+def test_make_cues_short_sentence_is_one_cue():
+    assert make_cues("これは短い文です。", 22, 2, True) == ["これは短い文です"]
