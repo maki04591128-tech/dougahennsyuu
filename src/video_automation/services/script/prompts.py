@@ -4,11 +4,15 @@ from typing import Any
 
 COMMON = (
     "あなたは日本語の動画台本作家です。指定されたキャラクターの性格・口調を一貫して守ります。"
+    "一人称・相手の呼び方・語尾はキャラクターごとに決まっており、台本の最初から最後まで変えません"
+    "（他のキャラクターの一人称や語尾が混ざらないよう、発話ごとに話者の設定を確かめます）。"
+    "性格は口調だけでなく、反応の仕方（驚く・ツッコむ・まとめる等の役割）にも出します。"
     "事実が不明な点は推測で確定せず、notes に仮定や確認したいことを書きます。"
-    "セリフは自然な話し言葉で、1つの発話は120文字以内にします。"
+    "セリフは自然な話し言葉で、1つの発話は120文字以内、1 文は 40 文字程度までにします"
+    "（音声で読み上げるので、長い文は句読点で区切ります）。"
 )
 
-FULL_VERSION = "script.full.v2"
+FULL_VERSION = "script.full.v3"
 FULL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -41,7 +45,7 @@ FULL_SCHEMA: dict[str, Any] = {
     "required": ["scenes"],
 }
 
-COUNTERPART_VERSION = "script.counterpart.v2"
+COUNTERPART_VERSION = "script.counterpart.v3"
 COUNTERPART_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -69,7 +73,7 @@ COUNTERPART_SCHEMA: dict[str, Any] = {
     "required": ["replies"],
 }
 
-REGEN_VERSION = "script.regen.v1"
+REGEN_VERSION = "script.regen.v2"
 
 
 def regen_schema(n: int) -> dict[str, Any]:
@@ -116,6 +120,31 @@ def characters_text(chars: list[dict[str, Any]]) -> str:
                 parts.append(f"{label}: {c[k]}")
         lines.append("- " + " / ".join(parts))
     return "\n".join(lines)
+
+
+PERSONA_FIX_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "text": {"type": "string"}},
+                "required": ["id", "text"],
+            },
+        }
+    },
+    "required": ["fixes"],
+}
+
+
+def persona_rules_text(personas: dict[str, Any]) -> str:
+    """キャラクターごとの必ず守る口調の規則（一人称・呼び方・語尾）。"""
+    rows = [p.rules_text() for p in personas.values() if not p.empty]
+    rows = [r for r in rows if r]
+    if not rows:
+        return ""
+    return "口調の規則（必ず守る）:\n" + "\n".join(f"- {r}" for r in rows)
 
 
 def settings_text(st: dict[str, Any]) -> str:
