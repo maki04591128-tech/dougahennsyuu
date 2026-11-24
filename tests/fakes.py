@@ -481,7 +481,7 @@ def fake_blender(tmp_path) -> str:
             print("Blender 5.3.0"); sys.exit(0)
         a = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
         name = Path(sys.argv[sys.argv.index("--python") + 1]).stem
-        assert name in ("title_card", "infographic", "rich_direction"), name
+        assert name in ("title_card", "infographic", "rich_direction", "motion_bg"), name
         with open({str(log)!r}, "a", encoding="utf-8") as f:
             f.write(json.dumps({{"script": name, **a}}, ensure_ascii=False) + "\\n")
         if name == "rich_direction":

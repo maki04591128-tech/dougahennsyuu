@@ -131,3 +131,19 @@ def test_normalize_drops_field_names_in_card_body():
     out = normalize(plan, LINES)
     assert out.shots[0].body == ["標高は3776メートル", "CPU: 速い"]  # 大文字の略語は残す
     assert any("項目名" in n for n in out.notes)
+
+
+def test_pattern_background_is_not_flat(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    from video_automation.services.direction.service import pattern_background
+
+    out = tmp_path / "bg.png"
+    pattern_background(out, 640, 360, "#0B1D3A", "#2A5A8A", "#3BB8DB")
+    a = np.asarray(Image.open(out).convert("L"), dtype=float)
+    assert a.shape == (360, 640)
+    # グラデーション・光の円・点の格子で、場所ごとに明るさが違う（単色ではない）
+    assert a.std() > 4 and abs(a[:, :80].mean() - a[:, -80:].mean()) > 3
+    # 細かい点の格子（隣り合う画素の差）がある
+    assert np.abs(np.diff(a, axis=1)).max() >= 2
