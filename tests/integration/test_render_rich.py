@@ -35,6 +35,11 @@ def test_plan_rich_is_capped_by_purpose():
     r = plan_rich(RichLevel.STANDARD, PROFILES[Purpose.PROMO])
     assert r.parts["intro"] and r.parts["punch"] and "glitch" not in r.parts
     assert r.params["dispersion"] == 0 and r.params["flash_alpha"] == 0
+    # 歌詞を動く文字で出すのは MV・リリックだけ（解説・PR は字幕のまま）
+    for pu in (Purpose.LYRIC, Purpose.MV):
+        assert plan_rich(RichLevel.STANDARD, PROFILES[pu]).parts.get("lyrics")
+    assert not plan_rich(RichLevel.BOLD, PROFILES[Purpose.PROMO]).parts.get("lyrics")
+    assert not plan_rich(RichLevel.BOLD, PROFILES[Purpose.EXPLAINER]).parts.get("lyrics")
 
 
 @pytest_asyncio.fixture

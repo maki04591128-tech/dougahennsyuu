@@ -8,9 +8,9 @@ RenderService から JSON 引数で呼ばれる同梱スクリプト。字幕は
   clean_path, out_path, result_path, font, width, height, fps_num, fps_den
   title, catch: 冒頭（コールドオープン）の文字
   chapters: [[開始フレーム(0 始まり), 章の名前], ...]
-  cues: [{"segment": 台本の行 id, "text": 字幕, "start_frame": 0 始まり}, ...]
+  cues: [{"segment": 台本の行 id, "text": 字幕, "start_frame": 0 始まり, "end_frame"}, ...]
   parts: {intro, letterbox, transitions, sfx, chapter_labels, ken_burns, look, punch, glitch,
-          flash, iris}: bool
+          flash, iris, lyrics}: bool（lyrics は字幕を動く文字で出す。呼び出し側は焼き込まない）
   params: {intro_frames, ken_burns, bloom, diffusion, dispersion, vignette, flash_alpha}
   limits: {punch: n, chapter_labels: n}（-1 は制限なし）
   colors: {base, main, accent, text}（#RRGGBB。用途の配色）
@@ -272,6 +272,20 @@ def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=
     if not aligned:
         ob.location.x = -len(text) * size * 0.5
     return sc
+
+
+def center_x(sc, name, frame):
+    """文字の物体を、全部の文字が出そろったフレームの形で、左右の中央に寄せる。"""
+    ob = sc.objects.get(name)
+    if ob is None:
+        return
+    sc.frame_set(frame)
+    dg = sc.view_layers[0].depsgraph
+    dg.update()
+    ev = ob.evaluated_get(dg)
+    xs = [v[0] for v in ev.bound_box]
+    if max(xs) - min(xs) > 1e-4:
+        ob.location.x -= (max(xs) + min(xs)) / 2 * ob.scale.x
 
 
 def make_whoosh(path: Path, sec=0.45, rate=48000):
@@ -622,6 +636,54 @@ def main():
 
     if on("punch"):
         emph = emphasis() or []
+
+    # 6.5) 歌詞・字幕を動く文字（キネティックタイポグラフィ）で出す（MV・リリック）
+    # 字幕を焼き込む代わりに、文節ごとの行を 1 文字ずつ弾ませて出し、終わりで崩して消す。
+    # 位置・色を行ごとに変え、画像を置いただけの画面（スライドショー）にしない
+    @part("lyrics")
+    def lyrics():
+        spots = [(0.0, INK), (1.1, INK), (-1.0, ACCENT), (0.5, INK), (-0.4, MAIN)]
+        n = 0
+        for i, c in enumerate(cues):
+            if c.get("start_frame") is None:
+                continue
+            f0 = F0 + int(c["start_frame"])
+            f1 = F0 + int(c.get("end_frame") or (c["start_frame"] + FPS * 2))
+            length = max(int(FPS * 0.6), f1 - f0 + 6)
+            text = str(c.get("text") or "").strip()
+            if not text:
+                continue
+            rows = [x for x in text.split("\n") if x.strip()]
+            longest = max(len(x) for x in rows)
+            size = min(1.2, 11.5 / max(1, longest)) * (0.85 if W < H else 1.0)
+            y, col = spots[i % len(spots)]
+            y *= H / W if W > H else 0.6
+            # 行ごとに別の場面にして縦に並べる（複数行の文字列は中央に揃わないため）
+            for r, row in enumerate(rows):
+                ry = y + ((len(rows) - 1) / 2 - r) * size * 1.4
+                ksc = kinetic_text_scene(
+                    f"Lyric{i}_{r}",
+                    row,
+                    size,
+                    col,
+                    length,
+                    delay=2 if longest <= 14 else 1,
+                    dur=10,
+                    out_at=max(8, length - 14),
+                    y=ry,
+                )
+                ksc.eevee.taa_render_samples = 8
+                center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
+                st = se.strips.new_scene(f"lyric{i}_{r}", ksc, 44 + (i % 3) * 2 + r % 2, f0 + r * 3)
+                set_duration(st, length - r * 3)
+                st.blend_type = "ALPHA_OVER"
+            n += 1
+        use("lyric_text", n)
+        use("kinetic_text", n)
+        return n
+
+    if on("lyrics"):
+        lyrics()
 
     # 7) 終わり: 円が閉じるアイリス
     @part("iris")
