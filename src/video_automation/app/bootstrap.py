@@ -1,6 +1,7 @@
 """コンポーネント初期化。API と MCP サーバーで同じサービス構成を使う。"""
 
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -75,6 +76,7 @@ class AppContainer:
     skills: SkillLibrary
     characters: CharacterService
     screencast: ScreencastService
+    build: Any = None  # BuildService（コンテナ全体を使うので作った後で入れる）
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -153,7 +155,7 @@ async def build_container(
         skills=skills if settings.skills_enabled else None,
         skills_budget=settings.skills_budget_chars,
     )
-    return AppContainer(
+    container = AppContainer(
         settings=settings,
         db=db,
         bus=bus,
@@ -196,3 +198,7 @@ async def build_container(
         characters=characters,
         screencast=ScreencastService(settings, db, timeline, ffmpeg),
     )
+    from video_automation.services.build.service import BuildService
+
+    container.build = BuildService(container)
+    return container
