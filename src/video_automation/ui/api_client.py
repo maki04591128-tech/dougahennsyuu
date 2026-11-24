@@ -490,3 +490,42 @@ class ApiClient:
 
     def close(self) -> None:
         self._http.close()
+
+    # ----- デザインの型（用途） -----
+    def design_profiles(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/design/profiles"))
+
+    def classify_purpose(self, text: str) -> dict[str, Any]:
+        return self._json(self._http.post("/design/classify", json={"text": text}))
+
+    def project_design(self, project_id: str) -> dict[str, Any]:
+        return self._json(self._http.get(f"/projects/{project_id}/design"))
+
+    def set_project_design(
+        self, project_id: str, purpose: str | None, extras: list[str] | None = None
+    ) -> dict[str, Any]:
+        body = {"purpose": purpose, "extras": extras or []}
+        return self._json(self._http.put(f"/projects/{project_id}/design", json=body))
+
+    def design_check(self, project_id: str, script_id: str | None = None) -> dict[str, Any]:
+        params = {"script_id": script_id} if script_id else {}
+        return self._json(self._http.get(f"/projects/{project_id}/design/check", params=params))
+
+    # ----- 声ごとの口調 -----
+    def voice_characters(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/voice/characters"))
+
+    def put_voice_character(self, speaker: str, **kw: Any) -> dict[str, Any]:
+        body = {"speaker": speaker, **kw}
+        return self._json(self._http.put(f"/voice/characters/{speaker}", json=body))
+
+    def delete_voice_character(self, speaker: str) -> None:
+        self._http.delete(f"/voice/characters/{speaker}").raise_for_status()
+
+    # ----- 文字起こし -----
+    def transcribe_status(self) -> dict[str, Any]:
+        return self._json(self._http.get("/transcribe/status"))
+
+    def transcribe(self, project_id: str, asset_id: str, **kw: Any) -> dict[str, Any]:
+        body = {"project_id": project_id, "asset_id": asset_id, **kw}
+        return self._json(self._http.post("/transcribe", json=body))
