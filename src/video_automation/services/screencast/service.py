@@ -94,7 +94,22 @@ def render_zoom(
 
     w, h = size
     dec = subprocess.Popen(
-        [ffmpeg, "-v", "error", "-i", str(src), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        # 画面録画は可変フレームレートのことが多い。出力と同じ一定の間隔に揃えてから読む
+        # （揃えないとフレームの時刻がずれ、寄る・引くの動きが不規則に飛んで見える）
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-i",
+            str(src),
+            "-vf",
+            f"fps={fps:.6f},scale={w}:{h}:flags=bicubic",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
         stdout=subprocess.PIPE,
     )
     enc = subprocess.Popen(
@@ -145,7 +160,7 @@ def render_zoom(
             t = f / fps
             cx, cy, z = camera_at(shots, t, size, params)
             im = Image.frombytes("RGB", (w, h), buf)
-            if z > 1.001:
+            if z > 1.0005:  # 1 画素未満の精度で切り出す（box は小数のまま渡す）
                 vw, vh = w / z, h / z
                 box = (cx - vw / 2, cy - vh / 2, cx + vw / 2, cy + vh / 2)
                 im = im.resize((w, h), Image.Resampling.BICUBIC, box=box)
