@@ -31,6 +31,7 @@ from video_automation.schemas.timeline import (
     AssetKind,
     ClipTransform,
     CommandOrigin,
+    CreditsMode,
     Encoder,
     FitMode,
     PreviewRequest,
@@ -48,7 +49,7 @@ from video_automation.services.animation.render_anim import (
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
 from video_automation.services.rendering.rich import RichPlan, plan_rich
-from video_automation.services.subtitle.formats import build_ass
+from video_automation.services.subtitle.formats import ass_color, build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import (
     CommandError,
@@ -116,6 +117,85 @@ def video_codec_args(encoder: str, quality: int, fast: bool = False) -> list[str
     ]
 
 
+def credit_card_ass(
+    text: str, w: int, h: int, sec: float, fg: str, sub: str, font: str, head: str
+) -> str:
+    """クレジットの画面の ASS（中央にまとめる。画面では URL を省き、幅で折り返す。
+    行が多いほど文字を小さくする）。URL を含む全文は .credits.txt（概要欄用）に残る。"""
+    import re
+
+    raw = []
+    for ln in text.splitlines():
+        ln = re.sub(r"\s*\(https?://.*?\)(?=,|\s*$)", "", ln)
+        ln = re.sub(r"https?://\S+", "", ln).strip().lstrip("- ").strip()
+        if ln:
+            raw.append(ln)
+
+    def em(ch: str) -> float:  # 文字の幅（全角 1・半角 0.55）
+        return 1.0 if ord(ch) > 0x2E7F else 0.55
+
+    def wrap(lines: list[str], size: float) -> list[str]:
+        limit = w * 0.84 / size
+        out: list[str] = []
+        parts: list[str] = []
+        for ln in lines:  # 「 / 」で区切った並び（声の一覧）は、入りきらなければ区切りで分ける
+            if sum(em(ch) for ch in ln) > limit and " / " in ln:
+                parts.extend(x.strip() for x in ln.split(" / "))
+            else:
+                parts.append(ln)
+        for ln in parts:
+            # 英数字は語（空白まで）で、全角は 1 文字ずつ折り返す
+            tokens = re.findall(r"[!-~“”‘’]+\s*|\s+|.", ln)
+            cur, cw = "", 0.0
+            for tok in tokens:
+                tw = sum(em(ch) for ch in tok)
+                if cw + tw > limit and cur.strip():
+                    out.append(cur.rstrip())
+                    cur, cw = "", 0.0
+                    tok = tok.lstrip()
+                    tw = sum(em(ch) for ch in tok)
+                cur += tok
+                cw += tw
+            if cur.strip():
+                out.append(cur.rstrip())
+        return out
+
+    unit = min(w, h)  # 縦長でも横長と同じ見え方の大きさにする
+    size = unit * 0.042
+    lines = wrap(raw, size)
+    for _ in range(6):  # 縦に収まるまで小さくする
+        if len(lines) * size * 1.45 <= h * 0.62 or size <= unit * 0.02:
+            break
+        size = max(unit * 0.02, size * 0.85)
+        lines = wrap(raw, size)
+    big = round(unit * 0.042 * 1.35)
+
+    def esc(t: str) -> str:
+        return t.replace("\\", "＼").replace("{", "｛").replace("}", "｝")
+
+    body = r"\N".join(esc(ln) for ln in lines)
+    size = round(size)
+    end = f"0:{int(sec // 60):02d}:{sec % 60:05.2f}"
+    return (
+        "[Script Info]\nScriptType: v4.00+\n"
+        f"PlayResX: {w}\nPlayResY: {h}\nWrapStyle: 2\n\n"  # 折り返しは自前で行う
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Head,{head},{big},{ass_color(sub)},&H00FFFFFF,&H00000000,&H00000000,"
+        "1,0,0,0,100,100,2,0,1,0,0,8,40,40,0,1\n"
+        f"Style: Body,{font},{size},{ass_color(fg)},&H00FFFFFF,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,5,80,80,0,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        f"Dialogue: 0,0:00:00.00,{end},Head,,0,0,0,,"
+        f"{{\\fad(300,300)\\pos({w // 2},{round(h * 0.12)})}}クレジット\n"
+        f"Dialogue: 0,0:00:00.00,{end},Body,,0,0,0,,"
+        f"{{\\fad(300,300)\\pos({w // 2},{round(h * 0.55)})}}{body}\n"
+    )
+
+
 class RenderService:
     def __init__(
         self,
@@ -132,6 +212,8 @@ class RenderService:
         self.design = design
         self.blender = blender
         self.font_for = font_for  # 書体の名前 → ファイル（画面演出の文字に使う）
+        # クレジットの文（使っている素材だけ）。素材のサービスが後から設定する
+        self.credits_for: Callable[[str], Awaitable[str]] | None = None
         self.settings = settings
         self.db = db
         self.ffmpeg = ffmpeg
@@ -669,6 +751,7 @@ class RenderService:
             loudnorm=req.loudnorm,
         )
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
+        credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
         await self._set(
@@ -686,6 +769,7 @@ class RenderService:
             "height": info.height,
             "encoder": encoder,
             "subtitle_paths": subs,
+            "credits_path": credits_path,
         }
 
     async def _render_rich(
@@ -808,6 +892,7 @@ class RenderService:
         )
         for f in (clean, rich_out):
             f.unlink(missing_ok=True)
+        credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
         await self._set(
@@ -831,6 +916,7 @@ class RenderService:
             "height": info.height,
             "encoder": encoder,
             "subtitle_paths": subs,
+            "credits_path": credits_path,
             "rich_direction": {
                 "level": rich.level.value,
                 "intro_frames": intro,
@@ -840,6 +926,83 @@ class RenderService:
                 "render_sec": res.get("render_sec"),
             },
         }
+
+    async def _credits(self, req: RenderRequest, out: Path, encoder: str) -> str | None:
+        """クレジットの文を書き出し、必要なら動画の終わりにクレジットの画面を足す。"""
+        if req.credits == CreditsMode.NONE or self.credits_for is None:
+            return None
+        text = (await self.credits_for(req.project_id)).strip()
+        if not text:
+            return None
+        path = out.with_suffix(".credits.txt")
+        path.write_text(text + "\n", encoding="utf-8")
+        if req.credits == CreditsMode.END_CARD:
+            await self._append_credit_card(req, out, text, encoder)
+        return path.relative_to(self.settings.data_dir).as_posix()
+
+    async def _append_credit_card(
+        self, req: RenderRequest, out: Path, text: str, encoder: str
+    ) -> None:
+        """動画の終わりに、用途の配色・書体でクレジットの画面（credits_sec 秒）を足す。"""
+        prof = RENDER_PROFILES[req.profile]
+        W, H = prof.width, prof.height
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, req.project_id)
+            assert p is not None
+            fps = f"{p.fps_num}/{p.fps_den}"
+        dprof = await self.design.profile_for(req.project_id) if self.design else None
+        bg = dprof.palette.base if dprof else "#101418"
+        fg = dprof.palette.text if dprof else "#F2F4F7"
+        sub = dprof.palette.main if dprof else "#9AA4B2"
+        font = dprof.typography.body_font if dprof else "Meiryo"
+        head = dprof.typography.heading_font if dprof else font
+        d = req.credits_sec
+        ass = out.with_suffix(".credits.ass")
+        ass.write_text(credit_card_ass(text, W, H, d, fg, sub, font, head), encoding="utf-8-sig")
+        info = await self.ffmpeg.probe(out)
+        main_sec = float(info.duration_sec or 0.0)
+        tmp = out.with_suffix(".withcredits.mp4")
+        main_a = "[0:a]" if info.has_audio else "[3:a]"
+        fc = (
+            f"[0:v]setsar=1,format=yuv420p[mv];"
+            f"[1:v]ass='{filter_path(ass)}',setsar=1,format=yuv420p[cv];"
+            f"[2:a]atrim=0:{d:.3f},asetpts=N/SR/TB[ca];"
+            f"{main_a}aresample=48000,aformat=channel_layouts=stereo[ma];"
+            f"[mv][ma][cv][ca]concat=n=2:v=1:a=1[v][a]"
+        )
+        args = [
+            "-i",
+            str(out),
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=0x{bg.lstrip('#')[-6:]}:s={W}x{H}:r={fps}:d={d:.3f}",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-f",
+            "lavfi",
+            "-i",
+            f"anullsrc=r=48000:cl=stereo:d={main_sec:.3f}",
+            "-filter_complex",
+            fc,
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            *video_codec_args(encoder, req.quality),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            str(tmp),
+        ]
+        await self.ffmpeg.run(args, total_sec=main_sec + d)
+        tmp.replace(out)
+        ass.unlink(missing_ok=True)
 
     async def get(self, render_id: str) -> RenderJobRead:
         async with self.db.session_factory() as s:

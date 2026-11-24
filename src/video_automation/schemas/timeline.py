@@ -338,6 +338,14 @@ class RichLevel(StrEnum):
     BOLD = "bold"  # 派手: ＋RGB ずらし・フラッシュ・黒帯・強いルック
 
 
+class CreditsMode(StrEnum):
+    """クレジット（音声・素材の表記）の出し方。"""
+
+    NONE = "none"
+    TEXT = "text"  # 概要欄に貼る文を、動画の横に .credits.txt で書き出す
+    END_CARD = "end_card"  # 文の書き出し＋動画の終わりにクレジットの画面を足す
+
+
 class RenderRequest(BaseModel):
     project_id: str
     profile: RenderProfileName = RenderProfileName.FHD_LANDSCAPE
@@ -353,6 +361,8 @@ class RenderRequest(BaseModel):
     # デザインの検査で止まったものを、ユーザーの判断で書き出す（LLM 経由では無効）
     allow_design_violations: bool = False
     rich_direction: RichLevel = RichLevel.OFF
+    credits: CreditsMode = CreditsMode.TEXT
+    credits_sec: float = Field(default=5.0, ge=2.0, le=20.0)  # 終わりの画面の長さ
 
     @model_validator(mode="after")
     def _range(self) -> "RenderRequest":

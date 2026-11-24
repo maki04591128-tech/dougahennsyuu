@@ -234,7 +234,56 @@ async def test_script_to_video_end_to_end(mclient, media_dir, media_settings):
     info = await FFmpeg().probe(Path(media_settings.data_dir) / job.result["output_path"])
     total = (await c.get(f"/projects/{pid}/timeline")).json()["duration_frames"]
     assert info.has_audio and abs(info.duration_sec - total / 30) < 0.15
+    # クレジット: 既定は概要欄用の文を書き出す（タイムラインで使っている声だけ）
+    cpath = Path(media_settings.data_dir) / job.result["credits_path"]
+    ctext = cpath.read_text(encoding="utf-8")
+    assert ctext.startswith("音声: ") and "VOICEVOX" in ctext
+    used = (await c.get(f"/projects/{pid}/credits", params={"used_only": True})).json()
+    assert used["text"].strip() == ctext.strip()
+    # 終わりにクレジットの画面を足す
+    r = await c.post(
+        "/render",
+        json={
+            "project_id": pid,
+            "script_id": sc["id"],
+            "quality": 35,
+            "credits": "end_card",
+            "credits_sec": 3,
+        },
+    )
+    job = await c.app.state.jobs.wait(r.json()["job_id"])
+    assert job.status == "SUCCEEDED", job.error
+    out = Path(media_settings.data_dir) / job.result["output_path"]
+    info2 = await FFmpeg().probe(out)
+    assert info2.has_audio and abs(info2.duration_sec - (total / 30 + 3)) < 0.2
+    assert not list(out.parent.glob("*.withcredits.mp4")) and not list(
+        out.parent.glob("*.credits.ass")
+    )
+    files = (await c.get(f"/render/{r.json()['id']}/files")).json()
+    assert files["credits"] and files["credits"].endswith(".credits.txt")
+    # 出さない
+    r = await c.post(
+        "/render",
+        json={"project_id": pid, "script_id": sc["id"], "quality": 35, "credits": "none"},
+    )
+    job = await c.app.state.jobs.wait(r.json()["job_id"])
+    assert job.result["credits_path"] is None
     # 不足時のエラー
     sc2 = (await c.post("/scripts", json={"project_id": pid, "text": "未生成。"})).json()
     r = await c.post(f"/projects/{pid}/timeline/from_script", json={"script_id": sc2["id"]})
     assert r.status_code == 422
+
+
+def test_credit_card_ass_drops_urls_and_wraps():
+    from video_automation.services.rendering.render_service import credit_card_ass
+
+    text = (
+        "音声: VOICEVOX:ずんだもん\n画像:\n"
+        "- “A-(b)-c” by X (https://e.org/wiki/File:A-(b)-c.png), CC BY 4.0 (https://cc.org/by/4.0/)"
+        "\n" + "- " + "長い説明" * 40
+    )
+    ass = credit_card_ass(text, 1080, 1920, 5, "#EEEEEE", "#3BB8DB", "Meiryo", "Meiryo")
+    body = ass.splitlines()[-1].split("}", 1)[1]
+    assert "http" not in body and "“A-(b)-c” by X, CC BY 4.0" in body
+    assert body.count(r"\N") >= 5  # 長い行は幅で折り返す
+    assert "0:00:05.00" in ass and "PlayResX: 1080" in ass
