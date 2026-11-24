@@ -180,6 +180,29 @@ class WikimediaSource(AssetSource):
             "iiextmetadatafilter": self._META,
         }
 
+    # 大きすぎる画像（数万画素の絵画など）は、縮小版も選べるようにする（書き出しが止まらない大きさ）
+    _THUMB_WIDTHS = (2560, 3840)
+
+    @classmethod
+    def _thumbs(cls, ii: dict[str, Any], mt: MediaType) -> list[MediaVariant]:
+        thumb = ii.get("thumburl") or ""
+        w, h = ii.get("width") or 0, ii.get("height") or 0
+        if mt != MediaType.IMAGE or "/640px-" not in thumb or not w or not h:
+            return []
+        out = []
+        for tw in cls._THUMB_WIDTHS:
+            if w > tw:
+                out.append(
+                    MediaVariant(
+                        url=thumb.replace("/640px-", f"/{tw}px-"),
+                        width=tw,
+                        height=round(h * tw / w),
+                        label=f"{tw}px",
+                        mime=ii.get("thumbmime") or ii.get("mime"),
+                    )
+                )
+        return out
+
     def _page(self, p: dict[str, Any], mt: MediaType) -> AssetSearchResult | None:
         infos = p.get("imageinfo") or []
         if not infos:
@@ -192,15 +215,8 @@ class WikimediaSource(AssetSource):
         info = from_short_name(short, meta.get("LicenseUrl"))
         title = strip_html(meta.get("ObjectName")) or (p.get("title") or "").removeprefix("File:")
         mime = ii.get("mime")
-        return AssetSearchResult(
-            source=self.name,
-            source_id=str(p["pageid"]),
-            media_type=mt,
-            title=title,
-            creator=strip_html(meta.get("Artist")),
-            landing_url=ii.get("descriptionurl"),
-            preview_url=ii.get("thumburl") if mt != MediaType.AUDIO else None,
-            variants=[
+        variants = (
+            [
                 MediaVariant(
                     url=ii["url"],
                     width=ii.get("width") or None,
@@ -211,7 +227,18 @@ class WikimediaSource(AssetSource):
                 )
             ]
             if ii.get("url")
-            else [],
+            else []
+        )
+        variants += self._thumbs(ii, mt)
+        return AssetSearchResult(
+            source=self.name,
+            source_id=str(p["pageid"]),
+            media_type=mt,
+            title=title,
+            creator=strip_html(meta.get("Artist")),
+            landing_url=ii.get("descriptionurl"),
+            preview_url=ii.get("thumburl") if mt != MediaType.AUDIO else None,
+            variants=variants,
             width=ii.get("width") or None,
             height=ii.get("height") or None,
             duration_sec=ii.get("duration"),
