@@ -5,7 +5,9 @@
 2. 作るもの … 作りたいものを文章で書くと用途（字幕動画・解説・MV など）を判定し、
    その用途のデザインの型をプロジェクトに設定する
 3. 作る手順 … 音声 → 字幕 → 演出 → 検査 → 書き出しを、1 つずつまたは続けて実行
-4. 読み込み … 書き出した動画を今のシーンの空いているチャンネルに置く
+4. 読み込み … 書き出した動画を今のシーンの空いているチャンネルに置く。
+   または、タイムラインを素材ごと（音声・映像・画像・字幕）のストリップとして置き、
+   Blender で細かく直す
 
 通信や待ち時間のかかる処理は別スレッドで行い、Blender の画面は止めない。
 bpy の操作はタイマー（メインスレッド）からだけ行う。
@@ -18,7 +20,15 @@ from typing import Any
 import bpy
 from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
 
-from .client import DEFAULT_SERVER, STEP_LABELS, STEPS, BridgeError, Client, run_step
+from .client import (
+    DEFAULT_SERVER,
+    STEP_LABELS,
+    STEPS,
+    BridgeError,
+    Client,
+    plan_strips,
+    run_step,
+)
 
 # 画面の候補（EnumProperty の items はコールバックで返す。参照を保持しないと文字化けする）
 _cache: dict[str, list[tuple[str, str, str]]] = {"projects": [], "scripts": [], "purposes": []}
@@ -51,6 +61,9 @@ class VA_Settings(bpy.types.PropertyGroup):
     )
     status: StringProperty(name="状態", default="未接続")  # type: ignore[valid-type]
     video: StringProperty(name="書き出した動画", subtype="FILE_PATH")  # type: ignore[valid-type]
+    with_subtitles: BoolProperty(  # type: ignore[valid-type]
+        name="字幕も置く", default=True, description="台本の字幕をテキストのストリップで置く"
+    )
 
 
 def _on_project(st, _ctx) -> None:
@@ -282,6 +295,137 @@ class VA_OT_import_video(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class VA_OT_import_timeline(bpy.types.Operator):
+    bl_idname = "va_bridge.import_timeline"
+    bl_label = "素材ごとに読み込む"
+    bl_description = (
+        "アプリのタイムラインを、音声・映像・画像・字幕のストリップとして今のシーンに置きます。"
+        "演出の動きは再現しません"
+    )
+
+    def execute(self, context):
+        st = _settings(context)
+        if not st.project:
+            st.status = "先に接続してプロジェクトを選んでください"
+            return {"CANCELLED"}
+        try:
+            tl = _client(st).timeline_for_blender(st.project, st.script or None)
+        except BridgeError as e:
+            st.status = str(e)
+            return {"CANCELLED"}
+        plan = plan_strips(tl, subtitles=st.with_subtitles)
+        res = place_strips(context.scene, plan)
+        _notes[:] = res["notes"]
+        st.status = res["message"]
+        return {"FINISHED"}
+
+
+def _set_range(strip, start: int, end: int) -> None:
+    """表示する範囲（1 始まり、end は含まない）を決める（5.3 は left/right_handle）。"""
+    if hasattr(strip, "left_handle"):
+        strip.left_handle, strip.right_handle = start, end
+    else:
+        strip.frame_final_start, strip.frame_final_end = start, end
+
+
+def _key(strip, prop: str, frames_values) -> None:
+    for f, v in frames_values:
+        setattr(strip, prop, v)
+        strip.keyframe_insert(prop, frame=f)
+
+
+def place_strips(scene, plan: dict) -> dict:
+    """plan_strips の結果をシーンに置く。空のシーンは解像度・fps を合わせる。"""
+    se = scene.sequence_editor or scene.sequence_editor_create()
+    empty = len(se.strips_all) == 0
+    notes = list(plan["notes"])
+    r = scene.render
+    if empty:
+        r.resolution_x, r.resolution_y = plan["width"], plan["height"]
+        r.fps, r.fps_base = plan["fps_num"], plan["fps_den"]
+        origin = scene.frame_start
+    else:
+        if (r.resolution_x, r.resolution_y) != (plan["width"], plan["height"]):
+            notes.append(
+                f"注意: シーンの解像度がプロジェクト（{plan['width']}x{plan['height']}）と違います"
+            )
+        if abs(r.fps / r.fps_base - plan["fps_num"] / plan["fps_den"]) > 0.01:
+            notes.append("注意: シーンのフレームレートがプロジェクトと違います（位置がずれます）")
+        origin = scene.frame_current
+    used = [s.channel for s in se.strips_all]
+    shift = max(used) if used else 0
+    lowest_visual = min(
+        (s["channel"] for s in plan["strips"] if s["type"] in ("movie", "image")), default=0
+    )
+    n = 0
+    failed = 0
+    for sp in plan["strips"]:
+        ch = sp["channel"] + shift
+        s0, s1 = origin + sp["start"], origin + sp["end"]
+        if s1 <= s0:
+            continue
+        try:
+            if sp["type"] == "sound":
+                st = se.strips.new_sound(sp["name"], sp["path"], ch, s0 - sp["source_in"])
+                _set_range(st, s0, s1)
+                v = sp["volume"]
+                st.volume = v
+                if sp["fade_in"]:
+                    _key(st, "volume", [(s0, 0.0), (s0 + sp["fade_in"], v)])
+                if sp["fade_out"]:
+                    _key(st, "volume", [(s1 - sp["fade_out"], v), (s1, 0.0)])
+            elif sp["type"] in ("movie", "image"):
+                if sp["type"] == "movie":
+                    st = se.strips.new_movie(
+                        sp["name"], sp["path"], ch, s0 - sp["source_in"], fit_method=sp["fit"]
+                    )
+                else:
+                    st = se.strips.new_image(sp["name"], sp["path"], ch, s0, fit_method=sp["fit"])
+                _set_range(st, s0, s1)
+                t = st.transform
+                t.scale_x *= sp["scale"]
+                t.scale_y *= sp["scale"]
+                t.offset_x, t.offset_y = sp["offset_x"], sp["offset_y"]
+                if sp["channel"] > lowest_visual:
+                    st.blend_type = "ALPHA_OVER"
+                a = sp["opacity"]
+                st.blend_alpha = a
+                if sp["fade_in"]:
+                    _key(st, "blend_alpha", [(s0, 0.0), (s0 + sp["fade_in"], a)])
+                if sp["fade_out"]:
+                    _key(st, "blend_alpha", [(s1 - sp["fade_out"], a), (s1, 0.0)])
+            elif sp["type"] == "text":
+                try:
+                    st = se.strips.new_effect(sp["name"], "TEXT", ch, s0, length=s1 - s0)
+                except TypeError:  # 4.x は frame_end
+                    st = se.strips.new_effect(sp["name"], "TEXT", ch, s0, frame_end=s1)
+                _set_range(st, s0, s1)
+                st.text = sp["text"]
+                st.font_size = sp["font_size"]
+                st.location = (0.5, 0.08)
+                st.anchor_x, st.anchor_y = "CENTER", "BOTTOM"
+                st.alignment_x = "CENTER"
+                st.use_outline = True
+                st.outline_width = 0.15
+                st.wrap_width = 0.9
+            else:
+                continue
+            st.mute = bool(sp.get("mute"))
+            n += 1
+        except (RuntimeError, TypeError, AttributeError) as e:
+            failed += 1
+            if failed <= 3:
+                notes.append(f"置けませんでした: {sp.get('name')}（{e}）")
+    end = origin + plan["frames"]
+    if scene.frame_end < end - 1:
+        scene.frame_end = end - 1
+    lo, hi = plan["channels"]
+    msg = f"{n} 個のストリップをチャンネル {lo + shift}〜{hi + shift} に置きました"
+    if failed:
+        msg += f"（{failed} 個は失敗）"
+    return {"message": msg, "notes": notes, "placed": n, "failed": failed}
+
+
 def _fps_pair(fps: float) -> tuple[int, float]:
     """29.97 などは fps=30, fps_base=1.001 で表す。"""
     for n in (24, 30, 60, 120):
@@ -338,6 +482,9 @@ class VA_PT_panel(bpy.types.Panel):
         box.label(text="4. 読み込み", icon="IMPORT")
         box.prop(st, "video", text="")
         box.operator(VA_OT_import_video.bl_idname, icon="FILE_MOVIE")
+        box.separator()
+        box.prop(st, "with_subtitles")
+        box.operator(VA_OT_import_timeline.bl_idname, icon="SEQ_STRIP_DUPLICATE")
 
         col.separator()
         col.label(text=st.status, icon="INFO" if not _busy.is_set() else "SORTTIME")
@@ -352,6 +499,7 @@ classes = (
     VA_OT_set_purpose,
     VA_OT_run,
     VA_OT_import_video,
+    VA_OT_import_timeline,
     VA_PT_panel,
 )
 
