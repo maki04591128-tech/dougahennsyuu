@@ -81,6 +81,9 @@ class ScriptStudioWidget(QWidget):
 
         # ---- 設定 ----
         self.project_combo = QComboBox()
+        # プロジェクトの台本（既定は最後に作ったもの）。選ぶとその台本を開く
+        self.script_combo = QComboBox()
+        self.script_combo.activated.connect(self.open_selected)
         self.mode_combo = QComboBox()
         for v, label in MODES:
             self.mode_combo.addItem(label, v)
@@ -133,6 +136,7 @@ class ScriptStudioWidget(QWidget):
 
         form = QFormLayout()
         form.addRow("プロジェクト", self.project_combo)
+        form.addRow("台本", self.script_combo)
         self.project_combo.currentIndexChanged.connect(self.open_latest)
         form.addRow("モード", self.mode_combo)
         form.addRow("タイトル", self.title_edit)
@@ -323,6 +327,7 @@ class ScriptStudioWidget(QWidget):
             return
         try:
             scripts = self.api.list_scripts(pid)
+            self._fill_scripts(scripts)
             if not scripts:
                 return
             d = self.api.studio_detail(scripts[-1]["id"])
@@ -330,6 +335,26 @@ class ScriptStudioWidget(QWidget):
             self._error(exc)
             return
         self.show_detail(d, "保存済みの台本を開きました")
+
+    def _fill_scripts(self, scripts: list[dict[str, Any]]) -> None:
+        self.script_combo.blockSignals(True)
+        self.script_combo.clear()
+        for s in scripts:
+            self.script_combo.addItem(s.get("title") or s["id"][:8], s["id"])
+        self.script_combo.setCurrentIndex(self.script_combo.count() - 1)
+        self.script_combo.blockSignals(False)
+
+    def open_selected(self, *_: Any) -> None:
+        """台本の一覧で選んだ台本を開く。"""
+        sid = self.script_combo.currentData()
+        if not sid:
+            return
+        try:
+            d = self.api.studio_detail(sid)
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
+            return
+        self.show_detail(d, "台本を開きました")
 
     def _add_char_row(self, c: dict[str, Any]) -> None:
         r = self.char_table.rowCount()
@@ -725,6 +750,11 @@ class ScriptStudioWidget(QWidget):
     def show_detail(self, d: dict[str, Any], message: str = "") -> None:
         self.detail = d
         self.script_id = d["id"]
+        i = self.script_combo.findData(d["id"])
+        if i < 0:  # 作ったばかりの台本を一覧に足す
+            self.script_combo.addItem(d.get("title") or d["id"][:8], d["id"])
+            i = self.script_combo.count() - 1
+        self.script_combo.setCurrentIndex(i)
         i = self.mode_combo.findData(d["mode"])
         if i >= 0:
             self.mode_combo.setCurrentIndex(i)

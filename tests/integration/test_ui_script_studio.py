@@ -365,3 +365,54 @@ def test_script_studio_tachie_column(qtbot_like=None):
     chars = w.characters()
     assert chars[0]["tachie_pack"] == "shikoku_metan"
     assert chars[1]["tachie_pack"] is None and chars[1]["subtitle_font"] == "Meiryo"
+
+
+def test_script_studio_script_selector():
+    """台本の一覧: 既定は最後の台本。選ぶとその台本を開く。"""
+    import pytest
+
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from video_automation.ui.script_studio.widget import ScriptStudioWidget
+
+    QApplication.instance() or QApplication([])
+
+    def detail(sid):
+        return {
+            "id": sid,
+            "mode": "MANUAL",
+            "title": sid,
+            "settings": {},
+            "characters": [],
+            "segments": [],
+            "scenes": [],
+            "estimated_total_sec": 0,
+            "notes": [],
+            "version": 1,
+        }
+
+    class Api:
+        opened: list = []
+
+        def list_projects(self):
+            return [{"id": "p1", "name": "P"}]
+
+        def list_scripts(self, pid):
+            return [{"id": "s1", "title": "富士山"}, {"id": "s2", "title": "文字起こし"}]
+
+        def studio_detail(self, sid):
+            self.opened.append(sid)
+            return detail(sid)
+
+        def studio_versions(self, sid):
+            return []
+
+    api = Api()
+    w = ScriptStudioWidget(api)
+    w.run_async = False
+    w.refresh()
+    assert w.script_combo.count() == 2 and w.script_id == "s2"
+    w.script_combo.setCurrentIndex(0)
+    w.open_selected()
+    assert w.script_id == "s1" and api.opened[-1] == "s1"
