@@ -84,6 +84,26 @@ class Recognizer(Protocol):
     def __call__(self, audio: Any, language: str) -> Recognized: ...
 
 
+def _add_cuda_dlls() -> list[str]:
+    """Windows: pip の nvidia-cublas-cu12 / nvidia-cudnn-cu12 の DLL を読めるようにする
+    （uv sync --extra transcribe-gpu で入る）。見つけたフォルダを返す。"""
+    import os
+    import sys
+
+    if sys.platform != "win32":
+        return []
+    added = []
+    for base in sys.path:
+        root = Path(base) / "nvidia"
+        for sub in ("cublas", "cudnn", "cuda_runtime"):
+            d = root / sub / "bin"
+            if d.is_dir() and str(d) not in added:
+                os.add_dll_directory(str(d))  # type: ignore[attr-defined,unused-ignore]
+                os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+                added.append(str(d))
+    return added
+
+
 class WhisperRecognizer:
     """faster-whisper（ローカルのモデルだけを使う）。モデルは最初に使うときに読み込む。"""
 
@@ -104,6 +124,10 @@ class WhisperRecognizer:
                 raise TranscribeUnavailableError(f"モデルがありません: {self.model_dir}")
             errors = []
             devices = ["cuda", "cpu"] if self.device == "auto" else [self.device]
+            if "cuda" in devices:
+                dlls = _add_cuda_dlls()
+                if dlls:
+                    log.info("cuda_dlls", dirs=len(dlls))
             for dev in devices:
                 try:
                     self._model = WhisperModel(

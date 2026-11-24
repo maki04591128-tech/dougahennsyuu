@@ -1277,6 +1277,36 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-cublas-cu12"
+version = "12.9.2.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cuda-nvrtc-cu12" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/e2/fc9a0e985249d873150276d5afb02e39a66817fedbf1a385724393e505ed/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl", hash = "sha256:623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661", size = 553162896, upload-time = "2026-04-08T18:53:10.035Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-nvrtc-cu12"
+version = "12.9.86"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl", hash = "sha256:72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349", size = 76408187, upload-time = "2025-06-05T20:12:27.819Z" },
+]
+
+[[package]]
+name = "nvidia-cudnn-cu12"
+version = "9.28.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cublas-cu12" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/bd/1d6709d2223e99f04079f16005f8ae6e11a14ee16b5eab6833686cf72fe1/nvidia_cudnn_cu12-9.28.1.4-py3-none-win_amd64.whl", hash = "sha256:3467aafa9b260e6adf5fbbfc0e21d180133305b42032aa1160be2d3142bb8b09", size = 696300805, upload-time = "2026-11-06T21:54:48.887Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.32.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2200,6 +2230,10 @@ dependencies = [
 transcribe = [
     { name = "faster-whisper" },
 ]
+transcribe-gpu = [
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'win32'" },
+    { name = "nvidia-cudnn-cu12", marker = "sys_platform == 'win32'" },
+]
 ui = [
     { name = "pyside6" },
 ]
@@ -2223,6 +2257,8 @@ requires-dist = [
     { name = "httpx" },
     { name = "jsonschema", specifier = ">=4" },
     { name = "mcp", specifier = ">=1.2,<2" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'win32' and extra == 'transcribe-gpu'", specifier = ">=12.4,<12.9.3" },
+    { name = "nvidia-cudnn-cu12", marker = "sys_platform == 'win32' and extra == 'transcribe-gpu'", specifier = ">=9,<10" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pydantic-settings" },
     { name = "pyside6", marker = "extra == 'ui'" },
@@ -2230,7 +2266,7 @@ requires-dist = [
     { name = "structlog" },
     { name = "uvicorn", extras = ["standard"] },
 ]
-provides-extras = ["ui", "transcribe"]
+provides-extras = ["ui", "transcribe", "transcribe-gpu"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -23,6 +23,10 @@ ui = ["pyside6"]
 transcribe = [
     "faster-whisper>=1.1",
 ]
+transcribe-gpu = [
+    "nvidia-cublas-cu12>=12.4,<12.9.3 ; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9,<10 ; sys_platform == 'win32'",
+]
 
 [dependency-groups]
 dev = [
