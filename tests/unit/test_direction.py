@@ -130,7 +130,7 @@ def test_normalize_drops_field_names_in_card_body():
     plan = DirectionPlan(shots=[Shot(kind="card", from_line=1, heading="日本一の標高", body=body)])
     out = normalize(plan, LINES)
     assert out.shots[0].body == ["標高は3776メートル", "CPU: 速い"]  # 大文字の略語は残す
-    assert any("項目名" in n for n in out.notes)
+    assert any("要点でない文" in n for n in out.notes)
 
 
 def test_pattern_background_is_not_flat(tmp_path):
@@ -147,3 +147,29 @@ def test_pattern_background_is_not_flat(tmp_path):
     assert a.std() > 4 and abs(a[:, :80].mean() - a[:, -80:].mean()) > 3
     # 細かい点の格子（隣り合う画素の差）がある
     assert np.abs(np.diff(a, axis=1)).max() >= 2
+
+
+def test_card_body_quotes_and_meta_items_are_removed():
+    from video_automation.schemas.direction import DirectionPlan, Shot, ShotKind
+    from video_automation.services.direction.plan import normalize
+
+    raw = DirectionPlan(
+        title="スマホバッテリー長持ちのコツ",
+        shots=[
+            Shot(
+                kind=ShotKind.CARD,
+                from_line=1,
+                heading="「ケーブルの長さ」",
+                body=[
+                    "「短いケーブルを使う」",
+                    "「解説動画」",
+                    "スマホバッテリー長持ちのコツ",
+                    "抵抗が減る",
+                ],
+            )
+        ],
+    )
+    plan = normalize(raw, ["短いケーブルを使うと抵抗が減る"], "スマホバッテリー長持ちのコツ")
+    card = plan.shots[0]
+    assert card.heading == "ケーブルの長さ" and card.body == ["短いケーブルを使う", "抵抗が減る"]
+    assert any("要点でない文" in n for n in plan.notes)
