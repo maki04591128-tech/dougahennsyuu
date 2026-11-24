@@ -105,12 +105,13 @@ def _keyword_ok(text: str, source: str) -> bool:
 _META = re.compile(r"^(?:[a-z_][a-z0-9_]*\s*[:：=]|[a-z0-9]+(?:_[a-z0-9]+)+$)")
 
 
-_QUOTES = ("「」", "『』", '""', "“”", "（）", "()")
+_QUOTES = ("「」", "『』", "【】", '""', "“”", "（）", "()")
+_BULLET = re.compile(r"^\s*(?:[・•●○◆◇■□▪▫]|[-‐*＊](?=\s)|\d+[.)．）](?=\s|\D))\s*")
 
 
 def _unquote(text: str) -> str:
     """全体を囲んだかぎかっこを外す（小さなモデルは要点を「」で囲むことがある）。"""
-    t = text.strip()
+    t = _BULLET.sub("", text.strip())  # 行頭の「・」「1.」（カードが自分で印を付ける）
     for a, b in _QUOTES:
         if len(t) >= 2 and t[0] == a and t[-1] == b and t.count(a) == 1:
             return t[1:-1].strip()
