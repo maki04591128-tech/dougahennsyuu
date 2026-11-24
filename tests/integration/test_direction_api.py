@@ -353,3 +353,41 @@ async def test_unplaceable_last_image_does_not_leave_the_end_empty(dclient, fake
     names = {t["id"]: t["name"] for t in tl["tracks"]}
     fig = [x for x in tl["clips"] if names[x["track_id"]] == "演出・図"]
     assert fig and max(x["end_frame"] for x in fig) == tl["duration_frames"]
+
+
+async def test_too_few_visuals_are_asked_again_once(dclient, fake):
+    """図・カードが少なすぎる案は、1 回だけ足すよう頼み直す（同じカードが出続けないように）。"""
+    c = dclient
+    _pid, sid = await _ready_script(c)
+    calls = []
+
+    def responder(body):
+        if "shots" not in (body.get("format") or {}).get("properties", {}):
+            return None
+        last = body["messages"][-1]["content"]
+        calls.append(last)
+        card = {"kind": "card", "from_line": 2, "heading": "要点", "body": ["114GPa"]}
+        if "しかありません" not in last:
+            return _full({"title": "", "subtitle": "", "shots": [card]})
+        return _full(
+            {
+                "title": "",
+                "subtitle": "",
+                "shots": [
+                    card,
+                    {"kind": "card", "from_line": 4, "heading": "実験", "body": ["ダイヤが上"]},
+                    {
+                        "kind": "card",
+                        "from_line": 5,
+                        "heading": "まとめ",
+                        "style": "summary",
+                        "body": ["計算と実験で違う"],
+                    },
+                ],
+            }
+        )
+
+    fake.chat_responder = responder
+    plan = (await c.post("/direction/plan", json={"script_id": sid})).json()["plan"]
+    assert len(calls) == 2 and "少なくとも 2 個" in calls[1]
+    assert [s["kind"] for s in plan["shots"]].count("card") == 3
