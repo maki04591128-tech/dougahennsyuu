@@ -33,8 +33,10 @@ class JobManager:
         job.status = JobStatus.RUNNING
         await self._emit(job)
 
-        async def progress(value: float) -> None:
+        async def progress(value: float, message: str | None = None) -> None:
             job.progress = max(0.0, min(1.0, value))
+            if message is not None:
+                job.message = message[:200]
             await self._emit(job)
 
         try:

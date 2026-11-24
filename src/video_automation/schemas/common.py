@@ -32,5 +32,6 @@ class JobRead(BaseModel):
     kind: str
     status: JobStatus
     progress: float = 0.0
+    message: str = ""  # いまの段階（長い処理の途中経過を画面に出す）
     result: Any | None = None
     error: str | None = None
