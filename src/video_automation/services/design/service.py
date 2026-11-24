@@ -4,7 +4,7 @@ from fractions import Fraction
 from typing import Any
 
 from video_automation.database.database import Database
-from video_automation.database.models import Project, Subtitle
+from video_automation.database.models import AudioFile, Project, ScriptSegment, Subtitle
 from video_automation.schemas.design import (
     ClassifyRequest,
     ClassifyResult,
@@ -140,6 +140,16 @@ class DesignService:
                         )
                     ).scalars()
                 )
+            # 音声の長さ（字幕の区切りの元になった台本の行ごと）
+            seg_ids = {r.script_segment_id for r in rows}
+            audio_sec: dict[str, float] = {}
+            if seg_ids:
+                q = (
+                    select(ScriptSegment.id, AudioFile.duration_sec)
+                    .join(AudioFile, AudioFile.id == ScriptSegment.audio_file_id)
+                    .where(ScriptSegment.id.in_(seg_ids))
+                )
+                audio_sec = {sid: float(d) for sid, d in (await s.execute(q)).all() if d}
         m = DesignManifest(vertical=h > w)
         for rec in records.values():
             for c, n in (rec.get("used") or {}).items():
@@ -160,8 +170,22 @@ class DesignService:
                 )
                 for r in rows
             ]
+            # 音声の速さ = その行の字幕の字数 ÷ 音声の長さ（字幕が音声に合わせてある前提）
+            chars: dict[str, int] = {}
+            for r in rows:
+                chars[r.script_segment_id] = chars.get(r.script_segment_id, 0) + len(
+                    r.text.replace("\n", "")
+                )
+            rates: list[float | None] = [
+                chars[r.script_segment_id] / audio_sec[r.script_segment_id]
+                if r.script_segment_id in audio_sec and r.start_frame is not None
+                else None
+                for r in rows
+            ]
             band = st.band_mode if st.band else "none"
-            m.subtitle = SubtitleUse(size_ratio=ratio, band=band, font=st.font_name, lines=lines)
+            m.subtitle = SubtitleUse(
+                size_ratio=ratio, band=band, font=st.font_name, lines=lines, voice_rates=rates
+            )
             m.add(Component.SUBTITLE, len(rows))
             speakers = {r.speaker for r in rows if r.speaker}
             if st.speaker_label and len(speakers) >= 2:

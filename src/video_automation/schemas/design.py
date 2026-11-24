@@ -118,6 +118,9 @@ class SubtitleSpec(BaseModel):
     max_chars_per_line: int = Field(ge=8, le=30)
     max_lines: int = Field(ge=1, le=3)
     chars_per_sec: float = Field(gt=0, le=12)  # 読める速さ（これより速い字幕は警告）
+    # 音声に合わせた字幕の上限。音声と同時に聞けるので「読める速さ」より速くてよいが、
+    # これを超えると音声があっても追えない
+    speech_chars_per_sec: float = Field(default=12.0, gt=0, le=20)
 
 
 class SafeArea(BaseModel):

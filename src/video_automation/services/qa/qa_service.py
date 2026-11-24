@@ -477,6 +477,21 @@ class QAService:
                     )
                 ).scalars()
             }
+        # 字幕は行の終わりの無音（次の行の音声が始まるまで）には残ってよい
+        timed_segs = sorted(
+            (x for x in segs.values() if x.start_frame is not None),
+            key=lambda x: x.start_frame or 0,
+        )
+        first_cue: dict[str, int] = {}
+        for q in cues:
+            if q.start_frame is not None:
+                first_cue[q.script_segment_id] = min(
+                    first_cue.get(q.script_segment_id, q.start_frame), q.start_frame
+                )
+        next_start = {
+            x.id: max(y.start_frame or 0, first_cue.get(y.id, 0))
+            for x, y in zip(timed_segs, timed_segs[1:], strict=False)
+        }
         tl = await self.timeline.get_timeline(project_id)
         max_chars = default_max_chars(width, height)
         checks: list[QACheck] = []
@@ -566,7 +581,8 @@ class QAService:
                 )
             seg = segs.get(c.script_segment_id)
             if seg and seg.start_frame is not None and seg.end_frame is not None:
-                if c.start_frame < seg.start_frame - 1 or c.end_frame > seg.end_frame + 1:
+                end_ok = max(seg.end_frame, next_start.get(seg.id) or seg.end_frame) + 1
+                if c.start_frame < seg.start_frame - 1 or c.end_frame > end_ok:
                     checks.append(
                         QACheck(
                             level=QALevel.ERROR,
