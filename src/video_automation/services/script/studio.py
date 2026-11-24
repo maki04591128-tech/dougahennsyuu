@@ -52,7 +52,13 @@ from video_automation.schemas.script_studio import (
 from video_automation.schemas.subtitle import ScriptMode
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.script import prompts as P
-from video_automation.services.script.persona import Persona, check_line, check_lines, parse_style
+from video_automation.services.script.persona import (
+    Persona,
+    check_line,
+    check_lines,
+    foreign_endings,
+    parse_style,
+)
 
 if TYPE_CHECKING:
     from video_automation.services.voice.characters import VoiceCharacterService
@@ -198,9 +204,11 @@ class ScriptStudio:
             p = personas.get(it["speaker"])
             if p is None or p.empty:
                 continue
-            fixed, iss = check_line(i, it["text"], p)
+            fixed, iss = check_line(i, it["text"], p, foreign_endings(personas, it["speaker"]))
             for x in iss:
-                if x.kind != "ending" and x.fixed is not None:
+                if x.kind == "foreign_ending" and x.fixed is not None:
+                    swapped.append(f"{it['speaker']}の語尾「{x.found}」")
+                elif x.kind != "ending" and x.fixed is not None:
                     swapped.append(f"{it['speaker']}「{x.found}」→「{x.expected}」")
                 if x.kind == "ending":
                     need.append(i)
@@ -246,7 +254,7 @@ class ScriptStudio:
             p = personas[it["speaker"]]
             ok = bool(new) and len(new) <= max(len(it["text"]) * 1.6, len(it["text"]) + 12)
             if ok:
-                new_fixed, iss = check_line(0, new, p)
+                new_fixed, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]))
                 ok = not iss or all(x.kind != "ending" for x in iss)
                 new = new_fixed
             if ok:
@@ -1133,7 +1141,8 @@ class ScriptStudio:
             raise
         cands = [c.strip()[:2000] for c in res.data["candidates"] if c.strip()][: req.candidates]
         if seg.speaker in personas:  # 一人称・呼び方の取り違えは規則で直す
-            cands = [check_line(0, c, personas[seg.speaker])[0] for c in cands]
+            fe = foreign_endings(personas, seg.speaker)
+            cands = [check_line(0, c, personas[seg.speaker], fe)[0] for c in cands]
         await self._finish(
             run.id,
             status="SUCCEEDED",
