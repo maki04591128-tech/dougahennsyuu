@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING, Any
 from video_automation.app.logging import get_logger
 from video_automation.database.models import Project
 from video_automation.schemas.build import (
+    BuildChange,
     BuildCharacter,
     BuildPlan,
     BuildRequest,
     BuildRunRequest,
+    PackChoice,
     ReadinessItem,
 )
 from video_automation.schemas.design import ClassifyRequest, ProjectDesign, Purpose
@@ -29,6 +31,7 @@ from video_automation.schemas.script_studio import (
     ScriptMode,
     ScriptSettings,
     ScriptStudioCreate,
+    ScriptUpdate,
     VoiceSettings,
 )
 from video_automation.schemas.subtitle import SubtitleGenerateRequest, SubtitleSyncRequest
@@ -226,6 +229,34 @@ class BuildService:
                 ],
             )
         )
+        return await self._view(pid, detail.id, notes=notes, uncertain=cls.needs_confirmation)
+
+    async def _view(
+        self, project_id: str, script_id: str, notes: list[str], uncertain: bool = False
+    ) -> BuildPlan:
+        """プロジェクトと台本の今の設定から「構成」を作る（構成の確認で見せる内容）。"""
+        c = self.c
+        async with c.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            if p is None:
+                raise BuildError("プロジェクトが見つかりません")
+            w, h, title = p.width, p.height, p.name
+        design = await c.design.get(project_id)
+        purpose = Purpose(design.purpose) if design.purpose else Purpose.EXPLAINER
+        prof = PROFILES[purpose]
+        detail = await c.studio.detail(script_id)
+        if detail.project_id != project_id:
+            raise BuildError("台本がこのプロジェクトのものではありません")
+        chars = [
+            BuildCharacter(
+                name=ch.name,
+                role=ch.role,
+                voice_style_id=ch.voice.style_id,
+                tachie_pack=ch.tachie_pack,
+            )
+            for ch in detail.characters
+        ]
+        notes = list(notes)
         ready = await self.readiness()
         can_run = all(r.ok for r in ready if r.required)
         if purpose in NEEDS_MUSIC:
@@ -237,42 +268,88 @@ class BuildService:
         steps = [
             label for key, label in STEPS if key != "tachie" or any(x.tachie_pack for x in chars)
         ]
+        packs = [
+            PackChoice(id=str(x["id"]), name=str(x.get("name") or x["id"]))
+            for x in c.characters.packs()
+        ]
         return BuildPlan(
-            project_id=pid,
-            script_id=detail.id,
+            project_id=project_id,
+            script_id=script_id,
             title=title,
             purpose=purpose.value,
             purpose_label=prof.label,
-            purpose_uncertain=cls.needs_confirmation,
+            purpose_uncertain=uncertain,
             width=w,
             height=h,
-            duration_sec=dur,
+            duration_sec=detail.settings.target_duration_sec or 0,
             characters=chars,
             steps=steps,
             notes=notes,
             readiness=ready,
             can_run=can_run,
+            packs=packs,
         )
 
-    # ---------- 2. 続けて作る ----------
-    async def run(self, project_id: str, req: BuildRunRequest, progress: Any) -> dict[str, Any]:
+    async def change(self, project_id: str, req: BuildChange) -> BuildPlan:
+        """構成の確認で、用途・長さ・立ち絵を変える（まだ何も作らない）。"""
         c = self.c
-        sid = req.script_id
-        notes: list[str] = []
-        detail = await c.studio.detail(sid)
+        detail = await c.studio.detail(req.script_id)
         if detail.project_id != project_id:
             raise BuildError("台本がこのプロジェクトのものではありません")
-        has_tachie = any(ch.tachie_pack for ch in detail.characters)
-        keys = [k for k, _ in STEPS if k != "tachie" or has_tachie]
-        labels = dict(STEPS)
+        notes: list[str] = []
+        settings = detail.settings.model_copy()
+        if req.purpose is not None:
+            try:
+                purpose = Purpose(req.purpose)
+            except ValueError as exc:
+                raise BuildError(f"知らない用途です: {req.purpose}") from exc
+            prof = PROFILES[purpose]
+            await c.design.set(project_id, ProjectDesign(purpose=purpose))
+            settings.purpose = prof.label
+            # 縦長が決まりの用途に変えたら縦長に、縦長から横長の用途に変えたら横長にする
+            async with c.db.session_factory() as s:
+                p = await s.get(Project, project_id)
+                assert p is not None
+                portrait = p.height > p.width
+                if prof.orientation == "vertical" and not portrait:
+                    p.width, p.height = 1080, 1920
+                elif prof.orientation == "landscape" and portrait:
+                    p.width, p.height = 1920, 1080
+                await s.commit()
+            notes.append(f"用途を「{prof.label}」にしました")
+        if req.duration_sec is not None:
+            settings.target_duration_sec = req.duration_sec
+        chars = None
+        if req.tachie is not None:
+            known = {str(x["id"]) for x in c.characters.packs()}
+            chars = []
+            for ch in detail.characters:
+                ci = CharacterIn.model_validate(ch.model_dump())
+                if ch.name in req.tachie:
+                    pack = req.tachie[ch.name] or None
+                    if pack is not None and pack not in known:
+                        raise BuildError(f"立ち絵「{pack}」が見つかりません")
+                    ci.tachie_pack = pack
+                chars.append(ci)
+        await c.studio.update(req.script_id, ScriptUpdate(settings=settings, characters=chars))
+        return await self._view(project_id, req.script_id, notes=notes)
 
-        async def at(key: str, frac: float = 0.0) -> None:
-            i = keys.index(key)
-            await progress((i + frac) / len(keys), f"{labels[key]}（{i + 1}/{len(keys)}）")
-
+    async def _script_to_tachie(
+        self, sid: str, has_tachie: bool, redo: str, at: Any, notes: list[str]
+    ) -> None:
+        """台本 → 音声 → 字幕 → 立ち絵（redo は直したいこと。台本の生成に渡す）。"""
+        c = self.c
         await at("script")
+        if redo:
+            # 作り直すときは、前の台本を見せて直したいことに沿って書き直させる
+            old = await c.studio.detail(sid)
+            if old.segments:
+                tail = f"\n\nこの台本の直したいこと: {redo[:600]}"
+                prev = "\n".join(f"{x.speaker}: {x.text}" for x in old.segments)
+                prev = prev[: max(0, 2000 - len(tail) - 12)]
+                redo = f"前に作った台本:\n{prev}{tail}"
         try:
-            d = await c.studio.generate(sid, ScriptGenerateRequest())
+            d = await c.studio.generate(sid, ScriptGenerateRequest(instruction=redo[:2000]))
         except Exception as exc:  # noqa: BLE001
             raise BuildError(f"台本を作れませんでした: {type(exc).__name__}") from exc
         notes += list(getattr(d, "notes", []) or [])[:5]
@@ -302,10 +379,39 @@ class BuildService:
                     f"立ち絵を置けませんでした（{type(exc).__name__}）。立ち絵なしで続けます"
                 )
 
+    # ---------- 2. 続けて作る ----------
+    async def run(self, project_id: str, req: BuildRunRequest, progress: Any) -> dict[str, Any]:
+        c = self.c
+        sid = req.script_id
+        notes: list[str] = []
+        detail = await c.studio.detail(sid)
+        if detail.project_id != project_id:
+            raise BuildError("台本がこのプロジェクトのものではありません")
+        has_tachie = any(ch.tachie_pack for ch in detail.characters)
+        keys = [k for k, _ in STEPS if k != "tachie" or has_tachie]
+        redo = req.instruction.strip()
+        if req.keep_script:
+            if not detail.segments:
+                raise BuildError("台本がまだありません。先に作ってください")
+            # 見た目だけ作り直す: 台本・音声・字幕・立ち絵はそのまま、演出から
+            keys = [k for k in keys if k in ("direction", "check", "render")]
+        labels = dict(STEPS)
+
+        async def at(key: str, frac: float = 0.0) -> None:
+            i = keys.index(key)
+            await progress((i + frac) / len(keys), f"{labels[key]}（{i + 1}/{len(keys)}）")
+
+        if not req.keep_script:
+            await self._script_to_tachie(sid, has_tachie, redo, at, notes)
+
         await at("direction")
         plan = (
             await c.direction.plan(
-                DirectionPlanRequest(script_id=sid, use_llm=req.use_llm_direction)
+                DirectionPlanRequest(
+                    script_id=sid,
+                    use_llm=req.use_llm_direction,
+                    instruction=redo if req.keep_script else "",
+                )
             )
         ).plan
         res = await c.direction.apply(DirectionApplyRequest(script_id=sid, plan=plan))

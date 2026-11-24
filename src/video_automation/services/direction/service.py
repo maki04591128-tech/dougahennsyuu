@@ -348,6 +348,11 @@ class DirectionService:
             body = f"タイトル案: {title or '（なし）'}\n台本:\n" + prompt_lines(
                 [x.speaker for x in lines], texts
             )
+            if req.instruction.strip():
+                body += (
+                    "\n\n演出への希望（作った人から。上の決まりに反しない範囲で従う）: "
+                    + req.instruction.strip()
+                )
             res = await self.llm.complete_json(  # 形式が合わないときは 2 回まで直させる
                 TaskType.EDIT_PLAN,
                 [

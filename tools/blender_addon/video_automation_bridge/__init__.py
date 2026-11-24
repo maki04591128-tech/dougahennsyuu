@@ -54,7 +54,13 @@ from .client import (
 )
 
 # 画面の候補（EnumProperty の items はコールバックで返す。参照を保持しないと文字化けする）
-_cache: dict[str, list[tuple[str, str, str]]] = {"projects": [], "scripts": [], "purposes": []}
+_cache: dict[str, list[tuple[str, str, str]]] = {
+    "projects": [],
+    "scripts": [],
+    "purposes": [],
+    "packs": [("NONE", "立ち絵なし", "")],
+}
+MAX_CAST = 4  # 構成の確認で立ち絵を選べる話し手の数
 _notes: list[str] = []  # 検査・演出の補足（画面に並べる）
 _jobs: queue.Queue[tuple[str, Any]] = queue.Queue()
 _ready: list[dict[str, Any]] = []  # 必要なものの確認結果（はじめに）
@@ -127,6 +133,27 @@ class VA_Settings(bpy.types.PropertyGroup):
     job_id: StringProperty(default="")  # type: ignore[valid-type]
     progress: FloatProperty(default=0.0, min=0.0, max=1.0)  # type: ignore[valid-type]
     step: StringProperty(default="")  # type: ignore[valid-type]
+    # ---- 構成の確認で変える ----
+    re_purpose: EnumProperty(name="用途", items=_items("purposes", "（未取得）"))  # type: ignore[valid-type]
+    re_length: EnumProperty(  # type: ignore[valid-type]
+        name="長さ",
+        items=[
+            ("KEEP", "そのまま", ""),
+            ("30", "30 秒", ""),
+            ("60", "1 分", ""),
+            ("120", "2 分", ""),
+            ("300", "5 分", ""),
+        ],
+    )
+    tachie0: EnumProperty(name="立ち絵", items=_items("packs", "立ち絵なし"))  # type: ignore[valid-type]
+    tachie1: EnumProperty(name="立ち絵", items=_items("packs", "立ち絵なし"))  # type: ignore[valid-type]
+    tachie2: EnumProperty(name="立ち絵", items=_items("packs", "立ち絵なし"))  # type: ignore[valid-type]
+    tachie3: EnumProperty(name="立ち絵", items=_items("packs", "立ち絵なし"))  # type: ignore[valid-type]
+    # ---- できあがった後の手直し ----
+    fix_text: StringProperty(  # type: ignore[valid-type]
+        name="直したいこと",
+        description="例: もっと短く／ずんだもんの説明を増やして／カードを減らして",
+    )
     auto_import: BoolProperty(  # type: ignore[valid-type]
         name="できたら読み込む", default=True, description="できた動画をシーケンサーに置きます"
     )
@@ -170,6 +197,7 @@ def _drain() -> float | None:
                 _ready[:] = list(val)
             elif kind == "plan":
                 st.plan_json = json.dumps(val, ensure_ascii=False)
+                _fill_review(st, val)
                 st.screen = "REVIEW"
             elif kind == "progress":
                 st.progress, st.step = val
@@ -189,6 +217,19 @@ def _drain() -> float | None:
         pass
     _redraw()
     return 0.3 if _busy.is_set() or not _jobs.empty() else None
+
+
+def _fill_review(st, plan: dict[str, Any]) -> None:
+    """構成の確認の選択肢を、届いた構成の値に合わせる（メインスレッドで呼ぶ）。"""
+    packs = [(p["id"], p["name"], "") for p in plan.get("packs") or []]
+    _cache["packs"] = [("NONE", "立ち絵なし", ""), *packs]
+    if any(k == plan.get("purpose") for k, _, _ in _cache["purposes"]):
+        st.re_purpose = plan["purpose"]
+    st.re_length = "KEEP"
+    ids = {k for k, _, _ in _cache["packs"]}
+    for i, ch in enumerate((plan.get("characters") or [])[:MAX_CAST]):
+        pack = ch.get("tachie_pack") or "NONE"
+        setattr(st, f"tachie{i}", pack if pack in ids else "NONE")
 
 
 def _background(fn, *args) -> bool:
@@ -835,7 +876,18 @@ class VA_OT_make_plan(bpy.types.Operator):
         def work():
             _ensure_engine(server)
             _jobs.put(("status", "構成を考えています…"))
-            plan = Client(server).build_plan(text, dur, orient, ref)
+            cl = Client(server)
+            profiles = cl.profiles()
+            _jobs.put(
+                (
+                    "cache",
+                    (
+                        "purposes",
+                        [(p["purpose"], p["label"], p.get("summary", "")) for p in profiles],
+                    ),
+                )
+            )
+            plan = cl.build_plan(text, dur, orient, ref)
             _jobs.put(("plan", plan))
             _jobs.put(("status", "構成を確認してください"))
 
@@ -853,6 +905,17 @@ class VA_OT_make_run(bpy.types.Operator):
         "途中で承認を求めることはありません"
     )
 
+    revise: BoolProperty(default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+    keep_script: BoolProperty(default=False, options={"SKIP_SAVE"})  # type: ignore[valid-type]
+
+    @classmethod
+    def description(cls, _context, props):
+        if props.revise and props.keep_script:
+            return "台本・声はそのままで、画面の演出（カード・テロップ・題名）だけを作り直します"
+        if props.revise:
+            return "前の台本と「直したいこと」を AI に渡して、台本から作り直します"
+        return cls.bl_description
+
     def execute(self, context):
         st = _settings(context)
         try:
@@ -861,11 +924,17 @@ class VA_OT_make_run(bpy.types.Operator):
             st.status = "先に構成を作ってください"
             return {"CANCELLED"}
         server = st.server
+        fix = st.fix_text.strip() if self.revise else ""
+        keep = bool(self.revise and self.keep_script)
+        if self.revise and not fix:
+            st.status = "直したいことを書いてください"
+            return {"CANCELLED"}
+        back = "DONE" if self.revise else "REVIEW"
 
         def work():
             _ensure_engine(server)
             c = Client(server)
-            job = c.build_run(plan["project_id"], plan["script_id"])
+            job = c.build_run(plan["project_id"], plan["script_id"], fix, keep)
             jid = job["id"]
             _jobs.put(("progress", (0.0, "始めています…")))
             _jobs.put(("screen", "WORKING"))
@@ -879,7 +948,7 @@ class VA_OT_make_run(bpy.types.Operator):
                     _jobs.put(("status", "できあがりました"))
                     return
                 if j["status"] in ("FAILED", "CANCELLED"):
-                    _jobs.put(("screen", "REVIEW"))
+                    _jobs.put(("screen", back))
                     why = "止めました" if j["status"] == "CANCELLED" else (j.get("error") or "")
                     raise BridgeError(f"作れませんでした: {why}")
                 time.sleep(1.0)
@@ -891,6 +960,39 @@ class VA_OT_make_run(bpy.types.Operator):
 
 
 _job_ref: dict[str, str] = {"id": ""}
+
+
+class VA_OT_make_change(bpy.types.Operator):
+    bl_idname = "va_bridge.make_change"
+    bl_label = "変更を反映"
+    bl_description = "用途・長さ・立ち絵の変更を構成に反映します（まだ動画は作りません）"
+
+    def execute(self, context):
+        st = _settings(context)
+        plan = _plan(st)
+        if not plan:
+            st.status = "先に構成を作ってください"
+            return {"CANCELLED"}
+        purpose = st.re_purpose if st.re_purpose and st.re_purpose != plan["purpose"] else None
+        dur = None if st.re_length == "KEEP" else int(st.re_length)
+        tachie = {}
+        for i, ch in enumerate((plan.get("characters") or [])[:MAX_CAST]):
+            v = getattr(st, f"tachie{i}")
+            tachie[ch["name"]] = "" if v == "NONE" else v
+        server = st.server
+
+        def work():
+            _ensure_engine(server)
+            new = Client(server).build_change(
+                plan["project_id"], plan["script_id"], purpose, dur, tachie
+            )
+            _jobs.put(("plan", new))
+            _jobs.put(("status", "構成を変えました。確認してください"))
+
+        if not _background(work):
+            st.status = "ほかの処理が実行中です"
+            return {"CANCELLED"}
+        return {"FINISHED"}
 
 
 class VA_OT_make_cancel(bpy.types.Operator):
@@ -1008,6 +1110,14 @@ class VA_PT_make(bpy.types.Panel):
         for ch in pl["characters"]:
             extra = "・立ち絵あり" if ch.get("tachie_pack") else ""
             box.label(text=f"{ch['name']}: {ch['role']}{extra}", icon="USER")
+        chg = lay.box()
+        chg.label(text="変えたいところがあれば", icon="PREFERENCES")
+        chg.prop(st, "re_purpose")
+        chg.prop(st, "re_length")
+        if pl.get("packs"):
+            for i, ch in enumerate(pl["characters"][:MAX_CAST]):
+                chg.prop(st, f"tachie{i}", text=f"{ch['name']} の立ち絵")
+        chg.operator(VA_OT_make_change.bl_idname, icon="FILE_REFRESH")
         col = box.column(align=True)
         col.label(text="作る手順:")
         for i, s_ in enumerate(pl["steps"], 1):
@@ -1045,6 +1155,15 @@ class VA_PT_make(bpy.types.Panel):
         row = box.row()
         row.operator(VA_OT_import_video.bl_idname, icon="FILE_MOVIE")
         row.operator(VA_OT_open_folder.bl_idname, icon="FILE_FOLDER")
+        fix = lay.box()
+        fix.label(text="直したいところがあれば", icon="GREASEPENCIL")
+        fix.prop(st, "fix_text", text="")
+        fix.label(text="例: もっと短く／カードを減らして／説明をやさしく")
+        row = fix.row(align=True)
+        op = row.operator(VA_OT_make_run.bl_idname, text="台本から作り直す", icon="TEXT")
+        op.revise, op.keep_script = True, False
+        op = row.operator(VA_OT_make_run.bl_idname, text="見た目だけ作り直す", icon="IMAGE_DATA")
+        op.revise, op.keep_script = True, True
         lay.operator(VA_OT_make_goto.bl_idname, text="もう一本つくる", icon="ADD").screen = "CREATE"
 
 
@@ -1153,6 +1272,7 @@ classes = (
     VA_OT_start,
     VA_OT_make_plan,
     VA_OT_make_run,
+    VA_OT_make_change,
     VA_OT_make_cancel,
     VA_OT_make_goto,
     VA_OT_open_folder,

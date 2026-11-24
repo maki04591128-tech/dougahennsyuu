@@ -114,8 +114,35 @@ class Client:
             body["reference"] = reference[:20000]
         return self.call("POST", "/build/plan", body, timeout=60)
 
-    def build_run(self, project_id: str, script_id: str) -> dict[str, Any]:
-        return self.call("POST", f"/build/{quote(project_id)}/run", {"script_id": script_id})
+    def build_change(
+        self,
+        project_id: str,
+        script_id: str,
+        purpose: str | None = None,
+        duration_sec: int | None = None,
+        tachie: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """構成の確認で、用途・長さ・立ち絵（"" は立ち絵なし）を変える。"""
+        body: dict[str, Any] = {"script_id": script_id}
+        if purpose:
+            body["purpose"] = purpose
+        if duration_sec:
+            body["duration_sec"] = duration_sec
+        if tachie is not None:
+            body["tachie"] = tachie
+        return self.call("PUT", f"/build/{quote(project_id)}/plan", body, timeout=30)
+
+    def build_run(
+        self, project_id: str, script_id: str, instruction: str = "", keep_script: bool = False
+    ) -> dict[str, Any]:
+        """作る。できあがった後の手直しは instruction（直したいこと）と
+        keep_script（見た目だけ作り直す）。"""
+        body: dict[str, Any] = {"script_id": script_id}
+        if instruction.strip():
+            body["instruction"] = instruction.strip()[:2000]
+        if keep_script:
+            body["keep_script"] = True
+        return self.call("POST", f"/build/{quote(project_id)}/run", body)
 
     def job(self, job_id: str) -> dict[str, Any]:
         return self.call("GET", f"/jobs/{quote(job_id)}", timeout=10)

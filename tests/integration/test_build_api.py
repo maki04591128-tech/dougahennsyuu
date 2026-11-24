@@ -104,3 +104,89 @@ async def test_voice_engine_started_after_the_app_is_found(bclient, fake):
     ready = {r["key"]: r for r in (await c.get("/build/readiness")).json()}
     assert ready["voice"]["ok"]
     assert (await c.get("/voice/speakers")).status_code == 200
+
+
+async def test_change_plan_and_revise_after_build(bclient, fake):
+    """構成の確認で用途・長さ・立ち絵を変え、できあがった後に直したいことで作り直す。"""
+    c = bclient
+    await c.post("/providers/discover")
+    plan = (
+        await c.post("/build/plan", json={"instruction": "電池を長持ちさせるコツの解説動画"})
+    ).json()
+    pid, sid = plan["project_id"], plan["script_id"]
+    assert plan["packs"] == []  # 立ち絵のパックが無いときは選べない
+
+    # 用途をショートに変えると縦長になる。長さも変えられる
+    r = await c.put(
+        f"/build/{pid}/plan", json={"script_id": sid, "purpose": "short", "duration_sec": 30}
+    )
+    assert r.status_code == 200, r.text
+    ch = r.json()
+    assert ch["purpose"] == "short" and (ch["width"], ch["height"]) == (1080, 1920)
+    assert ch["duration_sec"] == 30 and any("用途を" in n for n in ch["notes"])
+    # 解説に戻すと横長に戻る
+    ch = (await c.put(f"/build/{pid}/plan", json={"script_id": sid, "purpose": "explainer"})).json()
+    assert (ch["width"], ch["height"]) == (1920, 1080) and ch["duration_sec"] == 30
+    # 無い立ち絵・知らない用途は断る
+    name = ch["characters"][0]["name"]
+    r = await c.put(f"/build/{pid}/plan", json={"script_id": sid, "tachie": {name: "nope"}})
+    assert r.status_code == 400 and "見つかりません" in r.json()["message"]
+    r = await c.put(f"/build/{pid}/plan", json={"script_id": sid, "purpose": "xx"})
+    assert r.status_code == 400
+    # 立ち絵なしにする
+    r = await c.put(f"/build/{pid}/plan", json={"script_id": sid, "tachie": {name: ""}})
+    assert r.status_code == 200 and r.json()["characters"][0]["tachie_pack"] is None
+
+    names = [x["name"] for x in ch["characters"]]
+    prompts: list[str] = []
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "scenes" not in props:
+            return None
+        text = "\n".join(m["content"] for m in body["messages"])
+        prompts.append(text)
+        later = "直したいこと" in text
+        return {
+            "scenes": [
+                {
+                    "purpose": "導入",
+                    "turns": [
+                        {
+                            "speaker": names[0],
+                            "text": "電池の話です。" if not later else "短く話します。",
+                        },
+                        {"speaker": names[-1], "text": "どうすればいいの？"},
+                    ],
+                }
+            ],
+            "notes": [],
+        }
+
+    fake.chat_responder = responder
+
+    async def run(**kw):
+        r = await c.post(
+            f"/build/{pid}/run", json={"script_id": sid, "use_llm_direction": False, **kw}
+        )
+        assert r.status_code == 202, r.text
+        job = await c.app.state.jobs.wait(r.json()["id"])
+        assert job.status == "SUCCEEDED", job.error
+        return job
+
+    await run()
+    first = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
+    assert first[0] == "電池の話です。"
+
+    # 見た目だけ作り直す: 台本は変えない（台本の生成を呼ばない）
+    n = len(prompts)
+    job = await run(instruction="カードを減らして", keep_script=True)
+    assert len(prompts) == n and Path(job.result["video"]).is_file()
+    same = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
+    assert same == first
+
+    # 台本から作り直す: 前の台本と直したいことを渡す
+    await run(instruction="もっと短くして")
+    assert "前に作った台本" in prompts[-1] and "もっと短くして" in prompts[-1]
+    new = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
+    assert new[0] == "短く話します。"
