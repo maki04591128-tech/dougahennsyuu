@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -22,7 +22,12 @@ from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import Asset, Project, Script, ScriptSegment, Subtitle
+from video_automation.integrations.ffmpeg.runner import FFmpeg
+from video_automation.services.subtitle.text import default_max_chars, make_cues
 from video_automation.services.transcribe.align import Line, Word, align_lyrics, lines_from_segments
+
+if TYPE_CHECKING:
+    from video_automation.services.design.service import DesignService
 
 log = get_logger("transcribe")
 
@@ -75,7 +80,8 @@ class Recognized:
 
 
 class Recognizer(Protocol):
-    def __call__(self, path: Path, language: str) -> Recognized: ...
+    # audio: 16kHz モノラルの float32（numpy 配列）
+    def __call__(self, audio: Any, language: str) -> Recognized: ...
 
 
 class WhisperRecognizer:
@@ -114,27 +120,75 @@ class WhisperRecognizer:
                 raise TranscribeUnavailableError("モデルを読み込めません: " + ", ".join(errors))
         return self._model
 
-    def __call__(self, path: Path, language: str) -> Recognized:
+    def _run(self, audio: Any, language: str) -> Recognized:
         model = self._load()
         segs, info = model.transcribe(
-            str(path), language=language, word_timestamps=True, vad_filter=True, beam_size=5
+            audio, language=language, word_timestamps=True, vad_filter=True, beam_size=5
         )
         words: list[Word] = []
         segments: list[tuple[str, float, float]] = []
-        for sg in segs:
+        for sg in segs:  # 区切りは順に作られる（ここで実際に計算が走る）
             segments.append((sg.text, float(sg.start), float(sg.end)))
             for w in sg.words or []:
                 words.append(Word(w.word, float(w.start), float(w.end)))
         return Recognized(words, segments, info.language, float(info.duration))
 
+    def __call__(self, audio: Any, language: str) -> Recognized:
+        try:
+            return self._run(audio, language)
+        except RuntimeError as e:
+            # GPU のライブラリ（cuBLAS・cuDNN）が無いと計算の途中で失敗する。CPU でやり直す
+            msg = str(e).lower()
+            if self.device != "auto" or not any(k in msg for k in ("cuda", "cublas", "cudnn")):
+                raise
+            log.warning("whisper_cuda_failed", error=str(e)[:200])
+            self.device, self._model = "cpu", None
+            return self._run(audio, language)
+
 
 class TranscriptionService:
     def __init__(
-        self, settings: Settings, db: Database, recognizer: Recognizer | None = None
+        self,
+        settings: Settings,
+        db: Database,
+        ffmpeg: FFmpeg,
+        recognizer: Recognizer | None = None,
+        design: DesignService | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
+        self.ffmpeg = ffmpeg
+        self.design = design
         self._recognizer = recognizer
+
+    async def _decode(self, path: Path) -> Any:
+        """音声を 16kHz モノラルの float32 に（FFmpeg で。動画からも取り出す）。"""
+        import numpy as np
+
+        if not self.ffmpeg.ffmpeg:
+            raise TranscribeUnavailableError("ffmpeg が見つかりません")
+        proc = await asyncio.create_subprocess_exec(
+            self.ffmpeg.ffmpeg,
+            "-v",
+            "error",
+            "-nostdin",
+            "-i",
+            str(path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "f32le",
+            "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        if proc.returncode != 0 or not out:
+            raise TranscribeError("音声を読み出せません: " + err.decode(errors="ignore")[-200:])
+        return np.frombuffer(out, dtype=np.float32).copy()
 
     @property
     def recognizer(self) -> Recognizer:
@@ -177,9 +231,19 @@ class TranscriptionService:
             path = self.settings.data_dir / a.path
             fps = Fraction(p.fps_num, p.fps_den)
             name = a.name
+            max_chars, max_lines = default_max_chars(p.width, p.height), 2
+        if self.design is not None:
+            prof = await self.design.profile_for(req.project_id)
+            if prof is not None:  # 用途の型の 1 行の字数・行数（歌詞は 1 行など）
+                max_chars = min(max_chars, prof.subtitle.max_chars_per_line)
+                max_lines = prof.subtitle.max_lines
         if progress:
             await progress(0.05)
-        rec = await asyncio.to_thread(self.recognizer, path, req.language)
+        recognizer = self.recognizer  # 未設定ならここで止める（音声の読み出しより先に）
+        audio = await self._decode(path)
+        if progress:
+            await progress(0.15)
+        rec = await asyncio.to_thread(recognizer, audio, req.language)
         if progress:
             await progress(0.8)
         if req.lyrics and req.lyrics.strip():
@@ -188,7 +252,7 @@ class TranscriptionService:
             lines = lines_from_segments(rec.segments)
         if not lines:
             raise TranscribeError("文字が見つかりませんでした")
-        sid = await self._save(req, name, fps, lines)
+        sid = await self._save(req, name, fps, lines, max_chars, max_lines)
         weak = [i for i, x in enumerate(lines) if req.lyrics and x.matched < 0.3]
         log.info("transcribed", lines=len(lines), weak=len(weak), language=rec.language)
         return TranscribeResult(
@@ -208,7 +272,13 @@ class TranscriptionService:
         )
 
     async def _save(
-        self, req: TranscribeRequest, name: str, fps: Fraction, lines: list[Line]
+        self,
+        req: TranscribeRequest,
+        name: str,
+        fps: Fraction,
+        lines: list[Line],
+        max_chars: int,
+        max_lines: int,
     ) -> str:
         def fr(sec: float) -> int:
             return max(0, round(sec * fps))
@@ -222,6 +292,7 @@ class TranscriptionService:
             s.add(sc)
             await s.flush()
             prev_end = 0
+            idx = 0
             for i, ln in enumerate(lines):
                 st = max(fr(ln.start), prev_end)
                 en = max(st + 1, fr(ln.end))
@@ -237,17 +308,28 @@ class TranscriptionService:
                 )
                 s.add(seg)
                 await s.flush()
-                s.add(
-                    Subtitle(
-                        script_id=sc.id,
-                        script_segment_id=seg.id,
-                        index=i,
-                        text=ln.text[:500],
-                        speaker="",
-                        start_frame=st,
-                        end_frame=en,
+                # 長い行は型の字数で分け、時刻は字数の割合で分ける
+                cues = make_cues(ln.text, max_chars, max_lines, strip_period=True) or [ln.text]
+                sizes = [max(1, len(c.replace("\n", ""))) for c in cues]
+                total, acc = sum(sizes), 0
+                bounds = [st]
+                for n in sizes:
+                    acc += n
+                    bounds.append(st + round((en - st) * acc / total))
+                for k, cue in enumerate(cues):
+                    a, b = bounds[k], max(bounds[k] + 1, bounds[k + 1])
+                    s.add(
+                        Subtitle(
+                            script_id=sc.id,
+                            script_segment_id=seg.id,
+                            index=idx,
+                            text=cue[:500],
+                            speaker="",
+                            start_frame=a,
+                            end_frame=min(b, en) if k < len(cues) - 1 else en,
+                        )
                     )
-                )
+                    idx += 1
                 prev_end = en
             await s.commit()
             return sc.id

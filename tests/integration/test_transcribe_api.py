@@ -39,8 +39,8 @@ async def test_transcribe_creates_script_and_timed_subtitles(mclient, media_dir)
 
     calls = []
 
-    def fake(path, language):
-        calls.append((path.name, language))
+    def fake(audio, language):
+        calls.append((len(audio) > 16000 * 2, language))  # 3 秒の音声が 16kHz で届く
         return Recognized(
             words=[Word("よるを", 0.2, 1.0), Word("こえて", 1.0, 1.8), Word("ほうへ", 2.0, 2.8)],
             segments=[("夜を越えて", 0.2, 1.8), ("方へ", 2.0, 2.8)],
@@ -58,7 +58,7 @@ async def test_transcribe_creates_script_and_timed_subtitles(mclient, media_dir)
     job = await c.app.state.jobs.wait(r.json()["id"])
     assert job.status == "SUCCEEDED", job.error
     res = job.result
-    assert calls == [(calls[0][0], "ja")] and [x["text"] for x in res["lines"]] == [
+    assert calls == [(True, "ja")] and [x["text"] for x in res["lines"]] == [
         "夜をこえて",
         "光のほうへ",
     ]
@@ -78,3 +78,26 @@ async def test_transcribe_creates_script_and_timed_subtitles(mclient, media_dir)
     r = await c.post("/transcribe", json={"project_id": pid, "asset_id": "nope"})
     job = await c.app.state.jobs.wait(r.json()["id"])
     assert job.status == "FAILED"
+
+
+async def test_long_lines_are_split_by_profile(mclient, media_dir):
+    c = mclient
+    pid = (await c.post("/projects", json={"name": "MV2"})).json()["id"]
+    asset = (
+        await c.post(
+            "/assets/import", json={"project_id": pid, "path": str(media_dir / "clip.mp4")}
+        )
+    ).json()
+    long = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほ"  # 30 字
+
+    def fake(audio, language):
+        return Recognized(words=[], segments=[(long, 0.0, 3.0)], language="ja", duration=3.0)
+
+    c.app.state.container.transcriber._recognizer = fake
+    await c.put(f"/projects/{pid}/design", json={"purpose": "mv"})  # 歌詞は 1 行 20 字まで
+    r = await c.post("/transcribe", json={"project_id": pid, "asset_id": asset["id"]})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    cues = (await c.get(f"/subtitles/{job.result['script_id']}")).json()
+    assert len(cues) == 2 and all(len(x["text"]) <= 20 and "\n" not in x["text"] for x in cues)
+    assert cues[0]["start_frame"] == 0 and cues[-1]["end_frame"] == 90
+    assert cues[0]["end_frame"] == cues[1]["start_frame"]

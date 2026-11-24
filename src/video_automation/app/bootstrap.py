@@ -150,5 +150,5 @@ async def build_container(
         readings=readings,
         direction=DirectionService(settings, db, llm, timeline, titles, ffmpeg, design),
         design=design,
-        transcriber=TranscriptionService(settings, db),
+        transcriber=TranscriptionService(settings, db, ffmpeg, design=design),
     )
