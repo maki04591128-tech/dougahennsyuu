@@ -244,3 +244,44 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
     assert chk["used"]["keyword"] == 2 and chk["used"]["card"] == 1
     rec = (await c.app.state.container.design.manifest(pid)).colors
     assert "#4CB3E6" in rec and "#F2B544" in rec
+
+
+async def test_long_chart_is_extended_by_repeating_its_still_part(dclient, monkeypatch):
+    """図表の素材は長さに上限がある。区間がそれより長いと、止まった後半を繰り返して
+    最後まで出し続ける（背景だけの時間を作らない）。"""
+    from video_automation.services.direction import service as dsvc
+
+    monkeypatch.setattr(dsvc, "CHART_MAX_SEC", 3.0)
+    c = dclient
+    pid, sid = await _ready_script(c)
+    plan = {
+        "title": "",
+        "shots": [
+            {
+                "kind": "chart",
+                "from_line": 1,
+                "to_line": 5,
+                "heading": "押し込み強度",
+                "labels": ["w-BN", "ダイヤ"],
+                "values": [114, 97],
+                "unit": "GPa",
+            }
+        ],
+    }
+    out = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    assert out["status"] == "APPLIED", out
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {t["id"]: t["name"] for t in tl["tracks"]}
+    fig = sorted(
+        (x for x in tl["clips"] if names[x["track_id"]] == "演出・図"),
+        key=lambda x: x["start_frame"],
+    )
+    assert len(fig) >= 3 and len({x["asset_id"] for x in fig}) == 1
+    for a, b in zip(fig, fig[1:], strict=False):
+        assert a["end_frame"] == b["start_frame"]  # 隙間なくつながる
+    assert fig[0]["source_in_frame"] == 0 and all(x["source_in_frame"] > 0 for x in fig[1:])
+    assert fig[-1]["end_frame"] == tl["duration_frames"]
+    assert fig[0]["fade_out_frames"] == 0 and fig[-1]["fade_out_frames"] > 0
+    rec = (await c.get(f"/projects/{pid}/design")).json()
+    chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
+    assert not any(v["code"] == "empty_screen" for v in chk["violations"]), (rec, chk)
