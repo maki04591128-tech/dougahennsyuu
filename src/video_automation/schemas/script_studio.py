@@ -75,7 +75,7 @@ class ScriptSettings(BaseModel):
     ai_ratio: float = Field(default=1.0, ge=0.2, le=3.0)  # ユーザーの発話量に対する AI 側の分量
     replies_per_input: int = Field(default=1, ge=1, le=3)
     # 読み上げ速度の目安（文字/秒）。推定尺の計算に使う
-    chars_per_sec: float = Field(default=7.0, ge=2, le=15)
+    chars_per_sec: float = Field(default=6.0, ge=2, le=15)  # 実機の VOICEVOX で約 5.9 文字/秒
 
 
 class ScriptStudioCreate(BaseModel):
