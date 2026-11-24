@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends
 
 from video_automation.api.dependencies import get_container
 from video_automation.app.bootstrap import AppContainer
-from video_automation.schemas.build import BuildPlan, BuildRequest, BuildRunRequest, ReadinessItem
+from video_automation.schemas.build import (
+    BuildChange,
+    BuildPlan,
+    BuildRequest,
+    BuildRunRequest,
+    ReadinessItem,
+)
 from video_automation.schemas.common import JobRead
 
 router = APIRouter(prefix="/build", tags=["build"])
@@ -24,11 +30,22 @@ async def plan(body: BuildRequest, c: AppContainer = Depends(get_container)) -> 
     return await c.build.plan(body)
 
 
+@router.put("/{project_id}/plan", response_model=BuildPlan)
+async def change(
+    project_id: str, body: BuildChange, c: AppContainer = Depends(get_container)
+) -> Any:
+    """構成の確認で、用途・長さ・立ち絵を変える（まだ何も作らない）。"""
+    return await c.build.change(project_id, body)
+
+
 @router.post("/{project_id}/run", response_model=JobRead, status_code=202)
 async def run(
     project_id: str, body: BuildRunRequest, c: AppContainer = Depends(get_container)
 ) -> Any:
-    """構成の確認で承認された内容を、台本から書き出しまで続けて作る（ジョブ）。"""
+    """構成の確認で承認された内容を、台本から書き出しまで続けて作る（ジョブ）。
+
+    できあがった後の手直しにも使う: instruction に直したいこと、keep_script=True なら
+    台本・音声はそのままで演出から作り直す。"""
 
     async def work(progress: Any) -> dict[str, Any]:
         return await c.build.run(project_id, body, progress)

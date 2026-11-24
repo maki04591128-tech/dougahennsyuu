@@ -47,6 +47,7 @@ class DirectionPlanRequest(BaseModel):
     script_id: str
     model_key: str | None = None
     use_llm: bool = True  # False は規則だけ（タイトルと数値のテロップ）
+    instruction: str = Field(default="", max_length=2000)  # 演出への希望（「カードを減らして」等）
 
 
 class DirectionPlanResult(BaseModel):

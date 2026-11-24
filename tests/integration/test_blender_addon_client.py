@@ -117,6 +117,11 @@ def test_bridge_flow_against_app(server):
     pl = c.build_plan("窒化ホウ素の解説動画を作って", 60, "vertical")
     assert pl["purpose"] == "explainer" and pl["duration_sec"] == 60
     assert (pl["width"], pl["height"]) == (1080, 1920) and pl["steps"][-1] == "書き出す"
+    # 構成の確認で長さと用途を変える（PUT）
+    ch = c.build_change(pl["project_id"], pl["script_id"], "lecture", 120, {})
+    assert ch["purpose"] == "lecture" and ch["duration_sec"] == 120
+    with pytest.raises(BridgeError, match="400"):
+        c.build_change(pl["project_id"], pl["script_id"], "nope")
     j = c.build_run(pl["project_id"], pl["script_id"])
     assert c.job(j["id"])["kind"] == "build"
     c.cancel_job(j["id"])

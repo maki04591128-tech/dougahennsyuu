@@ -58,6 +58,7 @@ from video_automation.services.assets.downloader import (
     DownloadRejectedError,
     Resolver,
 )
+from video_automation.services.build.service import BuildError
 from video_automation.services.design.service import (
     DesignError,
     DesignNotFoundError,
@@ -167,6 +168,11 @@ def create_app(
             type(exc), 400
         )
         return _err(status, exc.code, str(exc)[:300])
+
+    @app.exception_handler(BuildError)
+    async def build_error(_: Request, exc: BuildError) -> JSONResponse:
+        # 利用者に見せる文（構成の確認で変えられない値など）
+        return _err(400, "build_error", str(exc)[:300])
 
     @app.exception_handler(FFmpegNotFoundError)
     @app.exception_handler(BlenderNotFoundError)

@@ -33,6 +33,11 @@ class ReadinessItem(BaseModel):
     detail: str = ""
 
 
+class PackChoice(BaseModel):
+    id: str
+    name: str
+
+
 class BuildPlan(BaseModel):
     """構成の確認で見せる内容。ここで 1 回承認すると、最後まで続けて作る。"""
 
@@ -50,9 +55,24 @@ class BuildPlan(BaseModel):
     notes: list[str] = Field(default_factory=list)
     readiness: list[ReadinessItem] = Field(default_factory=list)
     can_run: bool = True
+    packs: list[PackChoice] = Field(default_factory=list)  # 選べる立ち絵（構成の確認で変える）
+
+
+class BuildChange(BaseModel):
+    """構成の確認で変えたいところ（変えない項目は None）。"""
+
+    script_id: str
+    purpose: str | None = Field(default=None, max_length=40)
+    duration_sec: int | None = Field(default=None, ge=15, le=1800)
+    # 話し手の名前 → 立ち絵のパック id（"" は立ち絵なし）
+    tachie: dict[str, str] | None = None
 
 
 class BuildRunRequest(BaseModel):
     script_id: str
+    # できあがった後の手直し: 直したいことの文章。keep_script=True なら台本・音声はそのままで
+    # 画面の演出から作り直す（見た目だけ）。False なら台本から作り直す
+    instruction: str = Field(default="", max_length=2000)
+    keep_script: bool = False
     rich_direction: RichLevel = RichLevel.AUTO
     use_llm_direction: bool = True
