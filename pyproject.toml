@@ -20,6 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["pyside6"]
+transcribe = [
+    "faster-whisper>=1.1",
+]
 
 [dependency-groups]
 dev = [

@@ -32,6 +32,7 @@ from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.script.studio import ScriptStudio
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import TimelineService
+from video_automation.services.transcribe.service import TranscriptionService
 from video_automation.services.voice.characters import VoiceCharacterService
 from video_automation.services.voice.reading_service import ReadingService
 from video_automation.services.voice.voice_service import VoiceService
@@ -67,6 +68,7 @@ class AppContainer:
     readings: ReadingService
     direction: DirectionService
     design: DesignService
+    transcriber: TranscriptionService
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -148,4 +150,5 @@ async def build_container(
         readings=readings,
         direction=DirectionService(settings, db, llm, timeline, titles, ffmpeg, design),
         design=design,
+        transcriber=TranscriptionService(settings, db),
     )
