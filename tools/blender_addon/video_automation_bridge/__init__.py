@@ -129,6 +129,14 @@ class VA_Settings(bpy.types.PropertyGroup):
         type=bpy.types.Text,
         description="テキストエディタに貼った資料を台本の参考にします（任意）",
     )
+    recording: StringProperty(  # type: ignore[valid-type]
+        name="画面録画",
+        subtype="FILE_PATH",
+        description=(
+            "操作説明を作るときの画面録画（任意）。指定すると、録画を中央に置いて操作している所へ"
+            "寄ります。ビデオ・デスクトップ・ダウンロードのフォルダに置いてください"
+        ),
+    )
     plan_json: StringProperty(default="")  # type: ignore[valid-type]
     job_id: StringProperty(default="")  # type: ignore[valid-type]
     progress: FloatProperty(default=0.0, min=0.0, max=1.0)  # type: ignore[valid-type]
@@ -872,6 +880,7 @@ class VA_OT_make_plan(bpy.types.Operator):
         ref = st.reference.as_string() if st.reference else ""
         dur = int(st.length) or None
         server, orient = st.server, st.orientation
+        rec = bpy.path.abspath(st.recording) if st.recording else ""
 
         def work():
             _ensure_engine(server)
@@ -887,7 +896,7 @@ class VA_OT_make_plan(bpy.types.Operator):
                     ),
                 )
             )
-            plan = cl.build_plan(text, dur, orient, ref)
+            plan = cl.build_plan(text, dur, orient, ref, rec)
             _jobs.put(("plan", plan))
             _jobs.put(("status", "構成を確認してください"))
 
@@ -1093,6 +1102,9 @@ class VA_PT_make(bpy.types.Panel):
         row.prop(st, "length")
         row.prop(st, "orientation")
         box.prop(st, "reference")
+        box.prop(st, "recording")
+        if st.recording:
+            box.label(text="録画の中身は AI に見えません。操作の手順も文章に書いてください")
         lay.operator(VA_OT_make_plan.bl_idname, icon="VIEWZOOM")
 
     def _review(self, lay, st):

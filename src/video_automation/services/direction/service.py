@@ -81,6 +81,8 @@ SIDE = 0.035  # テロップの左右の余白（幅比）
 TACHIE_MAIN_W = 0.56
 TRACKS = ("演出・背景", "演出・図", "演出・文字")
 TACHIE_TRACK = "立ち絵"  # characters.service.TRACK
+RECORDING_TRACK = "画面録画"  # 画面録画を中央の枠に置くトラック（build.service）
+CHAPTER_CARD_SEC = 2.4  # 画面録画があるときのカードの長さ（章カード: 出す・止める・消す）
 BACKGROUNDS = {
     "navy": ("0x0B1D3A", "0x2A5A8A"),
     "charcoal": ("0x15171C", "0x3A3F4A"),
@@ -524,9 +526,17 @@ class DirectionService:
         tachie = next(
             (t for t in tl.tracks if t.name == TACHIE_TRACK and t.kind == TrackKind.VIDEO), None
         )
-        if tachie is not None:
-            cmds.append(MoveTrack(track_id=tachie.id, index=1000))
-            cmds.append(MoveTrack(track_id=txt_t, index=1000))
+        rec_t = next(
+            (t for t in tl.tracks if t.name == RECORDING_TRACK and t.kind == TrackKind.VIDEO), None
+        )
+        # 画面録画が主役のときは、図・カードで録画を長く隠さない（章カードとして短く出す）
+        recording = rec_t is not None and any(c.track_id == rec_t.id for c in tl.clips)
+        if tachie is not None or rec_t is not None:
+            # 背景 → 画面録画 → 図・カード → 立ち絵 → 文字（後から足した背景で隠さない）
+            order = [rec_t.id if rec_t else None, fig_t, tachie.id if tachie else None, txt_t]
+            for tid in order:
+                if tid is not None:
+                    cmds.append(MoveTrack(track_id=tid, index=1000))
         clips = 0
 
         def add(track_id: str, asset_id: str, start: int, length: int, **kw: Any) -> str:
@@ -626,6 +636,9 @@ class DirectionService:
         for s in plan.shots:
             if s.kind not in MAIN_KINDS:
                 continue
+            if recording and s.kind != ShotKind.CARD:
+                skipped.append(f"{s.from_line}: 画面録画を隠さないよう {s.kind.value} を外しました")
+                continue
             if s.kind == ShotKind.IMAGE:
                 img = assets.get(s.asset_id or "")
                 if img is None or img.kind != AssetKind.IMAGE:
@@ -650,6 +663,8 @@ class DirectionService:
             else:
                 end = total
             end = max(end, title_end)
+            if recording:  # 章カード: 短く出して録画に戻す
+                end = min(end, start + frames(CHAPTER_CARD_SEC))
             if end - start < frames(0.5):
                 skipped.append(f"{s.from_line}: 表示時間が短すぎる {s.kind.value} を外しました")
                 continue
@@ -852,6 +867,8 @@ class DirectionService:
             cur = max(cur, w1)
         if cur < total:
             empty.append((cur / fps, total / fps))
+        if recording:  # 画面録画が出ている間は背景だけにならない
+            empty = []
         if self.design is not None:  # 書き出し前の検査のために、作った要素を記録する
             colors = [accent, emphasis, panel, ink]
             if used.get(Component.CHART):

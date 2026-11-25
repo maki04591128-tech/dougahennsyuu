@@ -16,6 +16,9 @@ class BuildRequest(BaseModel):
     # 話し手（VOICEVOX の話者名）。空なら用途から決める
     characters: list[str] = Field(default_factory=list, max_length=4)
     reference: str = Field(default="", max_length=20000)  # 参考資料（要点）
+    # 操作説明に使う画面録画のファイル（絶対パス・取り込みを許可したフォルダの中）。
+    # 指定すると用途は「操作説明」になり、録画を中央の枠に置いて操作箇所へ寄る
+    screen_recording: str = Field(default="", max_length=1000)
 
 
 class BuildCharacter(BaseModel):

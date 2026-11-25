@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from video_automation.app.logging import get_logger
 from video_automation.database.models import Project
@@ -35,8 +37,21 @@ from video_automation.schemas.script_studio import (
     VoiceSettings,
 )
 from video_automation.schemas.subtitle import SubtitleGenerateRequest, SubtitleSyncRequest
-from video_automation.schemas.timeline import RenderRequest, RenderStatus
+from video_automation.schemas.timeline import (
+    AddClip,
+    AddTrack,
+    AssetImportRequest,
+    AssetKind,
+    AssetRead,
+    Batch,
+    CommandRequest,
+    DeleteClip,
+    RenderRequest,
+    RenderStatus,
+    TrackKind,
+)
 from video_automation.services.design.profiles import PROFILES
+from video_automation.services.direction.service import native_transform
 
 if TYPE_CHECKING:
     from video_automation.app.bootstrap import AppContainer
@@ -50,6 +65,7 @@ _DUO = [
 ]
 CAST: dict[Purpose, list[tuple[str, str]]] = {
     Purpose.EXPLAINER: _DUO,
+    Purpose.TUTORIAL: _DUO,
     Purpose.SHORT: _DUO,
     Purpose.RANKING: _DUO,
     Purpose.GAME: _DUO,
@@ -69,11 +85,21 @@ STEPS = [
     ("script", "台本を作る"),
     ("voice", "音声を作る"),
     ("tachie", "立ち絵を置く"),
+    ("recording", "画面録画を置く"),
     ("subtitles", "字幕を作る"),
     ("direction", "画面の演出を付ける"),
     ("check", "デザインを検査する"),
     ("render", "書き出す"),
 ]
+
+
+RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
+RECORDING_TRACK = "画面録画"
+# 録画を置く枠（画面比）: 上 100px は見出しの帯、下は字幕。立ち絵があれば左右に各 300px 空ける
+REC_CY = 0.44
+REC_H = 0.66
+REC_W = 0.9
+REC_W_TACHIE = 0.69
 
 
 class BuildError(Exception):
@@ -169,11 +195,28 @@ class BuildService:
     # ---------- 1. 構成 ----------
     async def plan(self, req: BuildRequest) -> BuildPlan:
         c = self.c
+        rec_path = None
+        rec_sec = None
+        if req.screen_recording.strip():
+            rec_path = Path(req.screen_recording.strip())
+            if not rec_path.is_absolute() or not c.timeline._allowed(rec_path):
+                raise BuildError(
+                    "画面録画は、取り込みを許可したフォルダ（ビデオ・デスクトップ・ダウンロード等）"
+                    "に置いてください"
+                )
+            if not rec_path.is_file():
+                raise BuildError("画面録画のファイルが見つかりません")
+            info = await c.ffmpeg.probe(rec_path)
+            if not info.has_video:
+                raise BuildError("画面録画のファイルに映像がありません")
+            rec_sec = info.duration_sec
         vertical = {"auto": None, "landscape": False, "vertical": True}[req.orientation]
         cls = c.design.classify(
             ClassifyRequest(text=req.instruction, has_script=False, vertical=vertical)
         )
         purpose = cls.purpose
+        if rec_path is not None:  # 画面録画がある = 操作説明
+            purpose = Purpose.TUTORIAL
         prof = PROFILES[purpose]
         portrait = vertical if vertical is not None else prof.orientation == "vertical"
         w, h = (1080, 1920) if portrait else (1920, 1080)
@@ -181,6 +224,8 @@ class BuildService:
         if cls.note:
             notes.append(cls.note)
         dur = req.duration_sec or (45 if purpose in SHORT_PURPOSES else 120)
+        if rec_sec and not req.duration_sec:  # 録画の長さに合わせて話す
+            dur = int(min(1800, max(15, round(rec_sec))))
         styles = await self._style_ids()
         cast = [(n, "話し手") for n in req.characters] or CAST.get(purpose, _NARRATOR)
         chars: list[BuildCharacter] = []
@@ -207,6 +252,16 @@ class BuildService:
             pid = p.id
             await s.commit()
         await c.design.set(pid, ProjectDesign(purpose=purpose))
+        if rec_path is not None:
+            await c.timeline.import_asset(
+                AssetImportRequest(
+                    project_id=pid, path=str(rec_path), name=f"{RECORDING_NAME}{rec_path.name}"
+                )
+            )
+            notes.append(
+                "録画の中身は AI には見えません。作りたいものの文章に操作の手順を書くと、"
+                "台本が録画に合います"
+            )
         detail = await c.studio.create(
             ScriptStudioCreate(
                 project_id=pid,
@@ -257,6 +312,7 @@ class BuildService:
             for ch in detail.characters
         ]
         notes = list(notes)
+        rec = await self._recording(project_id)
         ready = await self.readiness()
         can_run = all(r.ok for r in ready if r.required)
         if purpose in NEEDS_MUSIC:
@@ -266,7 +322,10 @@ class BuildService:
             )
             can_run = False
         steps = [
-            label for key, label in STEPS if key != "tachie" or any(x.tachie_pack for x in chars)
+            label
+            for key, label in STEPS
+            if (key != "tachie" or any(x.tachie_pack for x in chars))
+            and (key != "recording" or rec is not None)
         ]
         packs = [
             PackChoice(id=str(x["id"]), name=str(x.get("name") or x["id"]))
@@ -379,6 +438,126 @@ class BuildService:
                     f"立ち絵を置けませんでした（{type(exc).__name__}）。立ち絵なしで続けます"
                 )
 
+    async def _recording(self, project_id: str) -> AssetRead | None:
+        """構成で取り込んだ画面録画（無ければ None）。"""
+        tl = await self.c.timeline.get_timeline(project_id)
+        recs = [
+            a
+            for a in tl.assets
+            if a.kind == AssetKind.VIDEO
+            and a.source == "import"
+            and a.name.startswith(RECORDING_NAME)
+        ]
+        return recs[-1] if recs else None
+
+    async def _place_recording(
+        self, project_id: str, sid: str, rec: AssetRead, at: Any
+    ) -> list[str]:
+        """画面録画を操作箇所へ寄った映像にして、中央の枠（左右は立ち絵の余白）に置く。"""
+        c = self.c
+        notes: list[str] = []
+
+        async def zp(v: float) -> None:
+            await at("recording", v * 0.9)
+
+        try:
+            zoomed = await c.screencast.zoom(project_id, rec.id, None, 1.8, zp)
+        except Exception as exc:  # noqa: BLE001 - 寄れなくても録画はそのまま置く
+            notes.append(f"操作箇所へのズームを作れませんでした（{type(exc).__name__}）")
+            zoomed = rec
+        tl = await c.timeline.get_timeline(project_id)
+        p = tl
+        fps = tl.fps_num / tl.fps_den
+        # 話（音声）の長さ。録画はこの長さに合わせる（足りなければ最後の画面を止める）
+        ends = [x.end_frame for x in (await c.studio.detail(sid)).segments if x.end_frame]
+        total = max(ends) if ends else tl.duration_frames
+        cmds: list[Any] = []
+        track = next((t for t in tl.tracks if t.name == RECORDING_TRACK), None)
+        if track is not None:
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == track.id]
+            tid = track.id
+        else:
+            tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=RECORDING_TRACK, track_id=tid))
+        tachie = any(t.name == "立ち絵" for t in tl.tracks)
+        transform = native_transform(
+            zoomed.width or p.width,
+            zoomed.height or p.height,
+            p.width,
+            p.height,
+            cx=0.5,
+            cy=REC_CY,
+            max_w=REC_W_TACHIE if tachie else REC_W,
+            max_h=REC_H,
+        )
+        rec_frames = max(1, int((zoomed.duration_sec or 0) * fps))
+        length = min(rec_frames, total) if total else rec_frames
+        cmds.append(
+            AddClip(
+                track_id=tid,
+                asset_id=zoomed.id,
+                start_frame=0,
+                duration_frames=length,
+                transform=transform,
+                volume=0.0,  # 録画の音は使わない（話すのはキャラクター）
+                fade_in_frames=min(10, length // 4),
+            )
+        )
+        if total > rec_frames + round(fps * 0.5):
+            # 話の方が長いときは、録画の最後の画面を止めて出し続ける
+            still = await self._last_frame(project_id, zoomed)
+            cmds.append(
+                AddClip(
+                    track_id=tid,
+                    asset_id=still.id,
+                    start_frame=rec_frames,
+                    duration_frames=total - rec_frames,
+                    transform=native_transform(
+                        still.width or p.width,
+                        still.height or p.height,
+                        p.width,
+                        p.height,
+                        cx=0.5,
+                        cy=REC_CY,
+                        max_w=REC_W_TACHIE if tachie else REC_W,
+                        max_h=REC_H,
+                    ),
+                )
+            )
+            notes.append(
+                f"話の方が録画より {round((total - rec_frames) / fps)} 秒長いため、"
+                "録画の最後の画面を止めて出しています"
+            )
+        elif rec_frames > total + round(fps * 0.5):
+            notes.append(
+                f"録画の最後の {round((rec_frames - total) / fps)} 秒は、"
+                "話が終わったため使っていません"
+            )
+        await c.timeline.submit(
+            project_id,
+            CommandRequest(command=Batch(commands=cmds), description="画面録画を置く"),
+        )
+        return notes
+
+    async def _last_frame(self, project_id: str, a: AssetRead) -> AssetRead:
+        c = self.c
+        src = c.settings.data_dir / a.path
+        out = (
+            c.settings.data_dir
+            / "projects"
+            / project_id
+            / "assets"
+            / f"rec_last_{uuid4().hex[:8]}.png"
+        )
+        await c.ffmpeg.run(
+            ["-sseof", "-0.2", "-i", str(src), "-frames:v", "1", "-update", "1", str(out)]
+        )
+        return AssetRead.model_validate(
+            await c.timeline.register_generated(
+                project_id, out, AssetKind.IMAGE, "build", "画面録画の最後の画面"
+            )
+        )
+
     # ---------- 2. 続けて作る ----------
     async def run(self, project_id: str, req: BuildRunRequest, progress: Any) -> dict[str, Any]:
         c = self.c
@@ -388,7 +567,12 @@ class BuildService:
         if detail.project_id != project_id:
             raise BuildError("台本がこのプロジェクトのものではありません")
         has_tachie = any(ch.tachie_pack for ch in detail.characters)
-        keys = [k for k, _ in STEPS if k != "tachie" or has_tachie]
+        rec = await self._recording(project_id)
+        keys = [
+            k
+            for k, _ in STEPS
+            if (k != "tachie" or has_tachie) and (k != "recording" or rec is not None)
+        ]
         redo = req.instruction.strip()
         if req.keep_script:
             if not detail.segments:
@@ -403,6 +587,9 @@ class BuildService:
 
         if not req.keep_script:
             await self._script_to_tachie(sid, has_tachie, redo, at, notes)
+            if rec is not None:
+                await at("recording")
+                notes += await self._place_recording(project_id, sid, rec, at)
 
         await at("direction")
         plan = (
