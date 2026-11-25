@@ -383,6 +383,8 @@ def check_line(
         )
         # 形容詞・「〜たい」の後は「のだ」（「食べたいなのだ」→「食べたいのだ」）
         new = re.sub(r"(たい|ない|しい|いい|よい|かった)なのだ", r"\1のだ", new)
+        # 「聞いてなのだ」→「聞いてほしいのだ」
+        new = re.sub(r"([てで])なのだ", r"\1ほしいのだ", new)
         if new != fixed:
             issues.append(PersonaIssue(index, "noda", "のだ", "なのだ", new))
             fixed = new
