@@ -181,3 +181,9 @@ def test_wrap_lines_does_not_split_word_after_a_short_head():
     lines = wrap_lines("これで VideoAutomation が使えるの", 17)
     assert all("VideoAutomation" not in x or x.count("VideoAutomation") == 1 for x in lines)
     assert any("VideoAutomation" in x for x in lines)
+
+
+def test_wrap_lines_does_not_split_katakana_word():
+    # 実機で「コンセ / ントを抜く」と切れた
+    lines = wrap_lines("まずは「使っていない電化製品のコンセントを抜く」の", 18)
+    assert any("コンセント" in x for x in lines)

@@ -120,6 +120,21 @@ def _unquote(text: str) -> str:
     return t
 
 
+_QUOTED_RUN = re.compile(r"^(?:\s*[「『【][^」』】]+[」』】]\s*[、,・]?\s*){2,}$")
+
+
+def _split_items(text: str) -> list[str]:
+    """1 項目に詰め込まれた複数の要点を分ける（改行区切り・「a」「b」の並び）。"""
+    parts = [x for x in (y.strip() for y in str(text).splitlines()) if x]
+    out: list[str] = []
+    for x in parts or [str(text)]:
+        if _QUOTED_RUN.match(x):
+            out += re.findall(r"[「『【]([^」』】]+)[」』】]", x)
+        else:
+            out.append(x)
+    return out
+
+
 def _trim(text: str, n: int) -> str:
     text = re.sub(r"\s+", " ", text).strip()  # 改行や連続した空白は 1 つの空白に
     return text if len(text) <= n else text[: n - 1] + "…"
@@ -185,7 +200,7 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
         s.to_line = min(max(s.from_line, s.to_line or s.from_line), n)
         if s.kind == ShotKind.CARD:
             s.heading = _trim(_unquote(s.heading), 20)
-            s.body = [_unquote(b) for b in s.body]
+            s.body = [_unquote(x) for b in s.body for x in _split_items(b)]
             # 動画そのものの説明（「解説動画」）や、見出し・題名の繰り返しは要点にならない
             same = {_norm(s.heading), _norm(title)}
             junk = [
