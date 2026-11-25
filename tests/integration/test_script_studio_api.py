@@ -318,7 +318,7 @@ async def test_invalid_llm_output_is_retried_then_reported(client, fake):
     # 2回目で直れば成功
     seq = iter(['{"scenes": 1}', json.dumps(full_reply(), ensure_ascii=False)])
     # 台本の生成だけ順に答える（推敲などの後の呼び出しは既定の応答）
-    fake.chat_responder = lambda b: next(seq) if kind_of(b) == "scenes" else None
+    fake.chat_responder = lambda b: next(seq, None) if kind_of(b) == "scenes" else None
     r = await client.post(f"/scripts/{sc['id']}/generate", json={})
     assert r.status_code == 200 and len(r.json()["segments"]) == 3
 
@@ -475,3 +475,27 @@ async def test_fact_check_fixes_wrong_lines_keeping_persona(client, fake):
     texts = [t.text for t in (await c.studio.detail(sid)).segments]
     assert texts[0] == "コンセントを抜くと待機電力を減らせるのだ。"
     assert texts[1] == "なるほど、そうなのです。"
+
+
+async def test_too_short_script_is_lengthened_once(client, fake):
+    """目標の尺の 8 割に届かない台本は、1 回だけ内容を書き足させる（実機: 60 秒に 42 秒）。"""
+    sc = await _setup(client, settings={"topic": "節電", "target_duration_sec": 60})
+    asks = []
+
+    def responder(b):
+        if kind_of(b) != "scenes":
+            return None
+        text = prompt_of(b)
+        asks.append("短すぎます" in text)
+        n = 12 if "短すぎます" in text else 3
+        turns = [
+            {"speaker": ["ずんだもん", "めたん"][i % 2], "text": f"節電のコツその{i}を話すのだ。"}
+            for i in range(n)
+        ]
+        return {"scenes": [{"purpose": "本題", "turns": turns}], "notes": []}
+
+    fake.chat_responder = responder
+    d = (await client.post(f"/scripts/{sc['id']}/generate", json={})).json()
+    assert asks == [False, True]
+    assert len(d["segments"]) == 12
+    assert any("書き足させました" in n for n in d["notes"])
