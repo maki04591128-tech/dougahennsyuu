@@ -19,6 +19,10 @@ class BuildRequest(BaseModel):
     # 操作説明に使う画面録画のファイル（絶対パス・取り込みを許可したフォルダの中）。
     # 指定すると用途は「操作説明」になり、録画を中央の枠に置いて操作箇所へ寄る
     screen_recording: str = Field(default="", max_length=1000)
+    # MV・リリックに使う曲のファイル（絶対パス・取り込みを許可したフォルダの中）と、
+    # 分かっていれば歌詞（1 行 1 字幕。利用者が持っている歌詞を貼る）
+    music: str = Field(default="", max_length=1000)
+    lyrics: str = Field(default="", max_length=20000)
 
 
 class BuildCharacter(BaseModel):

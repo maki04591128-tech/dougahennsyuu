@@ -1,6 +1,7 @@
 """コンポーネント初期化。API と MCP サーバーで同じサービス構成を使う。"""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -86,6 +87,21 @@ class AppContainer:
         await self.db.dispose()
 
 
+def _find_whisper(settings: Settings) -> Path | None:
+    """文字起こしのモデルが未設定なら、よく置く場所（アプリの隣・中の models）から探す。
+
+    探すだけで、ダウンロードはしない。large-v3 があればそれを使う。"""
+    app = Path(settings.data_dir).resolve().parent
+    roots = [app.parent / "models", app / "models", Path(settings.data_dir) / "models"]
+    hits: list[Path] = []
+    for r in roots:
+        if r.is_dir():
+            hits += [d for d in sorted(r.glob("faster-whisper-*")) if (d / "model.bin").is_file()]
+    if not hits:
+        return None
+    return next((d for d in hits if d.name.endswith("large-v3")), hits[0])
+
+
 def _tools_ffmpeg(settings: Settings) -> str | None:
     """PATH に無ければ、Blender のアドオンが入れた FFmpeg（アプリの tools/ffmpeg）を使う。"""
     import os
@@ -140,6 +156,8 @@ async def build_container(
     subtitles = SubtitleService(settings, db, voice, readings, design)
     jobs = JobManager(bus)
     ffmpeg = FFmpeg(settings.ffmpeg_path or _tools_ffmpeg(settings))
+    if settings.whisper_model_dir is None:
+        settings.whisper_model_dir = _find_whisper(settings)
     blender = Blender(settings.blender_path)
     timeline = TimelineService(settings, db, ffmpeg)
     titles = TitleCardService(settings, db, blender, ffmpeg, timeline)

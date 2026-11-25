@@ -137,6 +137,19 @@ class VA_Settings(bpy.types.PropertyGroup):
             "寄ります。ビデオ・デスクトップ・ダウンロードのフォルダに置いてください"
         ),
     )
+    music: StringProperty(  # type: ignore[valid-type]
+        name="曲",
+        subtype="FILE_PATH",
+        description=(
+            "MV・リリックビデオを作るときの曲（任意）。ミュージック・デスクトップ・ダウンロードの"
+            "フォルダに置いてください"
+        ),
+    )
+    lyrics: PointerProperty(  # type: ignore[valid-type]
+        name="歌詞",
+        type=bpy.types.Text,
+        description="テキストエディタに貼った歌詞（1 行 1 字幕）。無ければ歌声を文字起こしします",
+    )
     plan_json: StringProperty(default="")  # type: ignore[valid-type]
     job_id: StringProperty(default="")  # type: ignore[valid-type]
     progress: FloatProperty(default=0.0, min=0.0, max=1.0)  # type: ignore[valid-type]
@@ -881,6 +894,8 @@ class VA_OT_make_plan(bpy.types.Operator):
         dur = int(st.length) or None
         server, orient = st.server, st.orientation
         rec = bpy.path.abspath(st.recording) if st.recording else ""
+        song = bpy.path.abspath(st.music) if st.music else ""
+        words = st.lyrics.as_string() if st.lyrics else ""
 
         def work():
             _ensure_engine(server)
@@ -896,7 +911,7 @@ class VA_OT_make_plan(bpy.types.Operator):
                     ),
                 )
             )
-            plan = cl.build_plan(text, dur, orient, ref, rec)
+            plan = cl.build_plan(text, dur, orient, ref, rec, song, words)
             _jobs.put(("plan", plan))
             _jobs.put(("status", "構成を確認してください"))
 
@@ -1105,6 +1120,9 @@ class VA_PT_make(bpy.types.Panel):
         box.prop(st, "recording")
         if st.recording:
             box.label(text="録画の中身は AI に見えません。操作の手順も文章に書いてください")
+        box.prop(st, "music")
+        if st.music:
+            box.prop(st, "lyrics")
         lay.operator(VA_OT_make_plan.bl_idname, icon="VIEWZOOM")
 
     def _review(self, lay, st):

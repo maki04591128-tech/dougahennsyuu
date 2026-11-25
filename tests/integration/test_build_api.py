@@ -256,3 +256,65 @@ async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path
     assert len(rec) == 2 and rec[1]["start_frame"] == rec[0]["end_frame"]
     assert any("最後の画面" in n for n in job.result["notes"])
     assert not any("ズーム" in n for n in job.result["notes"])
+
+
+async def test_music_video_from_song_and_lyrics(bclient, media_dir):
+    """曲と歌詞を渡すとリリックビデオになり、歌の時刻を文字起こしで取って書き出す。"""
+    from video_automation.services.transcribe.align import Word
+    from video_automation.services.transcribe.service import Recognized
+
+    c = bclient
+    await c.post("/providers/discover")
+    r = await c.post(
+        "/build/plan",
+        json={
+            "instruction": "この曲の動画を作って",
+            "music": str(media_dir / "tone.wav"),
+            "lyrics": "夜をこえて\n光のほうへ",
+        },
+    )
+    assert r.status_code == 201, r.text
+    plan = r.json()
+    assert plan["purpose"] == "lyric" and plan["characters"] == []
+    assert plan["steps"][0] == "歌詞と時刻を合わせる" and plan["duration_sec"] == 15
+    # 文字起こしのモデルが無いと作れない
+    ready = {x["key"]: x for x in plan["readiness"]}
+    assert not ready["transcribe"]["ok"] and not plan["can_run"]
+
+    def fake(audio, language):
+        return Recognized(
+            words=[Word("よるを", 0.1, 0.8), Word("こえて", 0.8, 1.2), Word("ほうへ", 1.3, 1.9)],
+            segments=[("夜を越えて", 0.1, 1.2), ("方へ", 1.3, 1.9)],
+            language="ja",
+            duration=2.0,
+        )
+
+    c.app.state.container.transcriber._recognizer = fake
+    view = (
+        await c.put(f"/build/{plan['project_id']}/plan", json={"script_id": plan["script_id"]})
+    ).json()
+    assert view["can_run"]
+    r = await c.post(f"/build/{plan['project_id']}/run", json={"script_id": plan["script_id"]})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert Path(job.result["video"]).is_file() and job.result["script_id"] != plan["script_id"]
+    lines = (await c.get(f"/scripts/{job.result['script_id']}/detail")).json()["segments"]
+    assert [x["text"] for x in lines] == ["夜をこえて", "光のほうへ"]
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    song = next(t for t in tl["tracks"] if t["name"] == "曲")
+    assert song["kind"] == "audio" and any(x["track_id"] == song["id"] for x in tl["clips"])
+
+    # 見た目だけ作り直すときは、歌の時刻を取り直さない
+    calls = []
+    c.app.state.container.transcriber._recognizer = lambda a, lang: calls.append(1) or fake(a, lang)
+    r = await c.post(
+        f"/build/{plan['project_id']}/run",
+        json={
+            "script_id": plan["script_id"],
+            "instruction": "落ち着いた感じに",
+            "keep_script": True,
+        },
+    )
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert calls == []
