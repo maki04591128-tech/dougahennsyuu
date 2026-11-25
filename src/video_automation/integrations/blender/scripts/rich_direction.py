@@ -9,6 +9,7 @@ RenderService から JSON 引数で呼ばれる同梱スクリプト。字幕は
   title, catch: 冒頭（コールドオープン）の文字
   chapters: [[開始フレーム(0 始まり), 章の名前], ...]
   cues: [{"segment": 台本の行 id, "text": 字幕, "start_frame": 0 始まり, "end_frame"}, ...]
+  beats: [拍のフレーム（0 始まり）, ...]（MV の拍に合わせた脈動。無ければ使わない）
   parts: {intro, letterbox, transitions, sfx, chapter_labels, ken_burns, look, punch, glitch,
           flash, iris, lyrics}: bool（lyrics は字幕を動く文字で出す。呼び出し側は焼き込まない）
   params: {intro_frames, ken_burns, bloom, diffusion, dispersion, vignette, flash_alpha}
@@ -506,6 +507,10 @@ def main():
             ul.transform.offset_y = H / 2 - my - 30 * U
             kt(ul, "scale_x", f + 10, 0.0)
             kt(ul, "scale_x", f + 26, 0.16 if W > H else 0.3)
+            # 帯と下線も文字と一緒に消す（文字だけ先に消えて、空の帯が残って見えていた）
+            for strip, last in ((bar, f + dur - 4), (ul, f + dur - 4)):
+                kp_(strip, "blend_alpha", last - 10, 1.0)
+                kp_(strip, "blend_alpha", last, 0.0)
             n += 1
         use("chapter_label", n)
 
@@ -636,6 +641,25 @@ def main():
 
     if on("punch"):
         emph = emphasis() or []
+
+    # 6.4) 拍に合わせて画面を軽く脈打たせる（MV。2 拍に 1 回・強調や切り替えの近くは避ける）
+    @part("beat_pulse")
+    def beat_pulse():
+        beats = [F0 + int(b) for b in (A.get("beats") or [])][::2]
+        busy = list(emph) + list(tr_frames)
+        hits = [b for b in beats if 1 < b < end - 8 and all(abs(b - x) > 10 for x in busy)]
+        if not hits:
+            return
+        bp = se.strips.new_effect("beat_pulse", "ADJUSTMENT", 29, 1, length=end)
+        k = bp.transform.scale_x
+        for b in hits:
+            for p_, v in ((b - 1, k), (b, k * 1.018), (b + 6, k)):
+                kt(bp, "scale_x", p_, v)
+                kt(bp, "scale_y", p_, v)
+        use("beat_cut", len(hits))
+
+    if on("beat_pulse"):
+        beat_pulse()
 
     # 6.5) 歌詞・字幕を動く文字（キネティックタイポグラフィ）で出す（MV・リリック）
     # 字幕を焼き込む代わりに、文節ごとの行を 1 文字ずつ弾ませて出し、終わりで崩して消す。

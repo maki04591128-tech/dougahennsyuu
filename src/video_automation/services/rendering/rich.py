@@ -22,6 +22,8 @@ PART_COMPONENTS: dict[str, tuple[Component, ...]] = {
     "ken_burns": (Component.BACKGROUND_MOTION,),
     "look": (Component.BLOOM,),
     "punch": (Component.SHAKE_PUNCH,),
+    # 拍に合わせた画面の脈動（曲がある MV・リリック）
+    "beat_pulse": (Component.BEAT_CUT,),
     "glitch": (Component.GLITCH,),
     "flash": (Component.FLASH,),
     "iris": (Component.TRANSITION_SHAPE,),
