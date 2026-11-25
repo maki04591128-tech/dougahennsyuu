@@ -262,3 +262,11 @@ def test_qa_chars_ignore_brackets():
     from video_automation.services.qa.qa_service import _chars
 
     assert _chars("「電気」「ガス」…ね") == 5
+
+
+def test_round22_not_imperative():
+    from video_automation.services.voice.characters import BUILTIN
+
+    m = parse_style("四国めたん", BUILTIN["四国めたん"].text())
+    _, iss = check_line(0, "そして、石鹸は必ず流すのよ、残留は汚染の元ね", m)
+    assert not any(x.expected == "命令口調" for x in iss)

@@ -592,7 +592,7 @@ def check_line(
         # 命令口調を使わないキャラクター（めたん）の「水分を取れよ」「早く寝ろ」
         for sent in (x.strip() for x in _SENT.findall(fixed) if x.strip()):
             core = sent.rstrip(_TRAIL)
-            if re.search(r"(?:[一-龥][けげせねべめれ]|ろ)よ?$", core) and not re.search(
+            if re.search(r"(?:[一-龥][けげせべめれ]|ろ)よ?$", core) and not re.search(
                 r"(?:ところ|こころ|ころ|いろ|ひろ|しろ)よ?$", core
             ):
                 issues.append(PersonaIssue(index, "avoid", sent[:40], "命令口調"))

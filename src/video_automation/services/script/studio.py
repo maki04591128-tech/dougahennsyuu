@@ -1379,6 +1379,18 @@ class ScriptStudio:
         editable = {i for i, t in enumerate(ordered) if _norm(t["text"]) not in fixed_keys}
         notes += await self._polish(ordered, editable, personas, req.model_key)
         _drop_repeated_openers([ordered[i] for i in sorted(editable)], personas)
+        # 推敲で直らなかった同じセリフ（実機:「20 秒以上は洗うのだ…」が 2 回）は後の方を省く
+        seen_text: set[str] = set()
+        for sc_ in res.data["scenes"]:
+            kept = []
+            for t in sc_["turns"]:
+                k = _norm(t["text"])
+                if k in seen_text and k not in fixed_keys:
+                    continue
+                seen_text.add(k)
+                kept.append(t)
+            sc_["turns"] = kept
+        res.data["scenes"] = [sc_ for sc_ in res.data["scenes"] if sc_["turns"]]
         if st.target_duration_sec:
             # 推敲・書き直しでセリフが伸びることがある（実機: 45 秒の指定で 55 秒）
             res.data["scenes"], fit_notes = fit_to_duration(
