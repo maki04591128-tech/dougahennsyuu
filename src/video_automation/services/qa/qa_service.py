@@ -79,7 +79,12 @@ def _status(checks: list[QACheck]) -> str:
 
 
 def _chars(text: str) -> int:
-    return len("".join(ch for ch in text if not ch.isspace() and ch not in "、。・！？!?,."))
+    # 読む文字数には、句読点・かぎかっこ・三点リーダーなどの記号を数えない
+    return len(
+        "".join(
+            ch for ch in text if not ch.isspace() and ch not in "、。・！？!?,.「」『』（）()…〜"
+        )
+    )
 
 
 class QAService:

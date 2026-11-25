@@ -256,3 +256,9 @@ def test_round20_openers():
         "先に期限が近いものを取り出すわ",
         "その通りよ",
     ]
+
+
+def test_qa_chars_ignore_brackets():
+    from video_automation.services.qa.qa_service import _chars
+
+    assert _chars("「電気」「ガス」…ね") == 5
