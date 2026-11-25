@@ -53,6 +53,7 @@ from video_automation.schemas.script_studio import (
 from video_automation.schemas.subtitle import ScriptMode
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.script import prompts as P
+from video_automation.services.script.corrections import CorrectionLog
 from video_automation.services.script.persona import (
     BAD_JOINS,
     FOREIGN_SCRIPT,
@@ -308,11 +309,17 @@ def _norm(text: str) -> str:
 
 class ScriptStudio:
     def __init__(
-        self, db: Database, llm: LLMGateway, voice_characters: "VoiceCharacterService | None" = None
+        self,
+        db: Database,
+        llm: LLMGateway,
+        voice_characters: "VoiceCharacterService | None" = None,
+        corrections: CorrectionLog | None = None,
     ) -> None:
         self.db = db
         self.llm = llm
         self.voice_characters = voice_characters
+        # AI のセリフを直した前後の組（ローカル LLM の追加学習用。None なら記録しない）
+        self.corrections = corrections or CorrectionLog(None)
 
     async def _with_voice_style(self, chars: list[CharacterIn]) -> list[CharacterIn]:
         """声を選んだキャラクターの口調が空なら、その声の口調（登録済みのもの）で埋める。
@@ -582,6 +589,33 @@ class ScriptStudio:
             else:
                 left.append(i)
         return left
+
+    def _record_corrections(
+        self,
+        stage: str,
+        scenes: list[dict[str, Any]],
+        raw: dict[int, str],
+        personas: dict[str, Persona],
+        st: Any,
+        model_key: str | None,
+    ) -> None:
+        """生成したセリフのうち、規則・書き直し・推敲で変わったものの前後を記録する。"""
+        flat = [t for sc_ in scenes for t in sc_.get("turns") or []]
+        for i, t in enumerate(flat):
+            before = raw.get(id(t))
+            if before is None:
+                continue
+            p = personas.get(t["speaker"])
+            self.corrections.record(
+                stage=stage,
+                speaker=t["speaker"],
+                before=before,
+                after=t["text"],
+                rules=p.rules_text() if p is not None and not p.empty else "",
+                context=[f"{x['speaker']}: {x['text']}" for x in flat[max(0, i - 2) : i]],
+                topic=getattr(st, "topic", "") or "",
+                model_key=model_key,
+            )
 
     async def _enforce_persona(
         self, items: list[dict[str, Any]], personas: dict[str, Persona], model_key: str | None
@@ -1393,6 +1427,7 @@ class ScriptStudio:
             for t in sc_["turns"]
             if t["speaker"] in names and _norm(t["text"]) not in fixed_keys
         ]
+        raw = {id(t): t["text"] for t in ai_turns}  # 直す前（学習用の記録に使う）
         notes += await self._enforce_persona(ai_turns, personas, req.model_key)
         ordered = [t for sc_ in res.data["scenes"] for t in sc_["turns"] if t["speaker"] in names]
         editable = {i for i, t in enumerate(ordered) if _norm(t["text"]) not in fixed_keys}
@@ -1420,6 +1455,7 @@ class ScriptStudio:
                 tolerance=1.1,
             )
             notes += fit_notes
+        self._record_corrections("generate", res.data["scenes"], raw, personas, st, req.model_key)
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
@@ -1736,6 +1772,7 @@ class ScriptStudio:
             return []
         personas = await self._personas([c.model_dump() for c in d.characters])
         turns = [{"speaker": t.speaker, "text": t.text} for t in segs]
+        raw = {id(x): x["text"] for x in turns}
         notes = await self._polish(turns, set(range(len(turns))), personas, model_key)
         for t, new in zip(segs, turns, strict=True):
             if new["text"] != t.text:
@@ -1743,6 +1780,7 @@ class ScriptStudio:
                     await self._apply_ai_text(script_id, t.id, new["text"][:2000], None, "推敲")
                 except FixedTurnError:
                     continue
+        self._record_corrections("polish", [{"turns": turns}], raw, personas, d.settings, model_key)
         return notes
 
     async def fact_check(self, script_id: str, model_key: str | None = None) -> list[str]:
@@ -1792,6 +1830,18 @@ class ScriptStudio:
             except FixedTurnError:
                 continue
             fixed.append(str(f.get("problem") or "").strip()[:40] or t.text[:20])
+            k = turns.index(t)
+            self.corrections.record(
+                stage="fact",
+                speaker=t.speaker,
+                before=t.text,
+                after=new[:2000],
+                rules=p.rules_text() if p is not None and not p.empty else "",
+                context=[f"{x.speaker}: {x.text}" for x in turns[max(0, k - 2) : k]],
+                topic=d.settings.topic or "",
+                model_key=model_key,
+                reason=str(f.get("problem") or ""),
+            )
         log.info("fact_check", script_id=script_id, fixes=len(fixed))
         if not fixed:
             return []
