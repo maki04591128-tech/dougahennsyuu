@@ -126,3 +126,9 @@ def test_simplified_chinese_chars():
     assert check_line(0, "これなら细菌も退散するのだ", z)[0] == "これなら細菌も退散するのだ"
     _, iss = check_line(0, "我们も手を洗うのだ", z)
     assert any(x.kind == "avoid" for x in iss)
+
+
+def test_round10_rules():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "めたんの言うことを聞けのだ。", z)[0] == "めたんの言うことを聞くのだ。"
+    assert _simple_fix("その件で貴女に指導しますよ。") == "その件で貴女に指導するわよ。"
