@@ -227,6 +227,10 @@ class ReadingService:
                     continue
                 if await self._not_better(surface, reading, seg.voice_style_id or 0):
                     continue
+                # 送り仮名の読みが合わない提案（「防げる」→「フセグ」）は採らない
+                tail = re.search(r"[ぁ-ゖ]+$", surface)
+                if tail and not reading.endswith(_to_katakana(tail.group(0))):
+                    continue
                 issue = ReadingIssue(
                     segment_id=seg.id, text=seg.text, surface=surface, wrong=kana, reading=reading
                 )

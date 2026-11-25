@@ -195,3 +195,13 @@ def test_reading_skeleton_wo():
     from video_automation.services.voice.reading_service import _skeleton
 
     assert _skeleton("コジンジョオホオオ") == _skeleton("コジンジョオホオヲ")
+
+
+def test_round16_rules():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "毎晩、ぼんやりしたままだのだ。", z)[0] == "毎晩、ぼんやりしたままなのだ。"
+    assert check_line(0, "今日から実践してみなのだよ。", z)[0] == "今日から実践してみるのだよ。"
+    assert check_line(0, "朝のだ、カーテンを開けるのだ。", z)[0] == "朝は、カーテンを開けるのだ。"
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "睡眠の質がぐんと上がりるわ。", m)[0] == "睡眠の質がぐんと上がるわ。"
+    assert _simple_fix("貴女たちの朝を待っていますの") == "貴女たちの朝を待っているの"
