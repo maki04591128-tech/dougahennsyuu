@@ -182,3 +182,12 @@ async def test_polish_rewrites_only_editable_lines_that_keep_the_persona():
         "そうね。",
     ]
     assert notes == ["会話として不自然なセリフを 1 件書き直しました"]
+
+
+def test_speaker_typos_map_to_the_one_near_name():
+    from video_automation.services.script.studio import _near_name
+
+    cast = {"春日部つむぎ", "四国めたん"}
+    assert _near_name("四国来たん", cast) == "四国めたん"
+    assert _near_name("つむぎ", cast) is None or _near_name("つむぎ", cast) == "春日部つむぎ"
+    assert _near_name("謎の人", cast) is None

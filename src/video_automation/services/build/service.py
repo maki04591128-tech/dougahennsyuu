@@ -626,7 +626,7 @@ class BuildService:
                 c.llm, c.ffmpeg, c.settings.data_dir / rec.path, rec.duration_sec or 0.0
             )
         except Exception as exc:  # noqa: BLE001 - 画像の分かるモデルが無くても台本は作る
-            log.info("recording_read_skipped", error=type(exc).__name__)
+            log.info("recording_read_skipped", error=type(exc).__name__, detail=str(exc)[-300:])
             return ["画面録画を読めるAIが無いため、録画の中身は台本に使っていません"]
         if not text:
             return []

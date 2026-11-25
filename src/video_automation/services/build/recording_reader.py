@@ -39,7 +39,7 @@ async def extract_shots(
             "-vf",
             f"select='eq(n,0)+gt(scene,{SCENE_THRESHOLD})',"
             f"metadata=print:file='{filter_path(out_dir / 'times.txt')}',scale=768:-2",
-            "-vsync",
+            "-fps_mode",
             "vfr",
             "-frames:v",
             str(MAX_SHOTS * 3),
