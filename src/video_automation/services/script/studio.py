@@ -208,9 +208,28 @@ def _near_name(name: str, names: set[str]) -> str | None:
 QUIET_EMOTIONS = {"whisper", "sad", "tired", "calm"}
 
 
+_KANA = re.compile(r"[ぁ-ゖァ-ヺー]")
+_KANJI = re.compile(r"[一-龥々]")
+_PUNCT = re.compile(r"[、。！？!?…]")
+_OTHER = re.compile(r"[^\s一-龥々ぁ-ゖァ-ヺー、。！？!?…「」『』（）()]")
+
+
 def estimated_sec(text: str, chars_per_sec: float) -> float:
-    n = len(_SPACE.sub("", text))
-    return round(n / chars_per_sec + 0.3, 2)
+    """1 発話の長さ（声＋次の発話までの間）の見積もり。
+
+    PC の VOICEVOX で作った 600 発話の実測（速さ 1.0 に換算）からの回帰:
+    かな 0.135 秒・漢字 0.227 秒（読みが 2 拍ほど）・英数字 0.392 秒（「Wi-Fi」「20」は
+    読みが長い）・句読点 0.3 秒（間）。文字数だけの見積もりは、漢字や英数字の多いセリフで
+    短く出ていた（実機: 推定 66 秒が 78 秒）。chars_per_sec は既定の 6.0 との比で速さを変える。"""
+    t = re.sub(r"\s", "", text)
+    sec = (
+        0.135 * len(_KANA.findall(t))
+        + 0.227 * len(_KANJI.findall(t))
+        + 0.392 * len(_OTHER.findall(t))
+        + 0.3 * len(_PUNCT.findall(t))
+        + 0.07
+    )
+    return round(sec * 6.0 / chars_per_sec + 0.25, 2)
 
 
 def fit_to_duration(
