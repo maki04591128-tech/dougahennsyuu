@@ -322,3 +322,7 @@ def test_round26_question():
         "寝る前のスマホ、見てないのだ？"
     )
     assert check_line(0, "知ってるのだ？", z)[0] == "知ってるのだ？"
+
+
+def test_round27():
+    assert _simple_fix("綺麗な歯を保ちましょうかしら。") == "綺麗な歯を保とうかしら。"

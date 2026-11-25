@@ -638,7 +638,7 @@ def check_line(
         parts = [x for x in re.split(r"(?<=[、,])", fixed) if x.strip()]
         avoid = list(p.avoid)
         if "ます" in avoid:  # です・ます調を使わないキャラクターは、丁寧語の言い切りも使わない
-            avoid += ["ましょう", "ません", "ました", "でした", "のです"]
+            avoid += ["ましょう", "ましょうかしら", "ません", "ました", "でした", "のです"]
         for part in (y.strip() for x in parts for y in _SENT.findall(x) if y.strip()):
             core = part.rstrip(_TRAIL)
             hit = next((e for e in avoid if _ends_with(core, e) or core.endswith(e + "か")), None)

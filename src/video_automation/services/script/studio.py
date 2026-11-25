@@ -111,6 +111,7 @@ _SIMPLE_FIXES = (
     ("しますよ", "するわよ"), ("しますね", "するわね"), ("します。", "するわ。"),
     ("くださいわ", "ちょうだい"), ("ください", "ちょうだい"),
     ("きますの", "くの"), ("のです、", "の。"), ("するのです", "するわ"),
+    ("ましょうかしら", "ましょうか"),
     ("始めましょうか", "始めるわよ"), ("しましょうか", "するわよ"), ("しましょう", "するわよ"),
     ("てみないか", "てみなさい"), ("ておけ", "ておきなさい"),
     ("ておくれ", "てちょうだい"), ("持てよ", "持っていきなさい"), ("待てよ", "待ちなさい"),
@@ -322,6 +323,7 @@ class ScriptStudio:
         self.voice_characters = voice_characters
         # AI のセリフを直した前後の組（ローカル LLM の追加学習用。None なら記録しない）
         self.corrections = corrections or CorrectionLog(None)
+        self._fact_fixed: dict[str, set[str]] = {}  # 台本ごとの、事実の確認で直したセリフ
 
     async def _with_voice_style(self, chars: list[CharacterIn]) -> list[CharacterIn]:
         """声を選んだキャラクターの口調が空なら、その声の口調（登録済みのもの）で埋める。
@@ -1791,7 +1793,11 @@ class ScriptStudio:
         personas = await self._personas([c.model_dump() for c in d.characters])
         turns = [{"speaker": t.speaker, "text": t.text} for t in segs]
         raw = {id(x): x["text"] for x in turns}
-        notes = await self._polish(turns, set(range(len(turns))), personas, model_key)
+        # 事実の確認で直したばかりのセリフは推敲で書き戻させない
+        # （実機:「交換は 1 か月に 1 回」に直した後、推敲で「3 ヶ月」に戻っていた）
+        protect = self._fact_fixed.get(script_id, set())
+        editable = {i for i, t in enumerate(segs) if t.id not in protect}
+        notes = await self._polish(turns, editable, personas, model_key)
         for t, new in zip(segs, turns, strict=True):
             if new["text"] != t.text:
                 try:
@@ -1848,6 +1854,7 @@ class ScriptStudio:
             except FixedTurnError:
                 continue
             fixed.append(str(f.get("problem") or "").strip()[:40] or t.text[:20])
+            self._fact_fixed.setdefault(script_id, set()).add(t.id)
             k = turns.index(t)
             self.corrections.record(
                 stage="fact",
