@@ -14,9 +14,14 @@ def test_extract_json_strips_think_and_fences():
         extract_json("<think>考え中</think>JSONなし")
 
 
-def test_estimated_sec_ignores_punctuation():
-    assert estimated_sec("こんにちは。", 5.0) == pytest.approx(1.3)
-    assert estimated_sec("「あ」、（い）！", 2.0) == pytest.approx(1.3)
+def test_estimated_sec_counts_reading_length():
+    # かな 5・句読点 1（6.0 文字/秒の基準と同じ速さ）
+    assert estimated_sec("こんにちは。", 6.0) == pytest.approx(1.3, abs=0.01)
+    # かぎかっこは数えない
+    assert estimated_sec("「あ」、（い）！", 6.0) == estimated_sec("あ、い！", 6.0)
+    # 漢字・英数字は読みが長い
+    assert estimated_sec("電気代", 6.0) > estimated_sec("でんき", 6.0)
+    assert estimated_sec("Wi-Fi", 6.0) > estimated_sec("わいふぁい", 6.0)
 
 
 def _t(i, text, speaker="A"):
