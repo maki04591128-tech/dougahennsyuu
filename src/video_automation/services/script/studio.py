@@ -107,7 +107,7 @@ _SIMPLE_FIXES = (
     ("ていますわ", "ているわ"), ("ていますの", "ているの"), ("ますわ", "るわ"),
     ("しますよ", "するわよ"), ("しますね", "するわね"), ("します。", "するわ。"),
     ("くださいわ", "ちょうだい"), ("ください", "ちょうだい"),
-    ("きますの", "くの"),
+    ("きますの", "くの"), ("のです、", "の。"),
     ("てみないか", "てみなさい"), ("ておけ", "ておきなさい"),
     ("ておくれ", "てちょうだい"), ("持てよ", "持っていきなさい"), ("待てよ", "待ちなさい"),
     ("ですわよ", "よ"), ("ですわね", "よね"), ("ですわ", "よ"), ("ですの", "なの"),
@@ -220,7 +220,8 @@ def fit_to_duration(
             break
         # 省いたあとの尺が目標にいちばん近くなる場面（同じなら後ろの場面）
         best = min(middle, key=lambda i: (abs(total - sec(out[i]) - target_sec), -i))
-        if total - sec(out[best]) < target_sec * 0.8:  # 短くなりすぎるなら場面ごとは省かない
+        # 短くなりすぎるなら場面ごとは省かない（実機: 0.8 倍まで許すと 65 秒 → 52 秒になった）
+        if total - sec(out[best]) < target_sec * 0.9:
             break
         total -= sec(out.pop(best))
         dropped += 1
@@ -1336,7 +1337,11 @@ class ScriptStudio:
         if st.target_duration_sec:
             # 推敲・書き直しでセリフが伸びることがある（実機: 45 秒の指定で 55 秒）
             res.data["scenes"], fit_notes = fit_to_duration(
-                res.data["scenes"], st.target_duration_sec, st.chars_per_sec, fixed_keys
+                res.data["scenes"],
+                st.target_duration_sec,
+                st.chars_per_sec,
+                fixed_keys,
+                tolerance=1.1,
             )
             notes += fit_notes
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
