@@ -504,3 +504,29 @@ async def test_too_short_script_is_lengthened_once(client, fake):
     assert asks == [False, True, True]
     assert len(d["segments"]) == 12
     assert any("書き足させました" in n for n in d["notes"])
+
+
+async def test_generation_retries_once_after_timeout_and_caps_output(client, fake):
+    """実機で台本の生成が 300 秒の待ち時間を超えて止まった。JSON の出力に上限を付け、1 回やり直す。"""
+    import httpx
+
+    sc = await _setup(client, settings={"topic": "節電", "target_duration_sec": 30})
+    calls = []
+
+    def responder(b):
+        if kind_of(b) != "scenes":
+            return None
+        calls.append(b)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("timeout")
+        turns = [
+            {"speaker": "ずんだもん", "text": "照明はLEDに替えるのだ。"},
+            {"speaker": "めたん", "text": "冷蔵庫は詰め込みすぎないことね。"},
+        ]
+        return {"scenes": [{"purpose": "本題", "turns": turns}], "notes": []}
+
+    fake.chat_responder = responder
+    r = await client.post(f"/scripts/{sc['id']}/generate", json={})
+    assert r.status_code == 200, r.text
+    assert len(calls) >= 2
+    assert calls[0]["options"]["num_predict"] == 6000
