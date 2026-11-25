@@ -101,6 +101,20 @@ _INTERJECTIONS = {
 }  # fmt: skip
 
 
+# 書き直しで直らなかったときに、意味を変えずに置き換えられる語尾のつなぎ
+_SIMPLE_FIXES = (
+    ("ですわよ", "よ"), ("ですわね", "よね"), ("ですわ", "よ"), ("ですの", "なの"),
+    ("しますのだ", "するのだ"), ("なさいわ", "なさい"), ("なさいのだ", "するのだ"),
+)  # fmt: skip
+
+
+def _simple_fix(text: str) -> str:
+    out = text
+    for a, b in _SIMPLE_FIXES:
+        out = out.replace(a, b)
+    return out
+
+
 def _broken(text: str) -> bool:
     """日本語の台本として壊れている（ロシア文字などが混ざる・「しますのだ」）か。"""
     return bool(FOREIGN_SCRIPT.search(text)) or any(b in text for b in BAD_JOINS)
@@ -371,6 +385,15 @@ class ScriptStudio:
                     continue
             it["text"] = new[:2000]
             done += 1
+        # 推敲で直らなかった聞き返し（「半分！？すぐに設定し直すのだ！」）は、聞き返しだけ外す
+        for k in echo:
+            i = ids[k]
+            t = turns[i]
+            m = _ECHO.match(t["text"].strip())
+            rest = t["text"].strip()[m.end() :].strip() if m else ""
+            if m and m.group(1) not in turns[i - 1]["text"] and len(rest) >= 4:
+                t["text"] = rest
+                done += 1
         log.info("script_polish", fixes=done)
         return [f"会話として不自然なセリフを {done} 件書き直しました"] if done else []
 
@@ -470,6 +493,18 @@ class ScriptStudio:
             if not need:
                 break
             need = await self._rewrite_once(items, need, why, personas, model_key)
+        # それでも残ったものは、意味を変えずに置き換えられる形だけ規則で直す
+        rest = []
+        for i in need:
+            it = items[i]
+            new = _simple_fix(it["text"])
+            p = personas[it["speaker"]]
+            _, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
+            if new != it["text"] and not any(x.kind in ("ending", "avoid") for x in iss):
+                it["text"] = new
+            else:
+                rest.append(i)
+        need = rest
         left = len(need)
         done = total - left
         if done:

@@ -245,6 +245,31 @@ async def test_polish_flags_echo_reactions_to_words_not_said_before():
         {"speaker": "めたん", "text": "照明も消しなさいよ"},
         {"speaker": "ずんだもん", "text": "なるほど！無駄遣いしないのだ"},
     ]
-    await ScriptStudio(None, _LLM())._polish(turns, {0, 1, 2, 3}, {}, None)  # type: ignore[arg-type]
+    studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
+    notes = await studio._polish(turns, {0, 1, 2, 3}, {}, None)
     assert "前のセリフに合う反応に書き直す）: L2" in seen["body"]
     assert "L4" not in seen["body"].split("反応に書き直す）:")[1]
+    # 推敲で直らなければ、聞き返しだけ外す
+    assert turns[1]["text"] == "すぐに設定し直すのだ！" and turns[3]["text"].startswith("なるほど")
+    assert notes == ["会話として不自然なセリフを 1 件書き直しました"]
+
+
+@pytest.mark.asyncio
+async def test_avoided_endings_fall_back_to_a_simple_fix():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.persona import parse_style
+    from video_automation.services.script.studio import ScriptStudio
+    from video_automation.services.voice.characters import BUILTIN
+
+    class _LLM:  # 書き直しの案がいつも規則に合わない
+        async def complete_json(self, task, msgs, schema, **kw):
+            return SimpleNamespace(
+                data={"fixes": [{"id": "T1", "text": "達人ですわ"}]}, model_key="m"
+            )
+
+    personas = {"めたん": parse_style("めたん", BUILTIN["四国めたん"].text())}
+    items = [{"speaker": "めたん", "text": "わたくし、節電の達人ですわ"}]
+    notes = await ScriptStudio(None, _LLM())._enforce_persona(items, personas, None)  # type: ignore[arg-type]
+    assert items[0]["text"] == "わたくし、節電の達人よ"
+    assert notes == ["語尾が設定と違うセリフを 1 件書き直しました"]
