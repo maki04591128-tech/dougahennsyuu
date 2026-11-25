@@ -784,6 +784,11 @@ class RenderService:
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = out_dir / f"{stamp}_{prof.name.value}.mp4"
+        # 同じ秒に 2 本書き出すと同じ名前になり、互いのファイルを壊していた。名前を先に押さえる
+        try:
+            out.open("x").close()
+        except FileExistsError:
+            out = out_dir / f"{stamp}_{prof.name.value}_{render_id[:8]}.mp4"
         await self._set(render_id, status=RenderStatus.RENDERING.value, encoder=encoder)
         await self._tachie(req)
         rich = await self.rich_plan(req)
