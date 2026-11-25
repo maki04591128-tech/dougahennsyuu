@@ -90,6 +90,19 @@ class FixedTurnError(ScriptStudioError):
 SHORTEN_RATIO = 1.3  # 目標の尺のこの倍を超えて長く書いたら、短く書き直させる
 
 
+def _near_name(name: str, names: set[str]) -> str | None:
+    """書き損じた話者名に近い、ただ 1 人の名前（1 文字違い・7 割以上一致）。"""
+    import difflib
+
+    hits = [
+        n
+        for n in names
+        if difflib.SequenceMatcher(None, name, n).ratio() >= 0.7
+        or (len(n) == len(name) and sum(a != b for a, b in zip(n, name, strict=True)) <= 1)
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 QUIET_EMOTIONS = {"whisper", "sad", "tired", "calm"}
 
 
@@ -1024,6 +1037,11 @@ class ScriptStudio:
             )
             raise
         names = {c["name"] for c in cdata}
+        # 話者名の書き損じ（実機で「四国めたん」→「四国来たん」）は近い名前に直す
+        for sc_ in res.data["scenes"]:
+            for t in sc_["turns"]:
+                if t["speaker"] not in names and (near := _near_name(t["speaker"], names)):
+                    t["speaker"] = near
         unknown = sorted({t["speaker"] for sc_ in res.data["scenes"] for t in sc_["turns"]} - names)
         notes = list(res.data.get("notes") or [])
         if unknown:
