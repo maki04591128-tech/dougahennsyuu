@@ -146,7 +146,8 @@ def _break_score(text: str, i: int) -> int:
 
 
 def _is_word(ch: str) -> bool:
-    return ch.isascii() and (ch.isalnum() or ch in "_-.'")
+    """語の途中で切りたくない文字（英数字・カタカナの語。「コンセ / ント」を避ける）。"""
+    return (ch.isascii() and (ch.isalnum() or ch in "_-.'")) or ("ァ" <= ch <= "ヺ" or ch == "ー")
 
 
 def wrap_lines(text: str, max_chars: int) -> list[str]:

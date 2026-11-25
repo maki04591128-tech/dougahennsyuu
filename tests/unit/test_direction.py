@@ -222,3 +222,20 @@ def test_card_items_copied_from_lines_are_dropped():
     out = normalize(plan, lines)
     assert out.shots[0].body == ["明るさは自動に"]
     assert any("そのまま写した" in n for n in out.notes)
+
+
+def test_card_items_packed_into_one_are_split():
+    lines = ["節電のコツを話します。", "コンセントを抜きます。"]
+    plan = DirectionPlan(
+        title="t",
+        shots=[
+            Shot(
+                kind=ShotKind.CARD,
+                from_line=1,
+                heading="節電のコツ",
+                body=["「コンセントを抜く」\n「LED 照明」", "「温度上げ」「無駄チェック」"],
+            )
+        ],
+    )
+    out = normalize(plan, lines)
+    assert out.shots[0].body == ["コンセントを抜く", "LED 照明", "温度上げ"]
