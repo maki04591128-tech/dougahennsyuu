@@ -66,6 +66,11 @@ def _to_katakana(s: str) -> str:
     return _HIRA.sub(lambda m: chr(ord(m.group(0)) + 0x60), s.strip())
 
 
+def _skeleton(kana: str) -> str:
+    """長音（ー・伸ばす母音）と促音を除いた読みの骨組み（音を伸ばしただけの違いを見分ける）。"""
+    return kana[:1] + re.sub(r"[ーッアイウエオ]", "", kana[1:])
+
+
 class ReadingService:
     def __init__(self, db: Database, voice: VoiceService, llm: LLMGateway) -> None:
         self.db = db
@@ -156,6 +161,9 @@ class ReadingService:
         if not have or not want:
             return False
         if want == have:
+            return True
+        # 長音・促音の有無だけが違う提案（実機:「食料」→「ショクリョオオ」）は直しにならない
+        if _skeleton(want) == _skeleton(have):
             return True
         it = iter(have)
         return len(want) < len(have) and all(ch in it for ch in want)

@@ -48,3 +48,28 @@ def test_subtitle_newline_is_sentence_break():
 
     cues = make_cues("そのまま、肘を伸ばして上に向けるわ\n力を入れすぎないでね", 16, 2, True)
     assert all(c.count("\n") <= 1 for c in cues)
+
+
+def test_more_simple_fixes():
+    assert _simple_fix("すぐに片付けを始めてみないか。") == "すぐに片付けを始めてみなさい。"
+    assert (
+        _simple_fix("スマホの充電器も忘れずに持てよ。")
+        == "スマホの充電器も忘れずに持っていきなさい。"
+    )
+
+
+def test_volitional_noda():
+    p = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "さあ、準備を始めようのだ。", p)[0] == "さあ、準備を始めるのだ。"
+    assert check_line(0, "一緒に確認しようのだ！", p)[0] == "一緒に確認するのだ！"
+    assert check_line(0, "懐中電灯も備えろなのだ。", p)[0] == "懐中電灯も備えるのだ。"
+    assert check_line(0, "身分証も入れておけなのだ。", p)[0] == "身分証も入れておくのだ。"
+    assert check_line(0, "今ちょうどそのところなのだ。", p)[0] == "今ちょうどそのところなのだ。"
+
+
+def test_reading_skeleton():
+    from video_automation.services.voice.reading_service import _skeleton
+
+    assert _skeleton("ショクリョオオ") == _skeleton("ショクリョオ")
+    assert _skeleton("ショメエワ") == _skeleton("ショオメエワ")
+    assert _skeleton("ジュウブン") != _skeleton("ジップン")
