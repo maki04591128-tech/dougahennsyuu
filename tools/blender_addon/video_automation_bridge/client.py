@@ -107,8 +107,14 @@ class Client:
         orientation: str = "auto",
         reference: str = "",
         screen_recording: str = "",
+        music: str = "",
+        lyrics: str = "",
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"instruction": instruction, "orientation": orientation}
+        if music.strip():
+            body["music"] = music.strip()
+            if lyrics.strip():
+                body["lyrics"] = lyrics[:20000]
         if screen_recording.strip():
             body["screen_recording"] = screen_recording.strip()
         if duration_sec:

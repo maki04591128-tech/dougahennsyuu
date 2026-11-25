@@ -52,6 +52,7 @@ from video_automation.schemas.timeline import (
 )
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.direction.service import native_transform
+from video_automation.services.transcribe.service import TranscribeRequest
 
 if TYPE_CHECKING:
     from video_automation.app.bootstrap import AppContainer
@@ -93,6 +94,17 @@ STEPS = [  # 実際に行う順
 ]
 
 
+MUSIC_NAME = "曲: "  # 構成で取り込んだ曲の素材の名前の頭
+MUSIC_TRACK = "曲"
+LYRICS_TITLE = "歌詞: "  # 曲の文字起こしで作る台本の題名の頭
+# 曲から作るとき（MV・リリック）の手順。台本・声の代わりに、歌の時刻を文字起こしで取る
+MV_STEPS = [
+    ("lyrics", "歌詞と時刻を合わせる"),
+    ("music", "曲を置く"),
+    ("direction", "画面の演出を付ける"),
+    ("check", "デザインを検査する"),
+    ("render", "書き出す"),
+]
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
 # 録画を置く枠（画面比）: 上 100px は見出しの帯、下は字幕。立ち絵があれば左右に各 300px 空ける
@@ -198,18 +210,19 @@ class BuildService:
         rec_path = None
         rec_sec = None
         if req.screen_recording.strip():
-            rec_path = Path(req.screen_recording.strip())
-            if not rec_path.is_absolute() or not c.timeline._allowed(rec_path):
-                raise BuildError(
-                    "画面録画は、取り込みを許可したフォルダ（ビデオ・デスクトップ・ダウンロード等）"
-                    "に置いてください"
-                )
-            if not rec_path.is_file():
-                raise BuildError("画面録画のファイルが見つかりません")
+            rec_path = self._allowed_file(req.screen_recording.strip(), "画面録画")
             info = await c.ffmpeg.probe(rec_path)
             if not info.has_video:
                 raise BuildError("画面録画のファイルに映像がありません")
             rec_sec = info.duration_sec
+        music_path = None
+        music_sec = None
+        if req.music.strip():
+            music_path = self._allowed_file(req.music.strip(), "曲")
+            info = await c.ffmpeg.probe(music_path)
+            if not info.has_audio:
+                raise BuildError("曲のファイルに音声がありません")
+            music_sec = info.duration_sec
         vertical = {"auto": None, "landscape": False, "vertical": True}[req.orientation]
         cls = c.design.classify(
             ClassifyRequest(text=req.instruction, has_script=False, vertical=vertical)
@@ -217,6 +230,8 @@ class BuildService:
         purpose = cls.purpose
         if rec_path is not None:  # 画面録画がある = 操作説明
             purpose = Purpose.TUTORIAL
+        if music_path is not None and purpose not in NEEDS_MUSIC:  # 曲がある = MV
+            purpose = Purpose.LYRIC if req.lyrics.strip() else Purpose.MV
         prof = PROFILES[purpose]
         portrait = vertical if vertical is not None else prof.orientation == "vertical"
         w, h = (1080, 1920) if portrait else (1920, 1080)
@@ -224,10 +239,14 @@ class BuildService:
         if cls.note:
             notes.append(cls.note)
         dur = req.duration_sec or (45 if purpose in SHORT_PURPOSES else 120)
+        if music_sec:  # 曲の長さで決まる
+            dur = int(min(1800, max(15, round(music_sec))))
         if rec_sec and not req.duration_sec:  # 録画の長さに合わせて話す
             dur = int(min(1800, max(15, round(rec_sec))))
         styles = await self._style_ids()
         cast = [(n, "話し手") for n in req.characters] or CAST.get(purpose, _NARRATOR)
+        if music_path is not None:  # 曲から作るときは話し手はいない
+            cast = []
         chars: list[BuildCharacter] = []
         for name, role in cast:
             sid = styles.get(name)
@@ -252,6 +271,16 @@ class BuildService:
             pid = p.id
             await s.commit()
         await c.design.set(pid, ProjectDesign(purpose=purpose))
+        if music_path is not None:
+            await c.timeline.import_asset(
+                AssetImportRequest(
+                    project_id=pid, path=str(music_path), name=f"{MUSIC_NAME}{music_path.name}"
+                )
+            )
+            if not req.lyrics.strip():
+                notes.append(
+                    "歌詞が無いので、歌声を文字起こしして字幕にします（聞き取りの誤りが出ることがあります）"
+                )
         if rec_path is not None:
             await c.timeline.import_asset(
                 AssetImportRequest(
@@ -266,12 +295,14 @@ class BuildService:
             ScriptStudioCreate(
                 project_id=pid,
                 title=title,
-                mode=ScriptMode.FULL_AI,
+                # 曲から作るときは AI に台本を書かせない（歌詞の台本は文字起こしで作る）
+                mode=ScriptMode.MANUAL if music_path is not None else ScriptMode.FULL_AI,
                 settings=ScriptSettings(
                     topic=req.instruction[:500],
                     purpose=prof.label,
                     target_duration_sec=dur,
-                    reference=req.reference,
+                    # 曲から作るときは、貼られた歌詞を台本の参考に置いて書き出しまで使う
+                    reference=req.lyrics if music_path is not None else req.reference,
                 ),
                 characters=[
                     CharacterIn(
@@ -315,18 +346,32 @@ class BuildService:
         rec = await self._recording(project_id)
         ready = await self.readiness()
         can_run = all(r.ok for r in ready if r.required)
-        if purpose in NEEDS_MUSIC:
-            notes.append(
-                f"「{prof.label}」は曲のファイルが要ります。文章だけでは作れないので、"
-                "くわしい設定から曲を読み込んでください"
+        song = await self._asset(project_id, MUSIC_NAME, AssetKind.AUDIO)
+        if song is not None:
+            t = c.transcriber.status()
+            ready.append(
+                ReadinessItem(
+                    key="transcribe",
+                    label="文字起こし（歌の時刻を取る）",
+                    ok=bool(t.get("available")),
+                    required=True,
+                    detail="" if t.get("available") else "faster-whisper のモデルが見つかりません",
+                )
             )
-            can_run = False
-        steps = [
-            label
-            for key, label in STEPS
-            if (key != "tachie" or any(x.tachie_pack for x in chars))
-            and (key != "recording" or rec is not None)
-        ]
+            can_run = can_run and bool(t.get("available"))
+            steps = [label for _, label in MV_STEPS]
+        else:
+            if purpose in NEEDS_MUSIC:
+                notes.append(
+                    f"「{prof.label}」は曲のファイルが要ります。「曲」の欄で曲を選んでください"
+                )
+                can_run = False
+            steps = [
+                label
+                for key, label in STEPS
+                if (key != "tachie" or any(x.tachie_pack for x in chars))
+                and (key != "recording" or rec is not None)
+            ]
         packs = [
             PackChoice(id=str(x["id"]), name=str(x.get("name") or x["id"]))
             for x in c.characters.packs()
@@ -438,17 +483,31 @@ class BuildService:
                     f"立ち絵を置けませんでした（{type(exc).__name__}）。立ち絵なしで続けます"
                 )
 
+    def _allowed_file(self, path: str, label: str) -> Path:
+        """利用者が渡したファイル（取り込みを許可したフォルダの中だけ）。"""
+        p = Path(path)
+        if not p.is_absolute() or not self.c.timeline._allowed(p):
+            raise BuildError(
+                f"{label}は、取り込みを許可したフォルダ（ビデオ・ミュージック・デスクトップ・"
+                "ダウンロード等）に置いてください"
+            )
+        if not p.is_file():
+            raise BuildError(f"{label}のファイルが見つかりません")
+        return p
+
     async def _recording(self, project_id: str) -> AssetRead | None:
         """構成で取り込んだ画面録画（無ければ None）。"""
+        return await self._asset(project_id, RECORDING_NAME, AssetKind.VIDEO)
+
+    async def _asset(self, project_id: str, prefix: str, kind: AssetKind) -> AssetRead | None:
+        """構成で取り込んだ素材（名前の頭で見分ける。無ければ None）。"""
         tl = await self.c.timeline.get_timeline(project_id)
-        recs = [
+        hits = [
             a
             for a in tl.assets
-            if a.kind == AssetKind.VIDEO
-            and a.source == "import"
-            and a.name.startswith(RECORDING_NAME)
+            if a.kind == kind and a.source == "import" and a.name.startswith(prefix)
         ]
-        return recs[-1] if recs else None
+        return hits[-1] if hits else None
 
     async def _place_recording(
         self, project_id: str, sid: str, rec: AssetRead, at: Any
@@ -558,6 +617,124 @@ class BuildService:
             )
         )
 
+    async def _run_music(
+        self, project_id: str, detail: Any, song: AssetRead, req: BuildRunRequest, progress: Any
+    ) -> dict[str, Any]:
+        """曲から作る（MV・リリック）: 歌の時刻を文字起こしで取り、曲を置き、演出して書き出す。"""
+        c = self.c
+        labels = dict(MV_STEPS)
+        keys = [k for k, _ in MV_STEPS]
+        notes: list[str] = []
+        if req.keep_script:  # 見た目だけ作り直す: 前に合わせた歌詞の台本を使う
+            keys = [k for k in keys if k in ("direction", "check", "render")]
+
+        async def at(key: str, frac: float = 0.0) -> None:
+            i = keys.index(key)
+            await progress((i + frac) / len(keys), f"{labels[key]}（{i + 1}/{len(keys)}）")
+
+        sid = await self._lyrics_script(project_id)
+        if not req.keep_script or sid is None:
+            await at("lyrics")
+
+            async def tp(v: float) -> None:
+                await at("lyrics", v)
+
+            try:
+                r = await c.transcriber.transcribe(
+                    TranscribeRequest(
+                        project_id=project_id,
+                        asset_id=song.id,
+                        lyrics=detail.settings.reference or None,
+                        title=f"{LYRICS_TITLE}{detail.title}"[:255],
+                    ),
+                    tp,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise BuildError(f"歌の時刻を取れませんでした: {exc}") from exc
+            sid = r.script_id
+            if r.weak_lines:
+                notes.append(f"歌詞の {len(r.weak_lines)} 行は歌声と合わせきれず、時刻が推定です")
+            await at("music")
+            await self._place_music(project_id, song)
+        await at("direction")
+        plan = (
+            await c.direction.plan(
+                DirectionPlanRequest(
+                    script_id=sid,
+                    use_llm=False,  # 曲の演出は画面演出（文字の動き・背景）が担う
+                    instruction=req.instruction if req.keep_script else "",
+                )
+            )
+        ).plan
+        res = await c.direction.apply(DirectionApplyRequest(script_id=sid, plan=plan))
+        skipped = list(getattr(res, "skipped", []) or [])
+        if skipped:
+            notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")
+        await at("check")
+        rreq = RenderRequest(
+            project_id=project_id, script_id=sid, rich_direction=req.rich_direction
+        )
+        return await self._check_and_render(rreq, at, notes, progress)
+
+    async def _check_and_render(
+        self, rreq: RenderRequest, at: Any, notes: list[str], progress: Any
+    ) -> dict[str, Any]:
+        """デザインの検査 → 書き出し（終わるまで待つ）。"""
+        c = self.c
+        sid = rreq.script_id
+        chk = await c.render.design_check(rreq)
+        if chk is not None:
+            notes += [f"検査: {v.message}" for v in chk.violations if v.severity == "warning"][:5]
+            if not chk.ok:
+                errs = "、".join(v.message for v in chk.violations if v.severity == "error")[:300]
+                raise BuildError(f"デザインの検査で止まりました: {errs}")
+
+        await at("render")
+        r = await c.render.request(rreq)
+        while True:
+            r = await c.render.get(r.id)
+            if r.status in (RenderStatus.SUCCEEDED, RenderStatus.FAILED, RenderStatus.CANCELLED):
+                break
+            job = c.jobs.get(r.job_id) if r.job_id else None
+            await at("render", job.progress if job else 0.0)
+            await asyncio.sleep(1.0)
+        if r.status != RenderStatus.SUCCEEDED or not r.output_path:
+            raise BuildError(f"書き出しに失敗しました: {r.error or r.status}")
+        video = str((c.settings.data_dir / r.output_path).resolve())
+        await progress(1.0, "できあがりました")
+        return {"render_id": r.id, "video": video, "notes": notes, "script_id": sid}
+
+    async def _lyrics_script(self, project_id: str) -> str | None:
+        """前に文字起こしで作った歌詞の台本（新しいもの）。"""
+        async with self.c.db.session_factory() as s:
+            from sqlalchemy import select
+
+            from video_automation.database.models import Script
+
+            q = (
+                select(Script.id)
+                .where(Script.project_id == project_id, Script.title.like(f"{LYRICS_TITLE}%"))
+                .order_by(Script.created_at.desc())
+            )
+            return (await s.execute(q)).scalars().first()
+
+    async def _place_music(self, project_id: str, song: AssetRead) -> None:
+        """曲を音声のトラックに頭から置く（前に置いた曲は外す）。"""
+        c = self.c
+        tl = await c.timeline.get_timeline(project_id)
+        cmds: list[Any] = []
+        track = next((t for t in tl.tracks if t.name == MUSIC_TRACK), None)
+        if track is not None:
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == track.id]
+            tid = track.id
+        else:
+            tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.AUDIO, name=MUSIC_TRACK, track_id=tid))
+        cmds.append(AddClip(track_id=tid, asset_id=song.id, start_frame=0))
+        await c.timeline.submit(
+            project_id, CommandRequest(command=Batch(commands=cmds), description="曲を置く")
+        )
+
     # ---------- 2. 続けて作る ----------
     async def run(self, project_id: str, req: BuildRunRequest, progress: Any) -> dict[str, Any]:
         c = self.c
@@ -566,6 +743,9 @@ class BuildService:
         detail = await c.studio.detail(sid)
         if detail.project_id != project_id:
             raise BuildError("台本がこのプロジェクトのものではありません")
+        song = await self._asset(project_id, MUSIC_NAME, AssetKind.AUDIO)
+        if song is not None:
+            return await self._run_music(project_id, detail, song, req, progress)
         has_tachie = any(ch.tachie_pack for ch in detail.characters)
         rec = await self._recording(project_id)
         keys = [
@@ -610,24 +790,4 @@ class BuildService:
         rreq = RenderRequest(
             project_id=project_id, script_id=sid, rich_direction=req.rich_direction
         )
-        chk = await c.render.design_check(rreq)
-        if chk is not None:
-            notes += [f"検査: {v.message}" for v in chk.violations if v.severity == "warning"][:5]
-            if not chk.ok:
-                errs = "、".join(v.message for v in chk.violations if v.severity == "error")[:300]
-                raise BuildError(f"デザインの検査で止まりました: {errs}")
-
-        await at("render")
-        r = await c.render.request(rreq)
-        while True:
-            r = await c.render.get(r.id)
-            if r.status in (RenderStatus.SUCCEEDED, RenderStatus.FAILED, RenderStatus.CANCELLED):
-                break
-            job = c.jobs.get(r.job_id) if r.job_id else None
-            await at("render", job.progress if job else 0.0)
-            await asyncio.sleep(1.0)
-        if r.status != RenderStatus.SUCCEEDED or not r.output_path:
-            raise BuildError(f"書き出しに失敗しました: {r.error or r.status}")
-        video = str((c.settings.data_dir / r.output_path).resolve())
-        await progress(1.0, "できあがりました")
-        return {"render_id": r.id, "video": video, "notes": notes, "script_id": sid}
+        return await self._check_and_render(rreq, at, notes, progress)
