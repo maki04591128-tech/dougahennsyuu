@@ -600,8 +600,10 @@ class DirectionService:
                     duration_sec=dur,
                     animation="bounce" if kinetic else "pop",
                     # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
-                    # 題名の幅は画面幅の 80%×size（title_card.py）
-                    size=min(0.95, main_w * 0.95 / 0.8 * ts),
+                    # 題名の幅は画面幅の 80%×size（title_card.py）。題名は立ち絵の頭と同じ高さに
+                    # 出るので、縁取りの分も含めて列の 85% に収める（実機: 18 文字の題名が
+                    # ずんだもんの頭に重なった）
+                    size=min(0.95, main_w * (0.85 if tachie else 0.95) / 0.8 * ts),
                     position="center",
                     text_color=ink,
                     outline_color=title_outline,
