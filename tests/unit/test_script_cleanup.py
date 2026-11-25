@@ -205,3 +205,17 @@ def test_round16_rules():
     m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
     assert check_line(0, "睡眠の質がぐんと上がりるわ。", m)[0] == "睡眠の質がぐんと上がるわ。"
     assert _simple_fix("貴女たちの朝を待っていますの") == "貴女たちの朝を待っているの"
+
+
+def test_round17_polite():
+    from video_automation.services.voice.characters import BUILTIN
+
+    m = parse_style("四国めたん", BUILTIN["四国めたん"].text())
+    _, iss = check_line(0, "まずは電気の無駄遣いを減らす方法から始めましょうか", m)
+    assert any(x.kind == "avoid" for x in iss)
+    assert _simple_fix("方法から始めましょうか") == "方法から始めるわよ"
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "さあ、みんななのだ！今日のテーマなのだ。", z)[0]
+        == "さあ、みんな！今日のテーマなのだ。"
+    )
