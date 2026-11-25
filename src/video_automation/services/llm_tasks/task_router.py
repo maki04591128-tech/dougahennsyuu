@@ -22,9 +22,12 @@ TASK_HINTS: dict[TaskType, tuple[str, ...]] = {
     TaskType.EDIT_PLAN: ("qwen3.5", "qwen35"),
     TaskType.STRUCTURED_COMMAND: ("qwen3.5", "qwen35"),
     TaskType.TOOL_SELECTION: ("qwen3.5", "qwen35"),
-    # 台本・字幕・校正は Qwen3.5。実機の比較（2026-11-25、ずんだもんと四国めたんの掛け合い）で
-    # Swallow は「のだ、」を文頭に置く・ずんだもんが「〜なのよ」と話すなど口調が崩れた
-    TaskType.SCRIPT_GENERATION: ("qwen3.5", "qwen35"),
+    # 台本の生成は日本語向けの Swallow を優先し、無ければ Qwen3.5。
+    # 実機の比較（2026-11-25、3 つの題材×2 モデル）で、Qwen3.5 9B は内容の薄い・意味の通らない
+    # セリフ（「ねこ型ロボット達！」「乾燥は嫌わ」）が多く、Swallow 8B は具体的で筋の通った
+    # 解説になった。Swallow の口調の崩れ（「のだ、」を文頭に置く・「〜なのよ」）は口調の
+    # 確認（persona.py）で直す。字幕・校正は Qwen3.5 のまま
+    TaskType.SCRIPT_GENERATION: ("swallow", "qwen3.5", "qwen35"),
     TaskType.SUBTITLE: ("qwen3.5", "qwen35"),
     TaskType.PROOFREADING: ("qwen3.5", "qwen35"),
     TaskType.IMAGE_UNDERSTANDING: ("vision", "gemma"),
@@ -35,6 +38,12 @@ TASK_HINTS: dict[TaskType, tuple[str, ...]] = {
 def _matches_hint(m: ModelInfo, hints: tuple[str, ...]) -> bool:
     mid = m.model_id.lower()
     return any(h in mid for h in hints)
+
+
+def _hint_rank(m: ModelInfo, hints: tuple[str, ...]) -> int:
+    """前に書いたヒントほど優先する（一致しなければ 0）。"""
+    mid = m.model_id.lower()
+    return next((len(hints) - i for i, h in enumerate(hints) if h in mid), 0)
 
 
 def _meets(m: ModelInfo, reqs: tuple[str, ...]) -> bool | None:
@@ -51,7 +60,7 @@ def _meets(m: ModelInfo, reqs: tuple[str, ...]) -> bool | None:
 
 def _score(m: ModelInfo, task: TaskType, active_key: str | None) -> tuple[int, int, int, float]:
     return (
-        1 if _matches_hint(m, TASK_HINTS[task]) else 0,
+        _hint_rank(m, TASK_HINTS[task]),
         1 if m.state == ModelState.INFERENCE_READY else 0,
         1 if m.key == active_key else 0,
         (m.last_test or {}).get("tokens_per_sec") or 0.0,

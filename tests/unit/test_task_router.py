@@ -36,7 +36,12 @@ MODELS = [GEMMA, QWEN, SWALLOW]
 def test_auto_uses_spec_hints_and_requirements():
     r = TaskRouter()
     assert r.resolve(TaskType.TOOL_SELECTION, MODELS, {}, None).resolved_model_key == QWEN.key
-    assert r.resolve(TaskType.SCRIPT_GENERATION, MODELS, {}, None).resolved_model_key == QWEN.key
+    # 台本の生成は Swallow を優先し、無ければ Qwen3.5
+    assert r.resolve(TaskType.SCRIPT_GENERATION, MODELS, {}, None).resolved_model_key == SWALLOW.key
+    no_swallow = [GEMMA, QWEN]
+    assert (
+        r.resolve(TaskType.SCRIPT_GENERATION, no_swallow, {}, None).resolved_model_key == QWEN.key
+    )
     assert r.resolve(TaskType.PROOFREADING, MODELS, {}, None).resolved_model_key == QWEN.key
 
 

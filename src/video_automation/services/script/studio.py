@@ -1276,7 +1276,13 @@ class ScriptStudio:
                         f"長すぎた台本（推定 {round(est)} 秒）を目標の約 "
                         f"{round(st.target_duration_sec)} 秒に合わせて書き直させました"
                     )
-            elif est < st.target_duration_sec * LENGTHEN_RATIO:
+                    # 短くしすぎることがある（実機: 86 秒 → 34 秒）。その時は下で書き足させる
+                    est = sum(
+                        estimated_sec(t.get("text", ""), st.chars_per_sec)
+                        for sc_ in res.data["scenes"]
+                        for t in sc_.get("turns") or []
+                    )
+            if est < st.target_duration_sec * LENGTHEN_RATIO:
                 first_est = est
                 more = None
                 for _try in range(2):  # 実機では 1 回の書き足しで足りないことが多い
