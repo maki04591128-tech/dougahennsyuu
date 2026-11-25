@@ -48,6 +48,7 @@ from video_automation.services.animation.render_anim import (
     defaults_only,
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
+from video_automation.services.rendering.beats import detect_file
 from video_automation.services.rendering.flash_check import check_video
 from video_automation.services.rendering.rich import RichPlan, max_level, plan_rich
 from video_automation.services.subtitle.formats import ass_color, build_ass
@@ -906,6 +907,17 @@ class RenderService:
             rich.parts["intro"] = False
             rich.params["intro_frames"] = 0
             rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
+        beats: list[int] = []
+        if rich.parts.get("beat_pulse"):
+            # 曲の拍（MV・リリック）。テンポがはっきりしない曲では使わない
+            try:
+                bt = await detect_file(self.ffmpeg, clean)
+            except Exception as exc:  # noqa: BLE001 - 拍が取れなくても書き出す
+                log.info("beats_failed", error=str(exc)[:200])
+                bt = None
+            if bt is not None and bt.confidence >= 0.2:
+                beats = [round(t * fps_num / fps_den) for t in bt.times]
+                rich.notes.append(f"曲の拍（毎分 {bt.bpm:g} 拍）に合わせて画面を動かしました")
         await progress(0.3)
         timeout = max(1800.0, plan.duration_sec * 40)
         try:
@@ -926,6 +938,7 @@ class RenderService:
                     "catch": "",
                     "chapters": chapters,
                     "cues": cues,
+                    "beats": beats,
                     "colors": {
                         "base": pal.base,
                         "main": pal.main,
