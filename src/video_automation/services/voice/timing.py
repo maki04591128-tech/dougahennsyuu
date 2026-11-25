@@ -89,19 +89,79 @@ def mora_times(
     return out
 
 
-SPEECH_LEVEL_DB = -20.0  # セリフの音量のそろえ先（話している部分の RMS、dBFS）
-SPEECH_PEAK_DB = (
-    -3.0
-)  # そろえた後のピークの上限（dBFS。実機で -1.5 だとトゥルーピークが -0.9 になった）
-SPEECH_MAX_GAIN_DB = 9.0  # 上げ・下げの上限（無音に近い声を無理に持ち上げない）
+SPEECH_LUFS = -20.0  # セリフの音量のそろえ先（ITU-R BS.1770 のラウドネス、LUFS）
+SPEECH_PEAK_DB = -3.0  # そろえた後のピークの上限（dBFS。-1.5 だとトゥルーピークが -0.9 になった）
+SPEECH_MAX_GAIN_DB = 12.0  # 上げ・下げの上限（無音に近い声を無理に持ち上げない）
+
+
+def _k_weight(n: int, rate: int):  # noqa: ANN202 - numpy の配列
+    """ITU-R BS.1770 の K 特性（高域シェルフ＋低域カット）の、rfft の各点での |H|^2。"""
+    import numpy as np
+
+    def biquad(b, a):  # noqa: ANN001, ANN202
+        w = np.exp(-1j * np.linspace(0, np.pi, n // 2 + 1))
+        num = b[0] + b[1] * w + b[2] * w**2
+        den = a[0] + a[1] * w + a[2] * w**2
+        return np.abs(num / den) ** 2
+
+    # 高域シェルフ（+4 dB, 1500 Hz）
+    g, q, fc = 4.0, 1 / np.sqrt(2), 1500.0
+    A = 10 ** (g / 40)  # noqa: N806
+    w0 = 2 * np.pi * fc / rate
+    al = np.sin(w0) / (2 * q)
+    c = np.cos(w0)
+    sh = biquad(
+        (
+            A * ((A + 1) + (A - 1) * c + 2 * np.sqrt(A) * al),
+            -2 * A * ((A - 1) + (A + 1) * c),
+            A * ((A + 1) + (A - 1) * c - 2 * np.sqrt(A) * al),
+        ),
+        (
+            (A + 1) - (A - 1) * c + 2 * np.sqrt(A) * al,
+            2 * ((A - 1) - (A + 1) * c),
+            (A + 1) - (A - 1) * c - 2 * np.sqrt(A) * al,
+        ),
+    )
+    # 低域カット（38 Hz）
+    q, fc = 0.5, 38.0
+    w0 = 2 * np.pi * fc / rate
+    al = np.sin(w0) / (2 * q)
+    c = np.cos(w0)
+    hp = biquad(((1 + c) / 2, -(1 + c), (1 + c) / 2), (1 + al, -2 * c, 1 - al))
+    return sh * hp
+
+
+def loudness_lufs(x, rate: int) -> float | None:  # noqa: ANN001
+    """モノラルの信号（-1〜1）の統合ラウドネス（BS.1770、ゲート付き）。短すぎ・無音は None。"""
+    import numpy as np
+
+    n = len(x)
+    block, step = int(0.4 * rate), int(0.1 * rate)
+    if n < block or n == 0:
+        if n == 0:
+            return None
+        block = step = n
+    y = np.fft.irfft(np.fft.rfft(x) * np.sqrt(_k_weight(n, rate)), n)
+    starts = range(0, n - block + 1, step)
+    ms = np.array([np.mean(y[s : s + block] ** 2) for s in starts])
+    lk = -0.691 + 10 * np.log10(ms + 1e-20)
+    gated = ms[lk > -70.0]
+    if gated.size == 0:
+        return None
+    rel = -0.691 + 10 * np.log10(np.mean(gated)) - 10.0
+    gated = ms[(lk > -70.0) & (lk > rel)]
+    if gated.size == 0:
+        return None
+    return float(-0.691 + 10 * np.log10(np.mean(gated)))
 
 
 def level_speech(data: bytes) -> bytes:
     """セリフの音量をそろえる（16 bit PCM の WAV のみ。それ以外はそのまま返す）。
 
     実機で、短い発話・話し手の違いでセリフ間の音量差が 6 LU を超えていた（-26.8〜-20.5 LUFS）。
-    話している部分（50 ms ごとの区間のうち、最も大きい区間から 30 dB 以内）の RMS を
-    SPEECH_LEVEL_DB に合わせ、ピークが SPEECH_PEAK_DB を超えない範囲で上げ下げする。"""
+    品質検査と同じ BS.1770 のラウドネスで測って SPEECH_LUFS に合わせ、ピークが
+    SPEECH_PEAK_DB を超えない範囲で上げ下げする（RMS でそろえると、声の高さの違いで
+    6 LU 以上ずれが残った）。"""
     import numpy as np
 
     try:
@@ -113,22 +173,16 @@ def level_speech(data: bytes) -> bytes:
     if params.sampwidth != 2 or not raw:
         return data
     x = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
-    win = max(1, int(params.framerate * params.nchannels * 0.05))
-    n = len(x) // win
-    if n == 0:
+    mono = x.reshape(-1, params.nchannels).mean(axis=1) if params.nchannels > 1 else x
+    level = loudness_lufs(mono, params.framerate)
+    if level is None:
         return data
-    rms = np.sqrt(np.mean(x[: n * win].reshape(n, win) ** 2, axis=1) + 1e-12)
-    db = 20 * np.log10(rms)
-    voiced = db[db > db.max() - 30.0]
-    if voiced.size == 0 or db.max() < -60.0:
-        return data
-    level = 10 * np.log10(np.mean(10 ** (voiced / 10)))
-    gain = SPEECH_LEVEL_DB - level
+    gain = SPEECH_LUFS - level
     peak = float(np.max(np.abs(x)))
     if peak > 0:
         gain = min(gain, SPEECH_PEAK_DB - 20 * np.log10(peak))
     gain = max(-SPEECH_MAX_GAIN_DB, min(SPEECH_MAX_GAIN_DB, gain))
-    if abs(gain) < 0.5:
+    if abs(gain) < 0.3:
         return data
     y = np.clip(np.round(x * (10 ** (gain / 20)) * 32768.0), -32768, 32767).astype("<i2")
     buf = io.BytesIO()
