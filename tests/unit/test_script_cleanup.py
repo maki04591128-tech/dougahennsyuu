@@ -336,3 +336,12 @@ def test_round28_comma_noda():
     )
     assert check_line(0, "風通しは大事、のだ。", z)[0] == "風通しは大事なのだ。"
     assert check_line(0, "水は土が乾いたら、のだ。", z)[0] == "水は土が乾いたら。"
+
+
+def test_round29_masuno():
+    assert _simple_fix("ゆっくりとやりますの") == "ゆっくりとやるの"
+    from video_automation.services.voice.characters import BUILTIN
+
+    m = parse_style("四国めたん", BUILTIN["四国めたん"].text())
+    _, iss = check_line(0, "わたくしは、ゆっくりとやりますの", m)
+    assert any(x.kind == "avoid" for x in iss)

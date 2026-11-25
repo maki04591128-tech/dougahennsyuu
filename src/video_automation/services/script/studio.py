@@ -160,6 +160,14 @@ _E_ROW = "えけげせてねべめれ"
 def _plain_masu(m: re.Match[str]) -> str:
     """「歩きましょうか」→「歩こうかしら」、「やめられませんの」→「やめられないの」。"""
     stem, form, tail = m.group(1), m.group(2), m.group(3) or ""
+    if form == "ます":  # 「やりますの」→「やるの」
+        if stem == "し":
+            return "する" + tail
+        if stem in _E_ROW or stem == "見":
+            return stem + "る" + tail
+        if stem in _I_ROW:
+            return "うくぐすつぬぶむる"[_I_ROW.index(stem)] + tail
+        return m.group(0)
     if form == "ましょう":
         if stem == "し":
             base = "しよう"
@@ -188,7 +196,8 @@ def _simple_fix(text: str) -> str:
         out = out.replace(a, b)
     out = out.replace("のですから", "のだから")
     # 丁寧語の動詞を言い切りに（です・ます調を使わないキャラクターの最後の手当て）
-    return re.sub(r"(.)(ましょう|ません)(か|の)?", _plain_masu, out)
+    out = re.sub(r"(.)(ましょう|ません)(か|の)?", _plain_masu, out)
+    return re.sub(r"(.)(ます)(の|わ)", _plain_masu, out)
 
 
 def _broken(text: str) -> bool:
