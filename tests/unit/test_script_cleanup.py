@@ -142,3 +142,17 @@ def test_round12_rules():
     z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
     assert check_line(0, "みんな、気をつけてねのだ。", z)[0] == "みんな、気をつけてほしいのだ。"
     assert _simple_fix("わたくし、その罠に気づきますの") == "わたくし、その罠に気づくの"
+
+
+def test_round13_rules():
+    from video_automation.services.voice.characters import BUILTIN
+
+    m = parse_style("四国めたん", BUILTIN["四国めたん"].text())
+    _, iss = check_line(0, "むにゃむにゃしてないで、水分を取れよ。", m)
+    assert any(x.kind == "avoid" and x.expected == "命令口調" for x in iss)
+    _, iss = check_line(0, "加湿器が一番よ。", m)
+    assert not any(x.expected == "命令口調" for x in iss)
+    _, iss = check_line(0, "ここが大事なところよ。", m)
+    assert not any(x.expected == "命令口調" for x in iss)
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "喉も渇いて声が出ないのだ！'", z)[0] == "喉も渇いて声が出ないのだ！"

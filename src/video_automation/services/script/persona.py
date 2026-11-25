@@ -407,7 +407,8 @@ _GRAMMAR_FIXES = (
 
 def one_line(text: str) -> str:
     """セリフの中の改行を文の区切りにする（「…のだ\nそれなら…」→「…のだ。それなら…」）。"""
-    parts = [x.strip() for x in re.split(r"[\r\n]+", text) if x.strip()]
+    # 行末に紛れ込んだ半角の引用符（「声が出ないのだ！'」）も外す
+    parts = [x.strip().strip("'\"`") for x in re.split(r"[\r\n]+", text) if x.strip()]
     out = ""
     for x in parts:
         if out and out[-1] not in "。！？!?…、」』）)♪":
@@ -551,6 +552,15 @@ def check_line(
     bad_join = next((b for b in BAD_JOINS if b in fixed), None)
     if bad_join is not None:
         issues.append(PersonaIssue(index, "avoid", fixed[:40], bad_join))
+    if "しろ" in p.avoid:
+        # 命令口調を使わないキャラクター（めたん）の「水分を取れよ」「早く寝ろ」
+        for sent in (x.strip() for x in _SENT.findall(fixed) if x.strip()):
+            core = sent.rstrip(_TRAIL)
+            if re.search(r"(?:[一-龥][けげせねべめれ]|ろ)よ?$", core) and not re.search(
+                r"(?:ところ|こころ|ころ|いろ|ひろ|しろ)よ?$", core
+            ):
+                issues.append(PersonaIssue(index, "avoid", sent[:40], "命令口調"))
+                break
     if p.avoid:
         # 文末と、読点で区切った句の終わり（「ご存じですわ、アンタ。」）を見る
         parts = [x for x in re.split(r"(?<=[、,])", fixed) if x.strip()]
