@@ -104,9 +104,43 @@ _INTERJECTIONS = {
 
 # 書き直しで直らなかったときに、意味を変えずに置き換えられる語尾のつなぎ
 _SIMPLE_FIXES = (
+    ("ていますわ", "ているわ"), ("ていますの", "ているの"), ("ますわ", "るわ"),
     ("ですわよ", "よ"), ("ですわね", "よね"), ("ですわ", "よ"), ("ですの", "なの"),
     ("しますのだ", "するのだ"), ("なさいわ", "なさい"), ("なさいのだ", "するのだ"),
 )  # fmt: skip
+
+
+_LABEL = re.compile(r"^\s*(?:\[[LT]\d+\]|[LT]\d+\s*[:：])\s*")
+
+
+def _strip_label(text: str, names: Any) -> str:
+    """LLM が書き直したセリフの頭に付けた「L9: ずんだもん: 」のような見出しを外す。"""
+    out = _LABEL.sub("", text, count=1)
+    for n in sorted(names, key=len, reverse=True):
+        m = re.match(rf"\s*{re.escape(n)}\s*[:：]\s*", out)
+        if m:
+            out = out[m.end() :]
+            break
+    return out.strip()
+
+
+def _drop_repeated_openers(turns: list[dict[str, Any]], personas: dict[str, Persona]) -> int:
+    """「わたくし、」で始まるセリフが続く癖を直す（同じ話し手の 2 回目からは一人称を外す）。"""
+    seen: set[str] = set()
+    n = 0
+    for t in turns:
+        p = personas.get(t["speaker"])
+        if p is None or not p.first:
+            continue
+        for w in p.first:
+            m = re.match(rf"\s*{re.escape(w)}[、,]\s*", t["text"])
+            if m and len(t["text"]) - m.end() >= 4:
+                if t["speaker"] in seen:
+                    t["text"] = t["text"][m.end() :]
+                    n += 1
+                seen.add(t["speaker"])
+                break
+    return n
 
 
 def _simple_fix(text: str) -> str:
@@ -368,7 +402,7 @@ class ScriptStudio:
         done = 0
         for f in res.data.get("fixes") or []:
             i = ids.get((f.get("id") or "").strip("[] ").upper())
-            new = (f.get("text") or "").strip()
+            new = _strip_label(f.get("text") or "", personas)
             if i is None or i not in editable or not new:
                 continue
             it = turns[i]
@@ -433,7 +467,9 @@ class ScriptStudio:
                 model_key=model_key,
             )
             fixes = {
-                (f.get("id") or "").strip("[] ").upper(): (f.get("text") or "").strip()
+                (f.get("id") or "").strip("[] ").upper(): _strip_label(
+                    f.get("text") or "", personas
+                )
                 for f in res.data.get("fixes") or []
             }
         except LLMError:
@@ -1258,6 +1294,7 @@ class ScriptStudio:
         ordered = [t for sc_ in res.data["scenes"] for t in sc_["turns"] if t["speaker"] in names]
         editable = {i for i, t in enumerate(ordered) if _norm(t["text"]) not in fixed_keys}
         notes += await self._polish(ordered, editable, personas, req.model_key)
+        _drop_repeated_openers([ordered[i] for i in sorted(editable)], personas)
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
@@ -1615,7 +1652,7 @@ class ScriptStudio:
         fixed: list[str] = []
         for f in res.data.get("fixes") or []:
             t = ids.get((f.get("id") or "").strip("[] ").upper())
-            new = (f.get("text") or "").strip()
+            new = _strip_label(f.get("text") or "", personas)
             if t is None or not new or new == t.text or len(new) > len(t.text) * 1.6 + 8:
                 continue
             if _broken(new):
