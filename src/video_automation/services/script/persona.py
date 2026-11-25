@@ -513,6 +513,7 @@ def check_line(
         new = re.sub(r"([てで])[よね]のだ", r"\1ほしいのだ", new)
         new = re.sub(r"だ[ぜよね]?のだ", "なのだ", new)
         new = re.sub(r"てみなのだ", "てみるのだ", new)
+        new = re.sub(r"(みんな|オマエたち|オマエら)なのだ(?=[！!、])", r"\1", new)
         new = re.sub(r"^(朝|昼|夜|今日|明日)のだ、", r"\1は、", new)
         new = re.sub(
             r"([こそとのほもろごぞどぼぽ])うね?のだ",
@@ -597,9 +598,12 @@ def check_line(
     if p.avoid:
         # 文末と、読点で区切った句の終わり（「ご存じですわ、アンタ。」）を見る
         parts = [x for x in re.split(r"(?<=[、,])", fixed) if x.strip()]
+        avoid = list(p.avoid)
+        if "ます" in avoid:  # です・ます調を使わないキャラクターは、丁寧語の言い切りも使わない
+            avoid += ["ましょう", "ません", "ました", "でした", "のです"]
         for part in (y.strip() for x in parts for y in _SENT.findall(x) if y.strip()):
             core = part.rstrip(_TRAIL)
-            hit = next((e for e in p.avoid if _ends_with(core, e) or core.endswith(e + "か")), None)
+            hit = next((e for e in avoid if _ends_with(core, e) or core.endswith(e + "か")), None)
             if hit is not None:
                 issues.append(PersonaIssue(index, "avoid", part[:40], hit))
                 break
