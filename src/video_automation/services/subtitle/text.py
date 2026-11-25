@@ -227,10 +227,12 @@ def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> 
                 merged[-1] += x
             else:
                 merged.append(x)
-        out: list[str] = []
-        for x in merged:
-            out += make_cues(x, max_chars, max_lines, strip_period)
-        return out
+        # まとめた結果が 1 つ（元の文と同じ）なら、下の 1 文の処理に回す（無限に呼び直さない）
+        if len(merged) > 1:
+            out: list[str] = []
+            for x in merged:
+                out += make_cues(x, max_chars, max_lines, strip_period)
+            return out
     if strip_period:
         t = t.rstrip("。.")
     if not t:
