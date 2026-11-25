@@ -76,6 +76,8 @@ class Persona:
     known_as: list[str] = field(default_factory=list)
     avoid: list[str] = field(default_factory=list)  # 文末に使わない言い方（「〜」は除く）
     examples: list[str] = field(default_factory=list)  # 手本のセリフ（規則ではなく参考）
+    # 手本の決めゼリフの語（「白地図」「ずんだ餅」）。テーマと関係なく使ったら書き直させる
+    signature: set[str] = field(default_factory=set)
 
     @property
     def empty(self) -> bool:
@@ -365,6 +367,21 @@ def fill_endings(text: str, p: Persona) -> str:
     return "".join(out) + text[last:]
 
 
+# 3 文字以上の漢字・カタカナの語（「白地図」「カレーパン」）。2 文字の語は一般的な語と紛れる
+_SIG_WORD = re.compile(r"[一-龥]{3,}|[ァ-ヺー]{3,}")
+_SIG_STOP = {"センパイ", "オマエ", "アンタ"}  # 呼び方は口調の規則で扱う
+
+
+def set_signature(p: Persona, topic: str) -> None:
+    """手本のセリフに出てくる特徴的な語のうち、テーマに無いものを決めゼリフの語にする。"""
+    words: set[str] = set()
+    for ex in p.examples:
+        for w in _SIG_WORD.findall(ex):
+            if w not in _SIG_STOP and w not in p.name and w not in topic:
+                words.add(w)
+    p.signature = words
+
+
 def _example_sentences(p: Persona) -> list[str]:
     out = []
     for ex in p.examples:
@@ -607,6 +624,9 @@ def check_line(
             ):
                 issues.append(PersonaIssue(index, "avoid", sent[:40], "命令口調"))
                 break
+    hit_sig = next((w for w in sorted(p.signature) if w in fixed), None)
+    if hit_sig is not None:
+        issues.append(PersonaIssue(index, "avoid", fixed[:40], f"決めゼリフの語「{hit_sig}」"))
     if p.avoid:
         # 文末と、読点で区切った句の終わり（「ご存じですわ、アンタ。」）を見る
         parts = [x for x in re.split(r"(?<=[、,])", fixed) if x.strip()]

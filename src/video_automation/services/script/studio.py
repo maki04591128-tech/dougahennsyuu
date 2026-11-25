@@ -63,6 +63,7 @@ from video_automation.services.script.persona import (
     fill_endings,
     foreign_endings,
     parse_style,
+    set_signature,
 )
 
 if TYPE_CHECKING:
@@ -1314,6 +1315,10 @@ class ScriptStudio:
         # 実機では 60 秒の指定で 71 秒になっていた
         total_chars = int((st.target_duration_sec or 90) * st.chars_per_sec * 0.9)
         personas = await self._personas(cdata)
+        for (
+            p_
+        ) in personas.values():  # 「白地図」のような決めゼリフの語を、テーマと関係なく使わせない
+            set_signature(p_, f"{st.topic} {req.instruction}")
         user = [
             P.settings_text(inp["settings"]) or "テーマ: （未指定。一般的な紹介動画）",
             "キャラクター:\n" + P.characters_text(cdata),

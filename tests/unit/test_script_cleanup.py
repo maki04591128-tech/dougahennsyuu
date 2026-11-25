@@ -285,3 +285,19 @@ def test_round23():
     assert check_line(0, "寝不足は大敵のだ", z)[0] == "寝不足は大敵なのだ"
     assert check_line(0, "オマエもフルーツを食べするのだ", z)[0] == "オマエもフルーツを食べるのだ"
     assert check_line(0, "わかったのだ、のだ", z)[0] != ""
+
+
+def test_signature_terms():
+    from video_automation.services.script.persona import Persona, set_signature
+
+    m = Persona(
+        "四国めたん",
+        first=["わたくし"],
+        examples=["わたくしは四国めたん、すべての白地図を四国に染める女よ", "おなかがすいたわ"],
+    )
+    set_signature(m, "部屋を片付ける習慣")
+    assert m.signature == {"白地図"}
+    _, iss = check_line(0, "四国めたんの白地図が完成するのよ", m)
+    assert any(x.kind == "avoid" and "白地図" in x.expected for x in iss)
+    set_signature(m, "白地図の塗り方")
+    assert m.signature == set()
