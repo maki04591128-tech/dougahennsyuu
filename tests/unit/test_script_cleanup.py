@@ -117,3 +117,12 @@ def test_ssu_grammar():
     assert check_line(0, "今日から早起きしてみまっす！", t)[0] == "今日から早起きしてみるっす！"
     assert check_line(0, "運動してから勉強するんだっすか。", t)[0] == "運動してから勉強するんすか。"
     assert check_line(0, "背筋を少しまっすぐにするっす", t)[0] == "背筋を少しまっすぐにするっす"
+
+
+def test_simplified_chinese_chars():
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "贵女も気をつけてね", m)[0] == "貴女も気をつけてね"
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "これなら细菌も退散するのだ", z)[0] == "これなら細菌も退散するのだ"
+    _, iss = check_line(0, "我们も手を洗うのだ", z)
+    assert any(x.kind == "avoid" for x in iss)

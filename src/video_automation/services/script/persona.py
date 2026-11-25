@@ -247,6 +247,24 @@ def _strip_foreign(sentence: str, e: str) -> str | None:
 FOREIGN_SCRIPT = re.compile(
     r"[\u0370-\u03FF\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\uAC00-\uD7AF]"
 )
+# 中国語の簡体字（日本語に無い字）→ 日本語の字。実機で「细菌」「贵女」が出ていた
+_SIMPLIFIED = dict(
+    zip(
+        "细贵间时说这对为门问题话语认识让进还过动发实现电车东长开关习书买卖钱银样种应该给经结网线"
+        "红绿蓝级纸记讲计设证质页头脑气处务养饭饮鱼鸟马闻隐际陆难爱觉见观规视亲",
+        "細貴間時説這対為門問題話語認識譲進還過動発実現電車東長開関習書買売銭銀様種応該給経結網線"
+        "紅緑藍級紙記講計設証質頁頭脳気処務養飯飲魚鳥馬聞隠際陸難愛覚見観規視親",
+        strict=True,
+    )
+)
+_SIMPLIFIED_ONLY = re.compile("[们吗呢么]")
+
+
+def fix_simplified(text: str) -> str:
+    """中国語の簡体字を日本語の字に置き換える（小さなモデルが混ぜることがある）。"""
+    return "".join(_SIMPLIFIED.get(ch, ch) for ch in text)
+
+
 # どのキャラクターでも誤りになる語尾のつなぎ方（「しますのだ」「しなさいわ」）
 BAD_JOINS = ("ますのだ", "ですのだ", "ましたのだ", "でしたのだ", "なさいわ", "なさいのだ")
 
@@ -411,6 +429,11 @@ def check_line(
     others は同じ台本のキャラクター（呼び名の照合に使う）。"""
     issues: list[PersonaIssue] = []
     fixed = one_line(text)
+    # 簡体字は日本語の字に置き換える（置き換えられない字は下の「日本語以外の文字」で知らせる）
+    new = fix_simplified(fixed)
+    if new != fixed:
+        issues.append(PersonaIssue(index, "grammar", "簡体字", "日本語の字", new))
+        fixed = new
     # 形容詞の語幹に「かしら」を付ける誤り（「触り心地良かしら」→「良いかしら」）
     # （「最高かしら」のような名詞もあるので「良」だけ）
     new = fixed.replace("良かしら", "良いかしら")
@@ -520,7 +543,7 @@ def check_line(
             for x in issues:
                 if x.kind == "foreign_ending":
                     x.fixed = fixed
-    if FOREIGN_SCRIPT.search(fixed):
+    if FOREIGN_SCRIPT.search(fixed) or _SIMPLIFIED_ONLY.search(fixed):
         issues.append(PersonaIssue(index, "avoid", fixed[:40], "日本語以外の文字"))
     bad_join = next((b for b in BAD_JOINS if b in fixed), None)
     if bad_join is not None:
