@@ -33,6 +33,7 @@ from video_automation.schemas.design import (
     Purpose,
 )
 from video_automation.schemas.direction import DirectionApplyRequest, DirectionPlanRequest
+from video_automation.schemas.provider import TaskType
 from video_automation.schemas.script_studio import (
     CharacterIn,
     ScriptGenerateRequest,
@@ -57,7 +58,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.schemas.voice import ReadingCheckRequest
-from video_automation.services.build import audio_bed
+from video_automation.services.build import audio_bed, recording_reader
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.direction.service import native_transform
 from video_automation.services.transcribe.service import TranscribeRequest
@@ -296,10 +297,17 @@ class BuildService:
                     project_id=pid, path=str(rec_path), name=f"{RECORDING_NAME}{rec_path.name}"
                 )
             )
-            notes.append(
-                "録画の中身は AI には見えません。作りたいものの文章に操作の手順を書くと、"
-                "台本が録画に合います"
-            )
+            try:
+                await c.llm.resolve(TaskType.IMAGE_UNDERSTANDING)
+                notes.append(
+                    "録画の場面を画像の分かる AI に読ませて台本の参考にします。"
+                    "作りたいものの文章に操作の手順も書くと、さらに合います"
+                )
+            except Exception:  # noqa: BLE001 - 画像の分かるモデルが無い
+                notes.append(
+                    "録画の中身は AI には見えません。作りたいものの文章に操作の手順を書くと、"
+                    "台本が録画に合います"
+                )
         detail = await c.studio.create(
             ScriptStudioCreate(
                 project_id=pid,
@@ -506,6 +514,30 @@ class BuildService:
                 notes.append(
                     f"立ち絵を置けませんでした（{type(exc).__name__}）。立ち絵なしで続けます"
                 )
+
+    async def _read_recording(self, sid: str, rec: AssetRead, at: Any) -> list[str]:
+        """画面録画の場面を画像の分かる AI に読ませ、台本の参考資料に足す。"""
+        c = self.c
+        await at("script")
+        try:
+            text = await recording_reader.describe(
+                c.llm, c.ffmpeg, c.settings.data_dir / rec.path, rec.duration_sec or 0.0
+            )
+        except Exception as exc:  # noqa: BLE001 - 画像の分かるモデルが無くても台本は作る
+            log.info("recording_read_skipped", error=type(exc).__name__)
+            return ["画面録画を読めるAIが無いため、録画の中身は台本に使っていません"]
+        if not text:
+            return []
+        d = await c.studio.detail(sid)
+        head = "画面録画の内容（AIが画面から読み取った場面。時刻は録画の頭から）:\n"
+        old = d.settings.reference
+        if head in old:  # 作り直すときは前に読み取った分を置き換える
+            old = old.split(head)[0].rstrip()
+        ref = (old + "\n\n" if old else "") + head + text
+        await c.studio.update(
+            sid, ScriptUpdate(settings=d.settings.model_copy(update={"reference": ref[:20000]}))
+        )
+        return [f"画面録画の {text.count(chr(10)) + 1} 場面を読み取り、台本の参考にしました"]
 
     def _allowed_file(self, path: str, label: str) -> Path:
         """利用者が渡したファイル（取り込みを許可したフォルダの中だけ）。"""
@@ -909,6 +941,8 @@ class BuildService:
             await progress((i + frac) / len(keys), f"{labels[key]}（{i + 1}/{len(keys)}）")
 
         if not req.keep_script:
+            if rec is not None:
+                notes += await self._read_recording(sid, rec, at)
             await self._script_to_tachie(sid, has_tachie, redo, at, notes)
             if rec is not None:
                 await at("recording")
