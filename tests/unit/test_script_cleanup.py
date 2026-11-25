@@ -226,3 +226,18 @@ def test_round18_masu():
     assert _simple_fix("約束したのですから、やめられませんの") == "約束したのだから、やめられないの"
     assert _simple_fix("さあ、始めましょう") == "さあ、始めよう"
     assert _simple_fix("それはしません") == "それはしない"
+
+
+def test_round19():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "すぐにそれを**変更する**のが重要なのだ。", z)[0]
+        == "すぐにそれを変更するのが重要なのだ。"
+    )
+    meta = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    turns = [
+        {"speaker": "四国めたん", "text": "わたくしは、正しい方法を教えるわ。"},
+        {"speaker": "四国めたん", "text": "わたくしは、アプリが一番安全だと感じるわ。"},
+    ]
+    _drop_repeated_openers(turns, {"四国めたん": meta})
+    assert turns[1]["text"] == "アプリが一番安全だと感じるわ。"
