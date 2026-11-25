@@ -223,7 +223,10 @@ async def test_voice_longer_than_target_is_sped_up(bclient, fake):
         props = (body.get("format") or {}).get("properties", {})
         if "scenes" not in props:
             return None
-        turns = [{"speaker": names[i % len(names)], "text": long} for i in range(3)]
+        # 同じセリフは省かれるので、少しずつ変える
+        turns = [
+            {"speaker": names[i % len(names)], "text": f"{long}（その{i + 1}）"} for i in range(3)
+        ]
         return {"scenes": [{"purpose": "本題", "turns": turns}], "notes": []}
 
     fake.chat_responder = responder
