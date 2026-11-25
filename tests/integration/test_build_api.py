@@ -88,6 +88,9 @@ async def test_build_from_one_sentence(bclient, fake, media_settings):
     sfx = [x for x in tl["clips"] if x["track_id"] == tracks["効果音"]["id"]]
     assert sfx and all(x["volume"] < 1.0 for x in sfx)
     assert any("BGM" in n for n in job.result["notes"])
+    # 声は台本から重ねるが、概要欄用のクレジットには声（VOICEVOX）が入る
+    cred = video.with_suffix(".credits.txt")
+    assert cred.read_text(encoding="utf-8").startswith("音声: VOICEVOX")
 
 
 async def test_build_needs_music_for_mv(bclient):
