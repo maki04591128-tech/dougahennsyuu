@@ -270,3 +270,9 @@ def test_round22_not_imperative():
     m = parse_style("四国めたん", BUILTIN["四国めたん"].text())
     _, iss = check_line(0, "そして、石鹸は必ず流すのよ、残留は汚染の元ね", m)
     assert not any(x.expected == "命令口調" for x in iss)
+
+
+def test_hakadoriru():
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "これで仕事もはかどりるわ。", m)[0] == "これで仕事もはかどるわ。"
+    assert check_line(0, "本を借りるわ。", m)[0] == "本を借りるわ。"
