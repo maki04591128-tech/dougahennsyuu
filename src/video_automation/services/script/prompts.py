@@ -164,3 +164,33 @@ def settings_text(st: dict[str, Any]) -> str:
     if st.get("reference"):
         text += f"\n参考資料（この内容を根拠にする）:\n{st['reference'][:8000]}"
     return text
+
+
+# ---------- 事実の確認（解説の台本の誤りを直す） ----------
+FACT_VERSION = "script.fact.v1"
+FACT_SYSTEM = (
+    "あなたは解説動画の校閲者です。台本のセリフのうち、事実として誤っている・誤解を招く内容"
+    "（科学・技術・数値・制度・手順の誤り）だけを挙げ、意味が正しくなるよう最小限に直したセリフを書きます。"
+    "話し手の口調・一人称・語尾・長さはそのまま保ちます。冗談・感想・たとえ・質問は誤りとして扱いません。"
+    "参考資料があれば、それを正しい情報として優先します。確信が持てないものは挙げません。"
+    "誤りが無ければ fixes は空配列にします。"
+)
+FACT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "problem": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["id", "problem", "text"],
+            },
+            "maxItems": 10,
+        }
+    },
+    "required": ["fixes"],
+}

@@ -81,6 +81,13 @@ async def test_build_from_one_sentence(bclient, fake, media_settings):
     assert video.is_file() and video.stat().st_size > 0
     tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
     assert tl["clips"]
+    # BGM（声より小さく・最初から最後まで）と、数値のテロップの「ポン」
+    tracks = {t["name"]: t for t in tl["tracks"]}
+    bgm = [x for x in tl["clips"] if x["track_id"] == tracks["BGM"]["id"]]
+    assert len(bgm) == 1 and bgm[0]["start_frame"] == 0 and bgm[0]["volume"] < 1.0
+    sfx = [x for x in tl["clips"] if x["track_id"] == tracks["効果音"]["id"]]
+    assert sfx and all(x["volume"] < 1.0 for x in sfx)
+    assert any("BGM" in n for n in job.result["notes"])
 
 
 async def test_build_needs_music_for_mv(bclient):

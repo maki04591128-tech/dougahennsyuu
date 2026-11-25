@@ -416,3 +416,60 @@ async def test_far_too_long_script_is_rewritten_shorter_once(client, fake):
     assert asked == [False, True]  # 1 回だけ書き直させる
     texts = [s["text"] for s in r.json()["segments"]]
     assert long_turn["text"] not in texts and len(texts) == 3
+
+
+async def test_fact_check_fixes_wrong_lines_keeping_persona(client, fake):
+    chars = [
+        {**CHARS[0], "speaking_style": "一人称は「僕」。語尾は「〜のだ」"},
+        {**CHARS[1], "speaking_style": "語尾は「です」・「ます」"},
+    ]
+    sc = await _setup(client, chars=chars)
+    sid = sc["id"]
+    await client.post(
+        f"/scripts/{sid}/dialogue",
+        json={
+            "lines": [
+                {"speaker": "ずんだもん", "text": "コンセントを抜くと電気が貯まるのだ。"},
+                {"speaker": "めたん", "text": "なるほど、そうなのです。"},
+            ]
+        },
+    )
+    seen = []
+
+    def responder(b):
+        props = (b.get("format") or {}).get("properties", {})
+        if "fixes" not in props or "problem" not in str(b.get("format")):
+            return None
+        seen.append(prompt_of(b))
+        return {
+            "fixes": [
+                {
+                    "id": "T1",
+                    "problem": "抜いても電気は貯まらない",
+                    "text": "コンセントを抜くと待機電力を減らせるのだ。",
+                },
+                # 口調を外した直しは採らない
+                {"id": "T2", "problem": "x", "text": "なるほどなのだ。"},
+            ]
+        }
+
+    fake.chat_responder = responder
+    c = client.app.state.container
+    # 手で入れたセリフは固定（直さない）なので、AI 由来にしてから確かめる
+    from sqlalchemy import update
+
+    from video_automation.database.models import ScriptSegment
+
+    async with c.db.session_factory() as s:
+        await s.execute(
+            update(ScriptSegment)
+            .where(ScriptSegment.script_id == sid)
+            .values(generation_source="AI", locked=False)
+        )
+        await s.commit()
+    notes = await c.studio.fact_check(sid)
+    assert notes and "1 か所" in notes[0] and "貯まらない" in notes[0]
+    assert "[T1] ずんだもん: コンセントを抜くと電気が貯まるのだ。" in seen[0]
+    texts = [t.text for t in (await c.studio.detail(sid)).segments]
+    assert texts[0] == "コンセントを抜くと待機電力を減らせるのだ。"
+    assert texts[1] == "なるほど、そうなのです。"
