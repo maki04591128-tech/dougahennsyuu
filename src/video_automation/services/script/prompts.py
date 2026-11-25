@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from video_automation.services.voice.characters import EMOTION_LABELS, EMOTIONS
+
 COMMON = (
     "あなたは日本語の動画台本作家です。指定されたキャラクターの性格・口調を一貫して守ります。"
     "一人称・相手の呼び方・語尾はキャラクターごとに決まっており、台本の最初から最後まで変えません"
@@ -10,11 +12,21 @@ COMMON = (
     "口調の決まり（語尾・一人称）そのものを台本の中で話題にしません（「全部『のだ』だ」のような"
     "メタな発言をしない）。ほかのキャラクターの口調や乱暴な言い方（「〜ねぇ」等）を真似しません。"
     "事実が不明な点は推測で確定せず、notes に仮定や確認したいことを書きます。"
+    "キャラクター同士は決まった呼び名で呼び合います（呼び名の規則があれば必ず守ります）。"
+    "公序良俗に反する内容（性的・暴力的な表現）、政治・宗教の勧誘、特定の個人・団体への非難、"
+    "誤った医療情報などの誤解を招く内容、キャラクターのイメージを大きく損なう内容は書きません。"
     "セリフは自然な話し言葉で、1つの発話は120文字以内、1 文は 40 文字程度までにします"
     "（音声で読み上げるので、長い文は句読点で区切ります）。"
 )
 
-FULL_VERSION = "script.full.v5"
+EMOTION_TEXT = (
+    "各発話の emotion は声の調子の切り替えに使います。ふつうの説明は neutral にし、"
+    "気持ちがはっきり出る発話だけ次から選びます: "
+    + "、".join(f"{e}（{EMOTION_LABELS[e]}）" for e in EMOTIONS if e != "neutral")
+    + "。"
+)
+
+FULL_VERSION = "script.full.v6"
 FULL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -34,6 +46,7 @@ FULL_SCHEMA: dict[str, Any] = {
                             "properties": {
                                 "speaker": {"type": "string"},
                                 "text": {"type": "string", "minLength": 1},
+                                "emotion": {"type": "string", "enum": list(EMOTIONS)},
                             },
                             "required": ["speaker", "text"],
                         },

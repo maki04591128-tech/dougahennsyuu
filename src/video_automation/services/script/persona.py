@@ -18,6 +18,7 @@ FIRST_PERSONS = [
     "わたくし",
     "あたくし",
     "わたし",
+    "ワタシ",
     "あたし",
     "あーし",
     "私",
@@ -47,7 +48,14 @@ SECOND_PERSONS = [
     "貴様",
     "てめえ",
 ]
-_PLURAL = ("たち", "達", "がた", "方", "ら", "ども")
+_PLURAL = ("たち", "達", "がた", "方", "ら", "ども", "等")
+# 「私」は「わたし」「わたくし」「あたし」とも読める。それらを使うキャラクターでは正しい一人称にする
+_WATASHI = {"私", "わたし", "ワタシ", "わたくし", "あたし", "あたくし"}
+# 呼び名の照合に使わない語（一般の言葉と紛れる・短すぎる）
+_CALL_STOP = {
+    "うさぎ", "そら", "ずんだ", "あんこ", "おっさん", "親父", "おじいさん", "おっちゃん",
+    "助手", "猫", "龍", "雪", "ゆき", "なな", "ユ", "T", "Ｌ", "きりたんぽ", "セブン",
+}  # fmt: skip
 # 「私立」「私鉄」「君主」など、代名詞ではない語の始まり
 _NOT_PRONOUN_NEXT = set("立鉄服物有用的語信設営邸刑書費財道案主臨")
 # 文の区切り（「…」は言いよどみで文の途中にも出るので区切りにしない）
@@ -61,10 +69,14 @@ class Persona:
     first: list[str] = field(default_factory=list)  # 使ってよい一人称（先頭が基本）
     second: list[str] = field(default_factory=list)  # 使ってよい相手の呼び方（先頭が基本）
     endings: list[str] = field(default_factory=list)  # 語尾（「〜」は除く）
+    # 同じ台本に出るほかのキャラクター名 → このキャラクターからの公式の呼び名
+    calls: dict[str, str] = field(default_factory=dict)
+    # このキャラクターの呼ばれ方（名前・ほかのキャラクターからの呼び名）
+    known_as: list[str] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
-        return not (self.first or self.second or self.endings)
+        return not (self.first or self.second or self.endings or self.calls)
 
     def rules_text(self) -> str:
         """台本を作るときに渡す、必ず守る規則の文。"""
@@ -75,6 +87,8 @@ class Persona:
             parts.append(f"相手は「{'」「'.join(self.second)}」と呼ぶ")
         if self.endings:
             parts.append(f"文末の大半を「{'」「'.join(self.endings)}」にする（疑問文も含む）")
+        if self.calls:
+            parts.append("、".join(f"{n}を「{c}」" for n, c in self.calls.items()) + "と呼ぶ")
         return f"{self.name}: " + "。".join(parts) if parts else ""
 
 
@@ -93,6 +107,8 @@ class PersonaIssue:
             return f"ほかのキャラクターの語尾「{self.found}」を使っています"
         if self.kind == "stray_ending":
             return f"語尾「{self.found}」だけを文の頭に置いています"
+        if self.kind == "call_name":
+            return f"呼び名が「{self.found}」になっています（公式は「{self.expected}」）"
         what = "一人称" if self.kind == "first_person" else "相手の呼び方"
         return f"{what}が「{self.found}」になっています（設定は「{self.expected}」）"
 
@@ -208,12 +224,73 @@ def _strip_foreign(sentence: str, e: str) -> str | None:
     return None
 
 
+_KATA = re.compile(r"[ァ-ヴーA-Za-zＡ-Ｚａ-ｚ]")
+
+
+def _bounded(text: str, i: int, w: str) -> bool:
+    """カタカナ・英字の名前が長い語の一部（「アルバム」の「アル」、「エンジニア」の「ニア」）でないか。"""
+    prev = text[i - 1] if i > 0 else ""
+    nxt = text[i + len(w)] if i + len(w) < len(text) else ""
+    if _KATA.match(w[0]) and prev and _KATA.match(prev):
+        return False
+    if _KATA.match(w[-1]) and nxt and _KATA.match(nxt):
+        return False
+    return True
+
+
+def _fix_calls(
+    index: int, text: str, p: Persona, others: dict[str, Persona], issues: list[PersonaIssue]
+) -> str:
+    """同じ台本のキャラクターを公式と違う呼び名で呼んでいたら、公式の呼び名に置き換える。
+
+    照合するのは、そのキャラクターの名前とほかのキャラクターからの呼び名（2 文字以上で、
+    一般の言葉と紛れないもの）だけ。ほかのキャラクターの呼び名と重なる語は使わない。"""
+    targets: dict[str, set[str]] = {}  # 語 → 呼ばれる側の名前
+    for target in p.calls:
+        o = others.get(target)
+        for w in [target, *(o.known_as if o else [])]:
+            if len(w) >= 2 and w not in _CALL_STOP:
+                targets.setdefault(w, set()).add(target)
+    # 二人以上の呼び名と重なる語は、どちらのことか決められないので使わない
+    cand = {w: next(iter(t)) for w, t in targets.items() if len(t) == 1}
+    for target, official in p.calls.items():
+        cand[official] = target  # 公式の呼び名は必ず照合する（長い一致を優先させるため）
+    ok = _outside_quotes(text)
+    words = sorted(cand, key=len, reverse=True)
+    out, i, last = [], 0, 0
+    while i < len(text):
+        hit = next(
+            (w for w in words if text.startswith(w, i) and ok[i] and _bounded(text, i, w)), None
+        )
+        if hit is None:
+            i += 1
+            continue
+        official = p.calls[cand[hit]]
+        if hit != official:
+            out.append(text[last:i] + official)
+            last = i + len(hit)
+            issues.append(PersonaIssue(index, "call_name", hit, official, None))
+        i += len(hit)
+    if not out:
+        return text
+    fixed = "".join(out) + text[last:]
+    for x in issues:
+        if x.kind == "call_name" and x.fixed is None:
+            x.fixed = fixed
+    return fixed
+
+
 def check_line(
-    index: int, text: str, p: Persona, foreign: tuple[str, ...] = ()
+    index: int,
+    text: str,
+    p: Persona,
+    foreign: tuple[str, ...] = (),
+    others: dict[str, Persona] | None = None,
 ) -> tuple[str, list[PersonaIssue]]:
     """1 発話を調べる。戻り値は (規則で直した文, 問題の一覧)。
 
-    foreign はほかのキャラクターに決まっている語尾（めたんが「〜のだ」を使わないように）。"""
+    foreign はほかのキャラクターに決まっている語尾（めたんが「〜のだ」を使わないように）。
+    others は同じ台本のキャラクター（呼び名の照合に使う）。"""
     issues: list[PersonaIssue] = []
     fixed = text
     # 「のだ、長く使えるのだ」のように語尾だけを文頭に置く癖（口調の真似の誤り）を外す
@@ -233,6 +310,8 @@ def check_line(
             break
     if p.first:
         allowed = set(p.first)
+        if allowed & _WATASHI:
+            allowed |= {"私"}
         bad = [(i, w) for i, w in _find(fixed, FIRST_PERSONS) if w not in allowed]
         if bad:
             new = _replace(fixed, bad, p.first[0])
@@ -250,6 +329,8 @@ def check_line(
                 issues.append(PersonaIssue(index, "second_person", w, to or p.second[0], swapped))
             if swapped:
                 fixed = swapped
+    if p.calls and others:
+        fixed = _fix_calls(index, fixed, p, others, issues)
     own = set(p.endings)
     bad_end = sorted((e for e in foreign if e not in own), key=len, reverse=True)
     if bad_end:
@@ -299,7 +380,7 @@ def check_lines(
         if p is None or p.empty:
             out.append(text)
             continue
-        fixed, iss = check_line(i, text, p, foreign_endings(personas, speaker))
+        fixed, iss = check_line(i, text, p, foreign_endings(personas, speaker), personas)
         out.append(fixed)
         issues += iss
     return out, issues
