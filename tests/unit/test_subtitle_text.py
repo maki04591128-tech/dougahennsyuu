@@ -187,3 +187,11 @@ def test_wrap_lines_does_not_split_katakana_word():
     # 実機で「コンセ / ントを抜く」と切れた
     lines = wrap_lines("まずは「使っていない電化製品のコンセントを抜く」の", 18)
     assert any("コンセント" in x for x in lines)
+
+
+def test_short_sentence_merge_does_not_recurse_forever():
+    # 2 文をまとめると 1 枚（2 行）に収まるが、1 行の文字数は超える（実機で RecursionError）
+    from video_automation.services.subtitle.text import make_cues
+
+    cues = make_cues("えっ！家計簿をつけると節約になるのだ", 16, 2, True)
+    assert cues and "".join(c.replace("\n", "") for c in cues).startswith("えっ！家計簿")
