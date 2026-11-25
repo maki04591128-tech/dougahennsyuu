@@ -18,7 +18,7 @@ from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.repositories.llm import LlmRepository
-from video_automation.providers.base import ProviderError
+from video_automation.providers.base import ProviderError, ProviderUnavailableError
 from video_automation.providers.llm.tool_fallback import _json_objects
 from video_automation.schemas.provider import ChatMessage, GenerateRequest, TaskType
 from video_automation.services.llm_tasks.task_router import TaskRouter
@@ -62,6 +62,9 @@ def extract_json(text: str) -> Any:
     return max(objs, key=lambda o: len(json.dumps(o, ensure_ascii=False)))
 
 
+JSON_MAX_TOKENS = 6000  # 台本（60〜120 秒）の JSON は 2000 トークン前後
+
+
 class LLMGateway:
     def __init__(
         self, settings: Settings, db: Database, providers: ProviderManager, router: TaskRouter
@@ -94,15 +97,21 @@ class LLMGateway:
                 pass
         ctx = await self._context_length(key, messages)
         t0 = time.perf_counter()
-        res = await provider.generate(
-            model_id,
-            GenerateRequest(
-                messages=messages,
-                json_schema=schema,
-                temperature=temperature,
-                context_length=ctx,
-            ),
+        req = GenerateRequest(
+            messages=messages,
+            json_schema=schema,
+            temperature=temperature,
+            context_length=ctx,
+            # JSON の出力は長さに上限を付ける（小さなモデルが同じ語を繰り返し続け、
+            # 実機で 300 秒の待ち時間を超えて台本が作れなかった）
+            max_tokens=JSON_MAX_TOKENS if schema is not None else None,
         )
+        try:
+            res = await provider.generate(model_id, req)
+        except ProviderUnavailableError as exc:
+            # 一時的な切断・待ち時間切れ（モデルの読み込み中など）は 1 回だけやり直す
+            log.warning("llm_retry_unavailable", model=key, error=str(exc)[:200])
+            res = await provider.generate(model_id, req)
         return res.text or "", (time.perf_counter() - t0) * 1000
 
     async def _context_length(self, key: str, messages: list[ChatMessage]) -> int | None:
