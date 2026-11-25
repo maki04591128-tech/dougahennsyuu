@@ -174,3 +174,10 @@ def test_make_cues_one_sentence_per_cue_and_phrase_breaks():
         # 文節の途中（「押し込み|強度」の途中など）では改行しない
         lines = cues[0].split("\n")
         assert lines[0].endswith("は") or lines[0].endswith("の")
+
+
+def test_wrap_lines_does_not_split_word_after_a_short_head():
+    # 実機の操作説明で「これで VideoAutomatio / n が使えるの」と切れた
+    lines = wrap_lines("これで VideoAutomation が使えるの", 17)
+    assert all("VideoAutomation" not in x or x.count("VideoAutomation") == 1 for x in lines)
+    assert any("VideoAutomation" in x for x in lines)

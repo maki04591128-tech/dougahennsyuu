@@ -690,6 +690,8 @@ class DirectionService:
                             font=heading_font,
                             scale=CARD_SCALE,
                             reveal=reveal,
+                            # 録画の上に出す章カードは、後ろの細かい画面が透けないよう濃く
+                            panel_opacity=0.96 if recording else 0.88,
                         )
                     )
                     # 順に出すときは同じ大きさの絵を切り替えるだけ。出入りの動きは最初と最後のみ
