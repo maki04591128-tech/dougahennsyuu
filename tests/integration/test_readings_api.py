@@ -123,3 +123,19 @@ async def test_ai_reading_check_registers_rules(client, fake):
     assert r.json()["issues"] == []
     assert len((await c.get("/voice/readings", params={"project_id": pid})).json()) == 1
     assert (await c.post("/scripts/nope/readings/check", json={})).status_code == 404
+
+
+async def test_reading_check_drops_proposals_that_only_lose_sounds(client, fake):
+    # 実機で「照明は」→「ショメエワ」（エンジンは正しく「ショオメエワ」）が採用されていた
+    pid, sid = await _studio_script(client, [{"speaker": "A", "text": "カタログヲ見て。"}])
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "fixes" not in props:
+            return None
+        return {"fixes": [{"line": 1, "surface": "カタログヲ", "reading": "カタロヲ"}]}
+
+    fake.chat_responder = responder
+    r = await client.post(f"/scripts/{sid}/readings/check", json={"model_key": QWEN})
+    assert r.status_code == 200, r.text
+    assert r.json()["issues"] == []

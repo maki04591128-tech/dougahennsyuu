@@ -106,3 +106,26 @@ async def test_studio_personas_get_official_call_names_between_the_cast():
     assert ps["めたん"].calls == {"つむぎ": "つむぎさん"}
     assert ps["めたん"].known_as == ["四国めたん", "めたん", "めたんさん"]
     assert ps["ナレーター"].calls == {}
+
+
+@pytest.mark.asyncio
+async def test_quiet_emotions_are_not_used_for_exclamations():
+    from video_automation.services.script.studio import ScriptStudio
+
+    class _VC:
+        async def emotion_style_id(self, sid, emotion):
+            return {"whisper": 36, "tsun": 6}.get(emotion)
+
+    studio = ScriptStudio(None, None, _VC())  # type: ignore[arg-type]
+    scenes = [
+        {
+            "turns": [
+                {"speaker": "めたん", "text": "魔法を授けるわよ！", "emotion": "whisper"},
+                {"speaker": "めたん", "text": "内緒よ。", "emotion": "whisper"},
+                {"speaker": "めたん", "text": "ふん！", "emotion": "tsun"},
+            ]
+        }
+    ]
+    got = await studio._emotion_styles([{"name": "めたん", "voice": {"style_id": 2}}], scenes)
+    assert got == {("めたん", "whisper"): 36, ("めたん", "tsun"): 6}
+    assert scenes[0]["turns"][0]["emotion"] == "neutral"
