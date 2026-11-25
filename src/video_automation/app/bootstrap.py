@@ -33,6 +33,7 @@ from video_automation.services.qa.qa_service import QAService
 from video_automation.services.rendering.render_service import RenderService
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.screencast.service import ScreencastService
+from video_automation.services.script.corrections import CorrectionLog
 from video_automation.services.script.studio import ScriptStudio
 from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.subtitle.subtitle_service import SubtitleService
@@ -184,7 +185,13 @@ async def build_container(
     voice_characters = VoiceCharacterService(
         db, voice, Path(settings.data_dir) / "voicevox_characters.json"
     )
-    studio = ScriptStudio(db, llm, voice_characters)
+    # AI のセリフを直した前後の組をローカルに貯める（ローカル LLM の追加学習用。Git には入れない）
+    studio = ScriptStudio(
+        db,
+        llm,
+        voice_characters,
+        CorrectionLog(Path(settings.data_dir) / "training" / "corrections.jsonl"),
+    )
 
     characters = CharacterService(settings, db, timeline, ffmpeg)
     render.characters = characters
