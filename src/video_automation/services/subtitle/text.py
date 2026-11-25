@@ -56,6 +56,11 @@ def split_script(text: str) -> list[SegmentDraft]:
 def _sentences(line: str) -> list[str]:
     parts, buf, depth = [], "", 0
     for i, ch in enumerate(line):
+        if ch in "\r\n":  # セリフの中の改行は文の切れ目（3 行の字幕にしない）
+            if depth == 0 and buf.strip():
+                parts.append(buf.strip())
+                buf = ""
+            continue
         buf += ch
         if ch in "「『（(":
             depth += 1

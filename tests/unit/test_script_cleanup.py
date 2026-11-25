@@ -33,3 +33,18 @@ def test_te_nanoda():
     p = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
     fixed, _ = check_line(0, "命に関わるから、真剣に聞いてなのだ", p)
     assert fixed == "命に関わるから、真剣に聞いてほしいのだ"
+
+
+def test_newline_and_noka_noda():
+    p = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    fixed, _ = check_line(0, "へー、鋭い指摘なのだ\nそれなら、ストレッチするのだ", p)
+    assert fixed == "へー、鋭い指摘なのだ。それなら、ストレッチするのだ"
+    fixed, _ = check_line(0, "疲れたのかいなのだ？\nオマエ、腰が痛くないのかのだ", p)
+    assert fixed == "疲れたのだ？オマエ、腰が痛くないのだ？"
+
+
+def test_subtitle_newline_is_sentence_break():
+    from video_automation.services.subtitle.text import make_cues
+
+    cues = make_cues("そのまま、肘を伸ばして上に向けるわ\n力を入れすぎないでね", 16, 2, True)
+    assert all(c.count("\n") <= 1 for c in cues)
