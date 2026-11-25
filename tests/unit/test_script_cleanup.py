@@ -326,3 +326,13 @@ def test_round26_question():
 
 def test_round27():
     assert _simple_fix("綺麗な歯を保ちましょうかしら。") == "綺麗な歯を保とうかしら。"
+
+
+def test_round28_comma_noda():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "まずは光、のだ！直射日光はダメ、なのだ", z)[0]
+        == "まずは光なのだ！直射日光はダメなのだ"
+    )
+    assert check_line(0, "風通しは大事、のだ。", z)[0] == "風通しは大事なのだ。"
+    assert check_line(0, "水は土が乾いたら、のだ。", z)[0] == "水は土が乾いたら。"
