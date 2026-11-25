@@ -145,6 +145,10 @@ def _break_score(text: str, i: int) -> int:
     return 1
 
 
+def _is_word(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch in "_-.'")
+
+
 def wrap_lines(text: str, max_chars: int) -> list[str]:
     """max_chars 以内の行に分割する。
 
@@ -171,6 +175,14 @@ def wrap_lines(text: str, max_chars: int) -> list[str]:
                     best_i, best_s = i, s
         if best_s == 0:  # 禁則や長い英単語で切れない場合
             best_i = max_chars - 1 if rest[max_chars] in _NO_LINE_START else max_chars
+            # 英単語・数字の途中（「VideoAutomatio / n」）では切らない: 語の頭へ戻す。
+            # 1 語だけで 1 行より長いときは切るしかない
+            if _is_word(rest[best_i - 1]) and _is_word(rest[best_i]):
+                a = best_i
+                while a > 0 and _is_word(rest[a - 1]):
+                    a -= 1
+                if a > 0:
+                    best_i = a
         lines.append(rest[:best_i].strip())
         rest = rest[best_i:].strip()
     if rest:

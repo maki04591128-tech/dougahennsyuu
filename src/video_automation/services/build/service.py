@@ -81,12 +81,12 @@ _NARRATOR = [("四国めたん", "ナレーター（落ち着いて説明する�
 NEEDS_MUSIC = {Purpose.MV, Purpose.LYRIC}
 SHORT_PURPOSES = {Purpose.SHORT, Purpose.PROMO, Purpose.TRAILER, Purpose.PRODUCT}
 
-STEPS = [
+STEPS = [  # 実際に行う順
     ("script", "台本を作る"),
     ("voice", "音声を作る"),
+    ("subtitles", "字幕を作る"),
     ("tachie", "立ち絵を置く"),
     ("recording", "画面録画を置く"),
-    ("subtitles", "字幕を作る"),
     ("direction", "画面の演出を付ける"),
     ("check", "デザインを検査する"),
     ("render", "書き出す"),

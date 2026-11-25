@@ -129,7 +129,8 @@ def fit_to_duration(
 
     while total > limit:
         middle = [i for i in range(1, len(out) - 1) if not fixed(out[i])]
-        if not middle:
+        # 本題が 1 場面だけ残っているときは省かない（導入とまとめだけの台本になる）
+        if not middle or len(out) - 2 <= 1:
             break
         # 省いたあとの尺が目標にいちばん近くなる場面（同じなら後ろの場面）
         best = min(middle, key=lambda i: (abs(total - sec(out[i]) - target_sec), -i))
