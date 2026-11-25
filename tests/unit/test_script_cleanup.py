@@ -241,3 +241,18 @@ def test_round19():
     ]
     _drop_repeated_openers(turns, {"四国めたん": meta})
     assert turns[1]["text"] == "アプリが一番安全だと感じるわ。"
+
+
+def test_round20_openers():
+    meta = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    turns = [
+        {"speaker": "四国めたん", "text": "わたくしは知っているわ、でもどうやって減らすのかしら"},
+        {"speaker": "四国めたん", "text": "わたくしは先に期限が近いものを取り出すわ"},
+        {"speaker": "四国めたん", "text": "わたくしはその通りよ"},
+    ]
+    _drop_repeated_openers(turns, {"四国めたん": meta})
+    assert [t["text"] for t in turns] == [
+        "わたくしは知っているわ、でもどうやって減らすのかしら",
+        "先に期限が近いものを取り出すわ",
+        "その通りよ",
+    ]
