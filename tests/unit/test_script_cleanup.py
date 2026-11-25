@@ -73,3 +73,13 @@ def test_reading_skeleton():
     assert _skeleton("ショクリョオオ") == _skeleton("ショクリョオ")
     assert _skeleton("ショメエワ") == _skeleton("ショオメエワ")
     assert _skeleton("ジュウブン") != _skeleton("ジップン")
+
+
+def test_round7_rules():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "オマエらも、試してみななのだ！", z)[0] == "オマエらも、試してみるのだ！"
+    assert (
+        check_line(0, "手帳の方が、触り心地良かしら。", m)[0] == "手帳の方が、触り心地良いかしら。"
+    )
+    assert check_line(0, "これは最高かしら。", m)[0] == "これは最高かしら。"
