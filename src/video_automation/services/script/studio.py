@@ -139,7 +139,7 @@ def _drop_repeated_openers(turns: list[dict[str, Any]], personas: dict[str, Pers
         if p is None or not p.first:
             continue
         for w in p.first:
-            m = re.match(rf"\s*{re.escape(w)}[、,]\s*", t["text"])
+            m = re.match(rf"\s*{re.escape(w)}は?[、,]\s*", t["text"])
             if m and len(t["text"]) - m.end() >= 4:
                 if t["speaker"] in seen:
                     t["text"] = t["text"][m.end() :]

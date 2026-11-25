@@ -408,6 +408,8 @@ _GRAMMAR_FIXES = (
 def one_line(text: str) -> str:
     """セリフの中の改行を文の区切りにする（「…のだ\nそれなら…」→「…のだ。それなら…」）。"""
     # 行末に紛れ込んだ半角の引用符（「声が出ないのだ！'」）も外す
+    # 太字などの Markdown の記号（「**変更する**」）も外す（字幕にそのまま出てしまう）
+    text = re.sub(r"\*\*|__|`", "", text)
     parts = [x.strip().strip("'\"`") for x in re.split(r"[\r\n]+", text) if x.strip()]
     out = ""
     for x in parts:
