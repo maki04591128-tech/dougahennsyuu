@@ -170,3 +170,10 @@ def test_avoided_endings_ask_for_a_rewrite():
     _, iss = check_line(0, "節電の魔法を教えてあげますわ。", m)
     assert [i.kind for i in iss] == ["avoid"]
     assert check_line(0, "まずは基本から教えてあげるわ。いいかしら？", m)[1] == []
+
+
+def test_noda_attached_wrongly_is_fixed():
+    z = _p("ずんだもん")
+    fixed, iss = check_line(0, "なるほどのだ！でも、どうやってやるののだ？", z)
+    assert fixed == "なるほどなのだ！でも、どうやってやるのだ？"
+    assert check_line(0, "そうなのだ！便利なのだ。", z)[1] == []

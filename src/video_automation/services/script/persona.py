@@ -106,6 +106,8 @@ class PersonaIssue:
     def message(self) -> str:
         if self.kind == "ending":
             return f"語尾「{self.expected}」がありません: {self.found}"
+        if self.kind == "noda":
+            return "「のだ」の付け方（「なるほどのだ」「やるののだ」）を直しました"
         if self.kind == "avoid":
             return f"このキャラクターが使わない言い方「{self.expected}」があります: {self.found}"
         if self.kind == "foreign_ending":
@@ -317,6 +319,15 @@ def check_line(
             fixed = fixed[: m.start() + 1]
             issues.append(PersonaIssue(index, "stray_ending", e, "", fixed))
             break
+    # 「のだ」の付け方の誤り（「やるののだ」「なるほどのだ」）を直す
+    if any(e.endswith("のだ") for e in p.endings):
+        new = re.sub(r"のの(だ)", r"の\1", fixed)
+        new = re.sub(
+            r"(なるほど|そう|本当|ほんと|大丈夫|簡単|便利|大事|大切)のだ", r"\1なのだ", new
+        )
+        if new != fixed:
+            issues.append(PersonaIssue(index, "noda", "のだ", "なのだ", new))
+            fixed = new
     if p.first:
         allowed = set(p.first)
         if allowed & _WATASHI:
