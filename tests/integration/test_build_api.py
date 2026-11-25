@@ -190,3 +190,69 @@ async def test_change_plan_and_revise_after_build(bclient, fake):
     assert "前に作った台本" in prompts[-1] and "もっと短くして" in prompts[-1]
     new = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
     assert new[0] == "短く話します。"
+
+
+async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path):
+    """画面録画を渡すと操作説明になり、録画を中央の枠に置いて演出はそれを隠さない。"""
+    c = bclient
+    await c.post("/providers/discover")
+    # 取り込みを許可していない場所の録画は断る
+    other = tmp_path / "rec.mp4"
+    other.write_bytes((media_dir / "clip.mp4").read_bytes())
+    r = await c.post(
+        "/build/plan", json={"instruction": "設定の変え方", "screen_recording": str(other)}
+    )
+    assert r.status_code == 400 and "フォルダ" in r.json()["message"]
+
+    r = await c.post(
+        "/build/plan",
+        json={
+            "instruction": "アプリの設定画面の開き方を説明して",
+            "screen_recording": str(media_dir / "clip.mp4"),
+        },
+    )
+    assert r.status_code == 201, r.text
+    plan = r.json()
+    assert plan["purpose"] == "tutorial" and "画面録画を置く" in plan["steps"]
+    assert plan["duration_sec"] == 15  # 録画（3 秒）に合わせる。短すぎる値は 15 秒に
+    assert any("操作の手順" in n for n in plan["notes"])
+    names = [ch["name"] for ch in plan["characters"]]
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "scenes" not in props:
+            return None
+        return {
+            "scenes": [
+                {
+                    "purpose": "手順",
+                    "turns": [
+                        {"speaker": names[0], "text": "まず右上の歯車を押します。"},
+                        {"speaker": names[-1], "text": "設定の画面が開いたね。"},
+                        {"speaker": names[0], "text": "ここで表示の大きさを変えられます。"},
+                    ],
+                }
+            ],
+            "notes": [],
+        }
+
+    fake.chat_responder = responder
+    r = await c.post(
+        f"/build/{plan['project_id']}/run",
+        json={"script_id": plan["script_id"], "use_llm_direction": False},
+    )
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    tracks = {t["name"]: t for t in tl["tracks"]}
+    rec = [x for x in tl["clips"] if x["track_id"] == tracks["画面録画"]["id"]]
+    assert rec and rec[0]["volume"] == 0.0 and rec[0]["start_frame"] == 0
+    # 立ち絵が無いので枠は画面の 9 割まで。左右の真ん中・字幕より上
+    assert abs(rec[0]["transform"]["x"]) < 1e-6 and rec[0]["transform"]["y"] < 0
+    order = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
+    assert order.index("演出・背景") < order.index("画面録画") < order.index("演出・図")
+    assert order.index("演出・図") < order.index("演出・文字")
+    # 話が録画より長いので、最後の画面を止めて出す（操作箇所へのズームは作れている）
+    assert len(rec) == 2 and rec[1]["start_frame"] == rec[0]["end_frame"]
+    assert any("最後の画面" in n for n in job.result["notes"])
+    assert not any("ズーム" in n for n in job.result["notes"])

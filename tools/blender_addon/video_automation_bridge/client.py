@@ -106,8 +106,11 @@ class Client:
         duration_sec: int | None = None,
         orientation: str = "auto",
         reference: str = "",
+        screen_recording: str = "",
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"instruction": instruction, "orientation": orientation}
+        if screen_recording.strip():
+            body["screen_recording"] = screen_recording.strip()
         if duration_sec:
             body["duration_sec"] = duration_sec
         if reference.strip():
