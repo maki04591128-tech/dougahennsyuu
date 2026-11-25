@@ -270,9 +270,9 @@ class ScriptStudio:
             for x in iss:
                 if x.kind in ("foreign_ending", "stray_ending") and x.fixed is not None:
                     swapped.append(f"{it['speaker']}の語尾「{x.found}」")
-                elif x.kind != "ending" and x.fixed is not None:
+                elif x.kind not in ("ending", "avoid") and x.fixed is not None:
                     swapped.append(f"{it['speaker']}「{x.found}」→「{x.expected}」")
-                if x.kind == "ending":
+                if x.kind in ("ending", "avoid") and i not in need:
                     need.append(i)
             it["text"] = fixed
         if swapped:
@@ -319,7 +319,7 @@ class ScriptStudio:
                 new_fixed, iss = check_line(
                     0, new, p, foreign_endings(personas, it["speaker"]), personas
                 )
-                ok = not iss or all(x.kind != "ending" for x in iss)
+                ok = not iss or all(x.kind not in ("ending", "avoid") for x in iss)
                 new = new_fixed
             if ok:
                 it["text"] = new[:2000]
@@ -1340,7 +1340,7 @@ class ScriptStudio:
             p = personas.get(t.speaker)
             if p is not None and not p.empty:
                 new, iss = check_line(0, new, p, foreign_endings(personas, t.speaker), personas)
-                if any(x.kind == "ending" for x in iss):
+                if any(x.kind in ("ending", "avoid") for x in iss):
                     continue
             try:
                 await self._apply_ai_text(script_id, t.id, new[:2000], None, "事実の確認")

@@ -73,10 +73,11 @@ class Persona:
     calls: dict[str, str] = field(default_factory=dict)
     # このキャラクターの呼ばれ方（名前・ほかのキャラクターからの呼び名）
     known_as: list[str] = field(default_factory=list)
+    avoid: list[str] = field(default_factory=list)  # 文末に使わない言い方（「〜」は除く）
 
     @property
     def empty(self) -> bool:
-        return not (self.first or self.second or self.endings or self.calls)
+        return not (self.first or self.second or self.endings or self.calls or self.avoid)
 
     def rules_text(self) -> str:
         """台本を作るときに渡す、必ず守る規則の文。"""
@@ -87,6 +88,8 @@ class Persona:
             parts.append(f"相手は「{'」「'.join(self.second)}」と呼ぶ")
         if self.endings:
             parts.append(f"文末の大半を「{'」「'.join(self.endings)}」にする（疑問文も含む）")
+        if self.avoid:
+            parts.append(f"文末に「{'」「'.join(self.avoid)}」は使わない")
         if self.calls:
             parts.append("、".join(f"{n}を「{c}」" for n, c in self.calls.items()) + "と呼ぶ")
         return f"{self.name}: " + "。".join(parts) if parts else ""
@@ -103,6 +106,8 @@ class PersonaIssue:
     def message(self) -> str:
         if self.kind == "ending":
             return f"語尾「{self.expected}」がありません: {self.found}"
+        if self.kind == "avoid":
+            return f"このキャラクターが使わない言い方「{self.expected}」があります: {self.found}"
         if self.kind == "foreign_ending":
             return f"ほかのキャラクターの語尾「{self.found}」を使っています"
         if self.kind == "stray_ending":
@@ -141,6 +146,10 @@ def parse_style(name: str, text: str) -> Persona:
             if b not in seen:
                 seen.append(b)
         p.second = seen
+    m = re.search(r"((?:『[^』]+』)+)のような言い方はしない", text)
+    if m:
+        p.avoid = [e.lstrip("〜~ー") for e in re.findall(r"『([^』]+)』", m.group(1))]
+        p.avoid = [e for e in p.avoid if e]
     m = re.search(r"語尾は((?:「[^」]+」・?)+)", text)
     if m:
         p.endings = [e.lstrip("〜~ー") for e in re.findall(r"「([^」]+)」", m.group(1))]
@@ -359,6 +368,13 @@ def check_line(
             for x in issues:
                 if x.kind == "foreign_ending":
                     x.fixed = fixed
+    if p.avoid:
+        for sent in (x.strip() for x in _SENT.findall(fixed) if x.strip()):
+            core = sent.rstrip(_TRAIL)
+            hit = next((e for e in p.avoid if _ends_with(core, e) or core.endswith(e + "か")), None)
+            if hit is not None:
+                issues.append(PersonaIssue(index, "avoid", sent[:40], hit))
+                break
     if p.endings:
         sents = [s.strip() for s in _SENT.findall(fixed) if s.strip()]
         # 相づち・感嘆だけの短い文（「えっ！」「うん」）は語尾の対象にしない
