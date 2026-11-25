@@ -885,6 +885,16 @@ class BuildService:
             )
             return (await s.execute(q)).scalars().first()
 
+    async def _place_narration(self, project_id: str, sid: str) -> list[str]:
+        """台本の声をタイムラインに置く。置けなければ書き出しを止める（声の無い動画を作らない）。"""
+        try:
+            await self.c.timeline.from_script(project_id, sid)
+        except Exception as exc:  # noqa: BLE001
+            raise BuildError(
+                f"キャラクターの声をタイムラインに置けませんでした: {type(exc).__name__}"
+            ) from exc
+        return []
+
     async def _place_audio(self, project_id: str, sid: str) -> list[str]:
         """BGM と効果音（場面の切り替えの「シュッ」・数値の強調の「ポン」）を置く。
 
@@ -1057,6 +1067,8 @@ class BuildService:
             if rec is not None:
                 await at("recording")
                 notes += await self._place_recording(project_id, sid, rec, at)
+        # キャラクターの声を「ナレーション」トラックに置く（立ち絵の動画には音が無い）
+        notes += await self._place_narration(project_id, sid)
 
         await at("direction")
         if req.keep_script and (k := text_size_factor(redo)) is not None:

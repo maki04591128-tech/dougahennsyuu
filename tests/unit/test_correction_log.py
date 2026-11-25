@@ -35,13 +35,17 @@ def test_export_writes_sft_and_dpo(tmp_path: Path):
             context=["ずんだもん: 何から始めるのだ？"],
             topic="節電",
         )
+    # 内容の誤りの修正（fact）は学習に使わない（セリフ回しだけを学ぶ）
+    log.record(
+        stage="fact", speaker="ずんだもん", before="電気が貯まるのだ", after="電気が減るのだ"
+    )
     path = Path(__file__).resolve().parents[2] / "tools" / "export_training_data.py"
     spec = importlib.util.spec_from_file_location("export_training_data", path)
     mod = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(mod)
     res = mod.export(src, tmp_path / "out")
-    assert res["total"] == 1
+    assert res["total"] == 1 and "stage_fact" not in res
     dpo = json.loads((tmp_path / "out" / "dpo.jsonl").read_text("utf-8"))
     assert dpo["chosen"] == "始めるわよ" and dpo["rejected"] == "始めましょうか"
     assert "節電" in dpo["prompt"] and "わたくし" in dpo["prompt"]

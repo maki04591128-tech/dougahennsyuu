@@ -67,6 +67,7 @@ from video_automation.services.animation.motion import (  # noqa: E402
     split_animation,
 )
 
+NARRATION_TRACK = "ナレーション"  # 台本の声（キャラクターの音声）を置くトラック
 log = get_logger("timeline")
 Snapshot = dict[str, dict[str, dict[str, Any] | None]]
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -727,9 +728,19 @@ class TimelineService:
                     )
                 ).scalars()
             }
-        commands: list[Any] = [AddTrack(kind=TrackKind.AUDIO, name="ナレーション")]
-        track_id = str(uuid4())
-        commands[0].track_id = track_id
+        # 作り直すときは前に置いた声を外して同じトラックに置き直す（声が二重にならない）
+        tl = await self.get_timeline(project_id)
+        track = next(
+            (t for t in tl.tracks if t.name == NARRATION_TRACK and t.kind == TrackKind.AUDIO),
+            None,
+        )
+        commands: list[Any] = []
+        if track is not None:
+            track_id = track.id
+            commands += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == track_id]
+        else:
+            track_id = str(uuid4())
+            commands.append(AddTrack(kind=TrackKind.AUDIO, name=NARRATION_TRACK, track_id=track_id))
         for seg in segs:
             af = audio[seg.audio_file_id or ""]
             asset = existing.get(af.id) or await self.register_generated(

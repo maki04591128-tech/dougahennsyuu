@@ -151,3 +151,37 @@ async def test_qa_detects_problems(mclient, media_dir, media_settings, tmp_path)
     job = await c.app.state.jobs.wait(r.json()["id"])
     assert job.status == "FAILED"
     assert (await c.get("/qa/nope")).status_code == 404
+
+
+async def test_qa_detects_voice_not_on_timeline(mclient):
+    """声を作っても、タイムラインに置かないと書き出しは無音になる。これを検出する。"""
+    c = mclient
+    pid = (await c.post("/projects", json={"name": "声", "width": 640, "height": 360})).json()["id"]
+    sid = (
+        await c.post(
+            "/scripts",
+            json={
+                "project_id": pid,
+                "text": "A：一つ目です。\nB：二つ目です。",
+                "default_style_id": 10005,
+            },
+        )
+    ).json()["id"]
+    job = await c.app.state.jobs.wait((await c.post(f"/scripts/{sid}/voice")).json()["id"])
+    assert job.status == "SUCCEEDED"
+    await c.post("/subtitles/generate", json={"script_id": sid})
+    await c.post("/subtitles/synchronize", json={"script_id": sid})
+
+    _, by = await _run(c, pid, script_id=sid)
+    assert "voice_not_placed" in _codes(by["project"], "error")
+
+    # 置けば消える。2 回置いても声は二重にならない
+    for _ in range(2):
+        r = await c.post(f"/projects/{pid}/timeline/from_script", json={"script_id": sid})
+        assert r.status_code < 300, r.text
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    narr = [t for t in tl["tracks"] if t["name"] == "ナレーション"]
+    assert len(narr) == 1
+    assert len([x for x in tl["clips"] if x["track_id"] == narr[0]["id"]]) == 2
+    _, by = await _run(c, pid, script_id=sid)
+    assert "voice_not_placed" not in _codes(by["project"])
