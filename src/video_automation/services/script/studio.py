@@ -7,6 +7,7 @@
 import json
 import re
 import time
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
@@ -421,7 +422,10 @@ class ScriptStudio:
         echo: list[str] = []
         for i, t in enumerate(turns):
             k = _norm(t["text"])
-            if k in seen and i in editable:
+            # 同じセリフに加え、直前のセリフの言い換えだけ（実機:「さあ、みんな、朝ごはんの
+            # メリットを考えるのだ」→「さあ、貴女たち、朝ごはんのメリットを考えるの」）も直させる
+            near = i > 0 and SequenceMatcher(None, _norm(turns[i - 1]["text"]), k).ratio() >= 0.7
+            if (k in seen or near) and i in editable:
                 dup.append(f"L{i + 1}")
             seen.setdefault(k, i)
             # 「半分！？」のように、前のセリフに無い言葉を聞き返す反応（前を直した後に残りやすい）
@@ -1444,7 +1448,9 @@ class ScriptStudio:
             kept = []
             for t in sc_["turns"]:
                 k = _norm(t["text"])
-                if k in seen_text and k not in fixed_keys:
+                prev = _norm(kept[-1]["text"]) if kept else ""
+                near = bool(prev) and SequenceMatcher(None, prev, k).ratio() >= 0.8
+                if (k in seen_text or near) and k not in fixed_keys:
                     continue
                 seen_text.add(k)
                 kept.append(t)

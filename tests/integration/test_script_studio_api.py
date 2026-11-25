@@ -490,10 +490,13 @@ async def test_too_short_script_is_lengthened_once(client, fake):
         text = prompt_of(b)
         asks.append("短すぎます" in text)
         n = 12 if "短すぎます" in text else 3
-        turns = [
-            {"speaker": ["ずんだもん", "めたん"][i % 2], "text": f"節電のコツその{i}を話すのだ。"}
-            for i in range(n)
-        ]
+        lines = [
+            "照明はLEDに替えるのだ。", "冷蔵庫は詰め込みすぎないことね。", "エアコンのフィルターを掃除するのだ。",
+            "待機電力も意外と大きいわ。", "洗濯はまとめて回すのだ。", "カーテンで日差しを遮るのよ。",
+            "炊飯器の保温は長くしないのだ。", "電子レンジで下ごしらえすると早いわ。", "テレビは見ない時に消すのだ。",
+            "ドライヤーは風量を強めにして短く使うの。", "冬は重ね着で暖房を控えるのだ。", "給湯の温度も少し下げてみるわ。",
+        ]  # fmt: skip
+        turns = [{"speaker": ["ずんだもん", "めたん"][i % 2], "text": lines[i]} for i in range(n)]
         return {"scenes": [{"purpose": "本題", "turns": turns}], "notes": []}
 
     fake.chat_responder = responder

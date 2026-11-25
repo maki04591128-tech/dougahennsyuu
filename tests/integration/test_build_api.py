@@ -223,10 +223,13 @@ async def test_voice_longer_than_target_is_sped_up(bclient, fake):
         props = (body.get("format") or {}).get("properties", {})
         if "scenes" not in props:
             return None
-        # 同じセリフは省かれるので、少しずつ変える
-        turns = [
-            {"speaker": names[i % len(names)], "text": f"{long}（その{i + 1}）"} for i in range(3)
+        # 同じ・よく似たセリフは省かれるので、内容を変える
+        texts = [
+            long,
+            "使わないときは機内モードにしておくと電波を探す電力が減って電池が長持ちします",
+            "充電は二十パーセントから八十パーセントの間で続けると電池が傷みにくくなります",
         ]
+        turns = [{"speaker": names[i % len(names)], "text": texts[i]} for i in range(3)]
         return {"scenes": [{"purpose": "本題", "turns": turns}], "notes": []}
 
     fake.chat_responder = responder
