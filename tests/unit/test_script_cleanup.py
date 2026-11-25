@@ -314,3 +314,11 @@ def test_round25():
     m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
     assert check_line(0, "いつでもサポートしるわ", m)[0] == "いつでもサポートするわ"
     assert check_line(0, "貴女たちもどうかよ！", m)[0] == "貴女たちもどうかしら！"
+
+
+def test_round26_question():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "寝る前のスマホ、見てないの？ それ、よくないのだ", z)[0].startswith(
+        "寝る前のスマホ、見てないのだ？"
+    )
+    assert check_line(0, "知ってるのだ？", z)[0] == "知ってるのだ？"
