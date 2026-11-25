@@ -55,7 +55,12 @@ def test_data_file_loads_and_skips_bad_rows(tmp_path):
 
 def test_metan_builtin_avoids_masculine_endings():
     text = BUILTIN["四国めたん"].text()
-    assert "『〜しろよ』" in text and "『〜ですわ』" in text and "『〜よ』" in text
+    assert (
+        "『〜しろ』" in text
+        and "『〜待てよ』" in text
+        and "『〜ですわ』" in text
+        and "『〜よ』" in text
+    )
     assert "語尾は" not in text  # 目安は規則（語尾の点検）にしない
 
 

@@ -147,7 +147,16 @@ BUILTIN: dict[str, VoiceCharacterStyle] = {
             first_person="わたくし",
             second_person="アンタ・貴女",
             ending_hints=["〜よ", "〜わ", "〜かしら"],
-            avoid=["〜ですわ", "〜ですの", "〜ます", "〜だぜ", "〜しろよ", "〜みないか"],
+            avoid=[
+                "〜ですわ",
+                "〜ですの",
+                "〜ます",
+                "〜だぜ",
+                "〜しろ",
+                "〜みないか",
+                "〜待てよ",
+                "〜持てよ",
+            ],  # fmt: skip
             tone="お嬢様風のタメ口（です・ます調にしない）。誰にでも遠慮しない。若干ツンデレ気味。趣味は中二病妄想、常に金欠",
             source="ボイボ寮 shikoku_metan（紹介・呼び方）",
             builtin=True,
