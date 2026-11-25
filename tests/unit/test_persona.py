@@ -162,3 +162,11 @@ def test_call_name_does_not_match_inside_a_longer_katakana_word():
     text = "エンジニアの話をしよう。ニアさんも来て"
     fixed, _ = check_line(0, text, a, (), {"A": a, "ニア": nia})
     assert fixed == "エンジニアの話をしよう。ニアちゃんも来て"
+
+
+def test_avoided_endings_ask_for_a_rewrite():
+    m = _p("四国めたん")
+    assert "ですわ" in m.avoid and "文末に「ですわ」" in m.rules_text()
+    _, iss = check_line(0, "節電の魔法を教えてあげますわ。", m)
+    assert [i.kind for i in iss] == ["avoid"]
+    assert check_line(0, "まずは基本から教えてあげるわ。いいかしら？", m)[1] == []
