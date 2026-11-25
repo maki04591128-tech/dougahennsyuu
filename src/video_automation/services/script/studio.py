@@ -100,7 +100,7 @@ def fit_to_duration(
     target_sec: float,
     chars_per_sec: float,
     keep: set[str] | None = None,
-    tolerance: float = 1.15,
+    tolerance: float = 1.05,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """LLM が目標の尺より長く書いた台本を、場面単位で短くする（場面の中は会話が続いているので、
     セリフを 1 つずつ抜くより、まとまった場面ごと省く方が話が崩れない）。
@@ -860,7 +860,9 @@ class ScriptStudio:
                 "instruction": req.instruction,
             }
             run = await self._run(s, script_id, "full", P.FULL_VERSION, inp)
-        total_chars = int((st.target_duration_sec or 90) * st.chars_per_sec)
+        # 発話の間（実機で 1 発話あたり 0.3〜0.5 秒）の分だけ文字を少なめに頼む。
+        # 実機では 60 秒の指定で 71 秒になっていた
+        total_chars = int((st.target_duration_sec or 90) * st.chars_per_sec * 0.9)
         personas = self._personas(cdata)
         user = [
             P.settings_text(inp["settings"]) or "テーマ: （未指定。一般的な紹介動画）",
