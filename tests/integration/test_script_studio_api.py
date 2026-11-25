@@ -97,7 +97,8 @@ async def test_full_ai_generation_records_scenes_runs_and_versions(client, fake)
     assert d["segments"][2]["scene_index"] == 1
     assert any("謎の人" in n for n in d["notes"]) and any("初心者" in n for n in d["notes"])
     assert d["estimated_total_sec"] > 0 and d["version"] == 2
-    p = prompt_of(fake.chat_bodies[-1])
+    # 台本を作る呼び出し（後に続く推敲の呼び出しではなく）
+    p = prompt_of(next(b for b in reversed(fake.chat_bodies) if kind_of(b) == "scenes"))
     assert "AI動画編集" in p and "語尾に「のだ」" in p and "明るく" in p
     runs = (await client.get(f"/scripts/{sc['id']}/runs")).json()
     assert runs[-1]["status"] == "SUCCEEDED" and runs[-1]["prompt_version"].startswith(
@@ -316,7 +317,8 @@ async def test_invalid_llm_output_is_retried_then_reported(client, fake):
 
     # 2回目で直れば成功
     seq = iter(['{"scenes": 1}', json.dumps(full_reply(), ensure_ascii=False)])
-    fake.chat_responder = lambda b: next(seq)
+    # 台本の生成だけ順に答える（推敲などの後の呼び出しは既定の応答）
+    fake.chat_responder = lambda b: next(seq) if kind_of(b) == "scenes" else None
     r = await client.post(f"/scripts/{sc['id']}/generate", json={})
     assert r.status_code == 200 and len(r.json()["segments"]) == 3
 

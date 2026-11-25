@@ -22,10 +22,12 @@ TASK_HINTS: dict[TaskType, tuple[str, ...]] = {
     TaskType.EDIT_PLAN: ("qwen3.5", "qwen35"),
     TaskType.STRUCTURED_COMMAND: ("qwen3.5", "qwen35"),
     TaskType.TOOL_SELECTION: ("qwen3.5", "qwen35"),
-    TaskType.SCRIPT_GENERATION: ("swallow",),
-    TaskType.SUBTITLE: ("swallow",),
-    TaskType.PROOFREADING: ("swallow",),
-    TaskType.IMAGE_UNDERSTANDING: ("gemma",),
+    # 台本・字幕・校正は Qwen3.5。実機の比較（2026-11-25、ずんだもんと四国めたんの掛け合い）で
+    # Swallow は「のだ、」を文頭に置く・ずんだもんが「〜なのよ」と話すなど口調が崩れた
+    TaskType.SCRIPT_GENERATION: ("qwen3.5", "qwen35"),
+    TaskType.SUBTITLE: ("qwen3.5", "qwen35"),
+    TaskType.PROOFREADING: ("qwen3.5", "qwen35"),
+    TaskType.IMAGE_UNDERSTANDING: ("vision", "gemma"),
     TaskType.CHAT: (),
 }
 

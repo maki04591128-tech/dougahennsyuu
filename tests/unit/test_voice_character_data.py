@@ -129,3 +129,56 @@ async def test_quiet_emotions_are_not_used_for_exclamations():
     got = await studio._emotion_styles([{"name": "めたん", "voice": {"style_id": 2}}], scenes)
     assert got == {("めたん", "whisper"): 36, ("めたん", "tsun"): 6}
     assert scenes[0]["turns"][0]["emotion"] == "neutral"
+
+
+def test_examples_go_into_the_prompt_as_reference():
+    from video_automation.services.script import prompts as P
+    from video_automation.services.script.persona import Persona
+
+    p = Persona(
+        "めたん", first=["わたくし"], examples=["おなかがすいたわ。なにか食べるものはないかしら"]
+    )
+    text = P.persona_rules_text({"めたん": p})
+    assert "話し方の手本" in text and "そのまま使わない" in text and "おなかがすいたわ" in text
+
+
+@pytest.mark.asyncio
+async def test_polish_rewrites_only_editable_lines_that_keep_the_persona():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.persona import parse_style
+    from video_automation.services.script.studio import ScriptStudio
+    from video_automation.services.voice.characters import BUILTIN
+
+    class _LLM:
+        async def complete_json(self, task, msgs, schema, **kw):
+            assert "台本:" in msgs[-1].content
+            return SimpleNamespace(
+                data={
+                    "fixes": [
+                        {
+                            "id": "L2",
+                            "problem": "言葉遊び",
+                            "text": "明るさを下げるのが一番効くわ。",
+                        },
+                        {"id": "L1", "problem": "固定", "text": "書き換え"},  # 固定セリフ
+                        {"id": "L3", "problem": "x", "text": "ですわ。"},  # 使わない言い方
+                    ]
+                },
+                model_key="m",
+            )
+
+    personas = {"めたん": parse_style("めたん", BUILTIN["四国めたん"].text())}
+    turns = [
+        {"speaker": "めたん", "text": "固定のセリフよ。"},
+        {"speaker": "めたん", "text": "貴女は『下げる』と呼ぶのね。"},
+        {"speaker": "めたん", "text": "そうね。"},
+    ]
+    studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
+    notes = await studio._polish(turns, {1, 2}, personas, None)
+    assert [t["text"] for t in turns] == [
+        "固定のセリフよ。",
+        "明るさを下げるのが一番効くわ。",
+        "そうね。",
+    ]
+    assert notes == ["会話として不自然なセリフを 1 件書き直しました"]

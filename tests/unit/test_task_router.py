@@ -36,8 +36,14 @@ MODELS = [GEMMA, QWEN, SWALLOW]
 def test_auto_uses_spec_hints_and_requirements():
     r = TaskRouter()
     assert r.resolve(TaskType.TOOL_SELECTION, MODELS, {}, None).resolved_model_key == QWEN.key
-    assert r.resolve(TaskType.SCRIPT_GENERATION, MODELS, {}, None).resolved_model_key == SWALLOW.key
-    assert r.resolve(TaskType.PROOFREADING, MODELS, {}, None).resolved_model_key == SWALLOW.key
+    assert r.resolve(TaskType.SCRIPT_GENERATION, MODELS, {}, None).resolved_model_key == QWEN.key
+    assert r.resolve(TaskType.PROOFREADING, MODELS, {}, None).resolved_model_key == QWEN.key
+
+
+def test_image_task_prefers_a_vision_model():
+    vision = _m("qwen3.5-9b-vision:latest", structured_output=True, image_input=True)
+    res = TaskRouter().resolve(TaskType.IMAGE_UNDERSTANDING, [*MODELS, vision], {}, QWEN.key)
+    assert res.resolved_model_key == vision.key
 
 
 def test_image_task_without_vision_falls_back_to_active():

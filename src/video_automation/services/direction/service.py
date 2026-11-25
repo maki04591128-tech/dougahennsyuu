@@ -466,6 +466,7 @@ class DirectionService:
         if not lines or any(x.end <= x.start for x in lines):
             raise CommandError("generate voices and synchronize subtitles first")
         plan = normalize(req.plan, [x.text for x in lines])
+        ts = req.text_scale
         prof = await self.design.profile_for(p.id) if self.design else None
         extras = (await self.design.get(p.id)).extras if self.design and prof else []
         plan, dropped = fit_to_profile(plan, prof, extras)
@@ -599,7 +600,7 @@ class DirectionService:
                     animation="bounce" if kinetic else "pop",
                     # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
                     # 題名の幅は画面幅の 80%×size（title_card.py）
-                    size=min(0.9, main_w * 0.95 / 0.8),
+                    size=min(0.95, main_w * 0.95 / 0.8 * ts),
                     position="center",
                     text_color=ink,
                     outline_color=title_outline,
@@ -617,7 +618,7 @@ class DirectionService:
                         panel_color=panel,
                         text_color=ink,
                         font=heading_font,
-                        scale=0.62,
+                        scale=round(0.62 * ts, 3),
                     )
                 )
                 st = min(frames(0.6), max(0, title_end - 15))
@@ -695,7 +696,7 @@ class DirectionService:
                             panel_color=panel,
                             text_color=ink,
                             font=heading_font,
-                            scale=CARD_SCALE,
+                            scale=round(min(2.0, CARD_SCALE * ts), 3),
                             reveal=reveal,
                             # 録画の上に出す章カードは、後ろの細かい画面が透けないよう濃く
                             panel_opacity=0.96 if recording else 0.88,
@@ -825,7 +826,7 @@ class DirectionService:
                     panel_color=panel,
                     text_color=ink,
                     font=heading_font,
-                    scale=0.62,
+                    scale=round(0.62 * ts, 3),
                 )
             )
             aw, ah = a.width or 1, a.height or 1
