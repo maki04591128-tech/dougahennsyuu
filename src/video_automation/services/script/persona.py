@@ -488,6 +488,13 @@ def check_line(
             fixed = fixed[: m.start() + 1]
             issues.append(PersonaIssue(index, "stray_ending", e, "", fixed))
             break
+    # 「退治するのよ、わ」のように、言い終えた後に 1 文字の語尾を読点で足す癖も外す
+    for e in ("わ", "よ", "ね"):
+        m = re.search(rf"([よねわのだ])[、,]\s*{e}[。！!]?\s*$", fixed)
+        if m:
+            fixed = fixed[: m.start() + 1]
+            issues.append(PersonaIssue(index, "stray_ending", e, "", fixed))
+            break
     # 「のだ」の付け方の誤り（「やるののだ」「なるほどのだ」）を直す
     if any(e.endswith("のだ") for e in p.endings):
         new = re.sub(r"のの(だ)", r"の\1", fixed)
@@ -517,6 +524,9 @@ def check_line(
         new = re.sub(r"てみなのだ", "てみるのだ", new)
         new = re.sub(r"(みんな|オマエたち|オマエら)なのだ(?=[！!、])", r"\1", new)
         new = re.sub(r"^(朝|昼|夜|今日|明日)のだ、", r"\1は、", new)
+        # 名詞にそのまま「のだ」（「大敵のだ」）→「なのだ」、「食べするのだ」→「食べるのだ」
+        new = re.sub(r"([一-龥ァ-ヺ])のだ", r"\1なのだ", new)
+        new = re.sub(r"([べめれけせてね])するのだ", r"\1るのだ", new)
         new = re.sub(
             r"([こそとのほもろごぞどぼぽ])うね?のだ",
             lambda m: (

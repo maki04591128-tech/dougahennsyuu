@@ -276,3 +276,12 @@ def test_hakadoriru():
     m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
     assert check_line(0, "これで仕事もはかどりるわ。", m)[0] == "これで仕事もはかどるわ。"
     assert check_line(0, "本を借りるわ。", m)[0] == "本を借りるわ。"
+
+
+def test_round23():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "風邪の敵を退治するのよ、わ", m)[0] == "風邪の敵を退治するのよ"
+    assert check_line(0, "寝不足は大敵のだ", z)[0] == "寝不足は大敵なのだ"
+    assert check_line(0, "オマエもフルーツを食べするのだ", z)[0] == "オマエもフルーツを食べるのだ"
+    assert check_line(0, "わかったのだ、のだ", z)[0] != ""

@@ -1455,6 +1455,13 @@ class ScriptStudio:
                 tolerance=1.1,
             )
             notes += fit_notes
+        # 書き直し・最後の手当てで入った誤り（「いいのわ」など）も、保存の前に規則で直す
+        for t in ai_turns:
+            p = personas.get(t["speaker"])
+            if p is not None and not p.empty:
+                t["text"], _ = check_line(
+                    0, t["text"], p, foreign_endings(personas, t["speaker"]), personas
+                )
         self._record_corrections("generate", res.data["scenes"], raw, personas, st, req.model_key)
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
