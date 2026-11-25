@@ -166,3 +166,12 @@ def test_round14_labels():
     )
     assert check_line(0, "L5サイズの箱を使うのだ", z)[0] == "L5サイズの箱を使うのだ"
     assert check_line(0, "おはようのだ！", z)[0] == "おはようなのだ！"
+
+
+def test_swallow_noda_forms():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "まずは対策をまとめてみようのだ。", z)[0] == "まずは対策をまとめてみるのだ。"
+    )
+    assert check_line(0, "今日から実践してごらんのだ。", z)[0] == "今日から実践してほしいのだ。"
+    assert check_line(0, "覚えておくんなのだ", z)[0] == "覚えておくのだ"
