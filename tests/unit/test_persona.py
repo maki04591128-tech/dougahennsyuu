@@ -177,3 +177,11 @@ def test_noda_attached_wrongly_is_fixed():
     fixed, iss = check_line(0, "なるほどのだ！でも、どうやってやるののだ？", z)
     assert fixed == "なるほどなのだ！でも、どうやってやるのだ？"
     assert check_line(0, "そうなのだ！便利なのだ。", z)[1] == []
+
+
+def test_avoided_ending_before_a_comma_is_found():
+    m = _p("四国めたん")
+    _, iss = check_line(0, "わたくしは、ちゃんと知ってますわ、アンタ。", m)
+    assert [i.kind for i in iss] == ["avoid"]
+    # 読点の前でも、タメ口なら問題なし
+    assert check_line(0, "知ってるわ、アンタ。", m)[1] == []
