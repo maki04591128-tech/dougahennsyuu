@@ -478,7 +478,9 @@ async def test_fact_check_fixes_wrong_lines_keeping_persona(client, fake):
 
 
 async def test_too_short_script_is_lengthened_once(client, fake):
-    """目標の尺の 8 割に届かない台本は、1 回だけ内容を書き足させる（実機: 60 秒に 42 秒）。"""
+    """目標の尺の 9 割に届かない台本は、内容を書き足させる（2 回まで。実機: 60 秒に 42 秒）。
+
+    2 回目で長くならなければ 1 回目の書き足しを使う。"""
     sc = await _setup(client, settings={"topic": "節電", "target_duration_sec": 60})
     asks = []
 
@@ -496,6 +498,6 @@ async def test_too_short_script_is_lengthened_once(client, fake):
 
     fake.chat_responder = responder
     d = (await client.post(f"/scripts/{sc['id']}/generate", json={})).json()
-    assert asks == [False, True]
+    assert asks == [False, True, True]
     assert len(d["segments"]) == 12
     assert any("書き足させました" in n for n in d["notes"])

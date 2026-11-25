@@ -25,3 +25,15 @@ def test_fill_endings_only_long_missing():
     assert fill_endings("えっ！エアコンは28 度だ！", p) == "えっ！エアコンは28 度なのだ！"
     meta = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
     assert fill_endings("エアコンは28 度だ！", meta) == "エアコンは28 度だ！"
+
+
+def test_add_noda_skips_particle_endings():
+    assert add_noda("毎日同じ時間に寝て起きる習慣を！") == "毎日同じ時間に寝て起きる習慣を！"
+
+
+def test_whole_line_quote_removed():
+    fixed, iss = check_line(0, "「ブルーライトで眠れなくなるわ！」", _zunda())
+    assert fixed == "ブルーライトで眠れなくなるわ！"
+    assert any(x.kind == "quote" for x in iss)
+    fixed, _ = check_line(0, "「1234」は危ないのだ！", _zunda())
+    assert fixed == "「1234」は危ないのだ！"
