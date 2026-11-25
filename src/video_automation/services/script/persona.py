@@ -380,11 +380,13 @@ def check_line(
                 if x.kind == "foreign_ending":
                     x.fixed = fixed
     if p.avoid:
-        for sent in (x.strip() for x in _SENT.findall(fixed) if x.strip()):
-            core = sent.rstrip(_TRAIL)
+        # 文末と、読点で区切った句の終わり（「ご存じですわ、アンタ。」）を見る
+        parts = [x for x in re.split(r"(?<=[、,])", fixed) if x.strip()]
+        for part in (y.strip() for x in parts for y in _SENT.findall(x) if y.strip()):
+            core = part.rstrip(_TRAIL)
             hit = next((e for e in p.avoid if _ends_with(core, e) or core.endswith(e + "か")), None)
             if hit is not None:
-                issues.append(PersonaIssue(index, "avoid", sent[:40], hit))
+                issues.append(PersonaIssue(index, "avoid", part[:40], hit))
                 break
     if p.endings:
         sents = [s.strip() for s in _SENT.findall(fixed) if s.strip()]
