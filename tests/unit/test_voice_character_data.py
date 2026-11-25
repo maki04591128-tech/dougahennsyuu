@@ -335,3 +335,31 @@ async def test_polish_points_out_repeated_phrases():
     studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
     await studio._polish(turns, {0, 1, 2}, personas, None)
     assert "同じ言い回しの繰り返し" in seen[0] and "L3" in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_polish_points_out_near_duplicate():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.persona import parse_style
+    from video_automation.services.script.studio import ScriptStudio
+    from video_automation.services.voice.characters import BUILTIN
+
+    seen = []
+
+    class _LLM:
+        async def complete_json(self, task, msgs, schema, **kw):
+            seen.append(msgs[-1].content)
+            return SimpleNamespace(
+                data={"fixes": [{"id": "L1", "problem": "x", "text": "y"}]}, model_key="m"
+            )
+
+    personas = {"めたん": parse_style("めたん", BUILTIN["四国めたん"].text())}
+    turns = [
+        {"speaker": "ずんだもん", "text": "さあ、みんな、朝ごはんのメリットを考えるのだ"},
+        {"speaker": "めたん", "text": "さあ、貴女たち、朝ごはんのメリットを考えるの"},
+        {"speaker": "ずんだもん", "text": "まず第一、脳が目覚めやすくなるのだ"},
+    ]
+    studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
+    await studio._polish(turns, {0, 1, 2}, personas, None)
+    assert "必ず別の内容に書き直す）: L2" in seen[0]
