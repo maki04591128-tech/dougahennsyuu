@@ -308,3 +308,30 @@ async def test_polish_asks_again_for_worst_lines_when_nothing_found():
     assert len(calls) == 2 and "いちばん不自然" in calls[1]
     assert turns[1]["text"] == "継続こそ力なのよ。"
     assert notes == ["会話として不自然なセリフを 1 件書き直しました"]
+
+
+@pytest.mark.asyncio
+async def test_polish_points_out_repeated_phrases():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.persona import parse_style
+    from video_automation.services.script.studio import ScriptStudio
+    from video_automation.services.voice.characters import BUILTIN
+
+    seen = []
+
+    class _LLM:
+        async def complete_json(self, task, msgs, schema, **kw):
+            seen.append(msgs[-1].content)
+            return SimpleNamespace(
+                data={"fixes": [{"id": "L1", "problem": "x", "text": "y"}]}, model_key="m"
+            )
+
+    personas = {"ずんだもん": parse_style("ずんだもん", BUILTIN["ずんだもん"].text())}
+    turns = [
+        {"speaker": "ずんだもん", "text": t}
+        for t in ["水分が大事なのだ。", "日陰で休むのが大事なのだ。", "塩分も大事なのだ。"]
+    ]
+    studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
+    await studio._polish(turns, {0, 1, 2}, personas, None)
+    assert "同じ言い回しの繰り返し" in seen[0] and "L3" in seen[0]
