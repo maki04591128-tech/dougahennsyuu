@@ -45,3 +45,22 @@ def test_non_pcm16_and_silence_are_untouched():
     silent = _wav(0.0)
     assert level_speech(silent) == silent
     assert level_speech(b"not a wav") == b"not a wav"
+
+
+def test_peaky_voice_is_raised_with_soft_limit():
+    # 山の鋭い声（ピークは大きいが平均は小さい）も目標の近くまで上げ、ピークは上限を超えない
+    rate = 24000
+    t = np.arange(rate * 2) / rate
+    x = 0.06 * np.sin(2 * math.pi * 300 * t)
+    x[::2400] = 0.9  # 鋭い山
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes((x * 32767).astype("<i2").tobytes())
+    out = level_speech(buf.getvalue())
+    with wave.open(io.BytesIO(out), "rb") as w:
+        y = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2") / 32768.0
+    assert 20 * math.log10(np.max(np.abs(y))) <= -2.9
+    assert abs(_lufs(out) - SPEECH_LUFS) < 2.0

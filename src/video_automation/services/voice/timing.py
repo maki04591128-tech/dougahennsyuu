@@ -177,14 +177,19 @@ def level_speech(data: bytes) -> bytes:
     level = loudness_lufs(mono, params.framerate)
     if level is None:
         return data
-    gain = SPEECH_LUFS - level
-    peak = float(np.max(np.abs(x)))
-    if peak > 0:
-        gain = min(gain, SPEECH_PEAK_DB - 20 * np.log10(peak))
-    gain = max(-SPEECH_MAX_GAIN_DB, min(SPEECH_MAX_GAIN_DB, gain))
+    gain = max(-SPEECH_MAX_GAIN_DB, min(SPEECH_MAX_GAIN_DB, SPEECH_LUFS - level))
     if abs(gain) < 0.3:
         return data
-    y = np.clip(np.round(x * (10 ** (gain / 20)) * 32768.0), -32768, 32767).astype("<i2")
+    g = x * (10 ** (gain / 20))
+    # ピークだけを柔らかく抑える（ピークで上げ幅を決めると、山の鋭い声が小さいまま残り、
+    # 実機でセリフ間の差が 6.4 LU になった）。-6 dBFS から上を SPEECH_PEAK_DB へ滑らかに寄せる
+    ceil = 10 ** (SPEECH_PEAK_DB / 20)
+    knee = 10 ** (-6.0 / 20)
+    a = np.abs(g)
+    over = a > knee
+    a[over] = knee + (ceil - knee) * np.tanh((a[over] - knee) / (ceil - knee))
+    g = np.sign(g) * a
+    y = np.clip(np.round(g * 32768.0), -32768, 32767).astype("<i2")
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setparams(params)
