@@ -51,7 +51,12 @@ from video_automation.schemas.voice import (
 )
 from video_automation.services.voice.expressive import find_spans, join_split_words, kana_of, shape
 from video_automation.services.voice.reading import emphasis_terms, normalize_for_speech
-from video_automation.services.voice.timing import DEFAULT_FRAME_RATE, phrase_timings, wav_info
+from video_automation.services.voice.timing import (
+    DEFAULT_FRAME_RATE,
+    level_speech,
+    phrase_timings,
+    wav_info,
+)
 
 _KATA_WORD = re.compile(r"[ァ-ヴー]{3,}")
 
@@ -425,6 +430,7 @@ class VoiceService:
         wav: bytes,
         query: AudioQuery,
     ) -> AudioFile:
+        wav = level_speech(wav)  # セリフ間の音量差をそろえる
         rate, duration, _ = wav_info(wav)
         aid = str(uuid4())
         path = self._audio_dir(project_id) / f"{aid}.wav"
