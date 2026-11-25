@@ -1235,6 +1235,57 @@ class ScriptStudio:
             await self._commit(s, sc, f"{reason}: {seg.speaker}")
         return await self.detail(script_id)
 
+    # ---------- 事実の確認 ----------
+    async def fact_check(self, script_id: str, model_key: str | None = None) -> list[str]:
+        """台本の事実の誤りを AI に挙げさせ、口調を保ったまま直す。戻り値は画面に出す説明。
+
+        直した文は口調の規則に合い、長さが元の 1.6 倍以内のときだけ採る。固定セリフは直さない。"""
+        d = await self.detail(script_id)
+        turns = [t for t in d.segments if t.text.strip()]
+        if not turns:
+            return []
+        personas = self._personas([c.model_dump() for c in d.characters])
+        ids = {f"T{i + 1}": t for i, t in enumerate(turns)}
+        body = ""
+        if d.settings.reference.strip():
+            body += "参考資料:\n" + d.settings.reference.strip()[:4000] + "\n\n"
+        body += f"テーマ: {d.settings.topic or d.title}\n台本:\n" + "\n".join(
+            f"[{k}] {t.speaker}: {t.text}" for k, t in ids.items()
+        )
+        try:
+            res = await self.llm.complete_json(
+                TaskType.PROOFREADING,
+                [
+                    ChatMessage(role="system", content=P.FACT_SYSTEM),
+                    ChatMessage(role="user", content=body),
+                ],
+                P.FACT_SCHEMA,
+                model_key=model_key,
+                temperature=0.1,
+            )
+        except LLMError:
+            return []
+        fixed: list[str] = []
+        for f in res.data.get("fixes") or []:
+            t = ids.get((f.get("id") or "").strip("[] ").upper())
+            new = (f.get("text") or "").strip()
+            if t is None or not new or new == t.text or len(new) > len(t.text) * 1.6 + 8:
+                continue
+            p = personas.get(t.speaker)
+            if p is not None and not p.empty:
+                new, iss = check_line(0, new, p, foreign_endings(personas, t.speaker))
+                if any(x.kind == "ending" for x in iss):
+                    continue
+            try:
+                await self._apply_ai_text(script_id, t.id, new[:2000], None, "事実の確認")
+            except FixedTurnError:
+                continue
+            fixed.append(str(f.get("problem") or "").strip()[:40] or t.text[:20])
+        log.info("fact_check", script_id=script_id, fixes=len(fixed))
+        if not fixed:
+            return []
+        return [f"内容の誤りを {len(fixed)} か所直しました: " + "／".join(fixed[:3])]
+
     # ---------- 検証 ----------
     async def validate(self, script_id: str, req: ScriptValidateRequest) -> ScriptValidation:
         d = await self.detail(script_id)

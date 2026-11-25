@@ -25,7 +25,13 @@ from video_automation.schemas.build import (
     PackChoice,
     ReadinessItem,
 )
-from video_automation.schemas.design import ClassifyRequest, ProjectDesign, Purpose
+from video_automation.schemas.design import (
+    ClassifyRequest,
+    Component,
+    Family,
+    ProjectDesign,
+    Purpose,
+)
 from video_automation.schemas.direction import DirectionApplyRequest, DirectionPlanRequest
 from video_automation.schemas.script_studio import (
     CharacterIn,
@@ -51,6 +57,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.schemas.voice import ReadingCheckRequest
+from video_automation.services.build import audio_bed
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.direction.service import native_transform
 from video_automation.services.transcribe.service import TranscribeRequest
@@ -97,6 +104,8 @@ STEPS = [  # 実際に行う順
 
 MUSIC_NAME = "曲: "  # 構成で取り込んだ曲の素材の名前の頭
 MUSIC_TRACK = "曲"
+BGM_TRACK = "BGM"
+SFX_TRACK = "効果音"
 # 曲から作るとき（MV・リリック）の手順。台本・声の代わりに、歌の時刻を文字起こしで取る
 MV_STEPS = [
     ("lyrics", "歌詞と時刻を合わせる"),
@@ -462,6 +471,8 @@ class BuildService:
         except Exception as exc:  # noqa: BLE001
             raise BuildError(f"台本を作れませんでした: {type(exc).__name__}") from exc
         notes += list(getattr(d, "notes", []) or [])[:5]
+        # 解説の内容の誤り（「コンセントを抜くと電気が貯まる」など）を直してから声にする
+        notes += await c.studio.fact_check(sid)
 
         await at("voice")
         # 声にする前に、読み間違い（英語・専門用語など）を AI に確かめさせて読みのルールにする
@@ -732,6 +743,124 @@ class BuildService:
             )
             return (await s.execute(q)).scalars().first()
 
+    async def _place_audio(self, project_id: str, sid: str) -> list[str]:
+        """BGM と効果音（場面の切り替えの「シュッ」・数値の強調の「ポン」）を置く。
+
+        落ち着いた系（字幕動画・インタビュー等）は BGM も効果音も付けない。効果音の数は
+        用途の型の上限まで。作り直すときは前に置いた BGM・効果音を外してから置く。"""
+        c = self.c
+        design = await c.design.get(project_id)
+        purpose = Purpose(design.purpose) if design.purpose else Purpose.EXPLAINER
+        prof = PROFILES[purpose]
+        if prof.family == Family.CALM:
+            return []
+        tl = await c.timeline.get_timeline(project_id)
+        fps = tl.fps_num / tl.fps_den
+        ends = [x.end_frame for x in (await c.studio.detail(sid)).segments if x.end_frame]
+        total = max([*ends, tl.duration_frames])
+        if total <= 0:
+            return []
+        cmds: list[Any] = []
+        tracks = {t.name: t for t in tl.tracks}
+        tid: dict[str, str] = {}
+        for name in (BGM_TRACK, SFX_TRACK):
+            if name in tracks:
+                cmds += [
+                    DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == tracks[name].id
+                ]
+                tid[name] = tracks[name].id
+            else:
+                tid[name] = str(uuid4())
+                cmds.append(AddTrack(kind=TrackKind.AUDIO, name=name, track_id=tid[name]))
+        work = c.settings.data_dir / "projects" / project_id / "assets"
+
+        async def register(path: Path, label: str) -> AssetRead:
+            a = await c.timeline.register_generated(
+                project_id, path, AssetKind.AUDIO, "build", label
+            )
+            return AssetRead.model_validate(a)
+
+        bgm = await register(
+            await audio_bed.make_bgm(
+                c.ffmpeg, work / f"bgm_{uuid4().hex[:8]}.wav", total / fps + 0.5
+            ),
+            "BGM（自動で作った和音）",
+        )
+        cmds.append(
+            AddClip(
+                track_id=tid[BGM_TRACK],
+                asset_id=bgm.id,
+                start_frame=0,
+                duration_frames=total,
+                volume=audio_bed.BGM_VOLUME,
+            )
+        )
+        notes = ["BGM を付けました（声より小さく）"]
+        # 効果音の時刻: カード（場面の切り替え）の出始め・「ポン」と出る数値のテロップ
+        cue: list[tuple[int, str]] = []
+        fig = tracks.get("演出・図")
+        if fig is not None:
+            clips = sorted(
+                (x for x in tl.clips if x.track_id == fig.id), key=lambda x: x.start_frame
+            )
+            prev_end = -1
+            for x in clips:
+                if x.start_frame != prev_end:  # 同じカードの項目の切り替えは数えない
+                    cue.append((x.start_frame, "whoosh"))
+                prev_end = x.end_frame
+        txt = tracks.get("演出・文字")
+        if txt is not None:
+            for x in tl.clips:
+                anim = x.animation.preset if x.animation is not None else None
+                if x.track_id == txt.id and anim == "pop_in":
+                    cue.append((x.start_frame + round(fps * 0.25), "pop"))  # 止まる瞬間
+        limit = prof.allowance(Component.SFX)
+        cue.sort()
+        if limit == 0:
+            cue = []
+        elif limit > 0:
+            cue = cue[:limit]
+        if cue:
+            wh = await register(
+                await audio_bed.make_whoosh(c.ffmpeg, work / f"sfx_whoosh_{uuid4().hex[:6]}.wav"),
+                "効果音（切り替え）",
+            )
+            pop = await register(
+                await audio_bed.make_pop(c.ffmpeg, work / f"sfx_pop_{uuid4().hex[:6]}.wav"),
+                "効果音（強調）",
+            )
+            last = -(10**9)
+            for frame, kind in cue:
+                a = wh if kind == "whoosh" else pop
+                start = (
+                    max(0, frame - round(fps * audio_bed.WHOOSH_LEAD_SEC))
+                    if kind == "whoosh"
+                    else frame
+                )
+                length = max(1, int((a.duration_sec or 0.3) * fps))  # 素材の長さを超えない
+                if start < last or start + length > total:  # 重なる・最後をはみ出す音は置かない
+                    continue
+                cmds.append(
+                    AddClip(
+                        track_id=tid[SFX_TRACK],
+                        asset_id=a.id,
+                        start_frame=start,
+                        duration_frames=length,
+                        volume=audio_bed.WHOOSH_VOLUME
+                        if kind == "whoosh"
+                        else audio_bed.POP_VOLUME,
+                    )
+                )
+                last = start + length
+            n = sum(1 for x in cmds if isinstance(x, AddClip) and x.track_id == tid[SFX_TRACK])
+            if n:
+                await c.design.record(project_id, "build_audio", {"used": {"sfx": n}})
+                notes.append(f"効果音を {n} か所に付けました")
+        await c.timeline.submit(
+            project_id, CommandRequest(command=Batch(commands=cmds), description="BGM と効果音")
+        )
+        return notes
+
     async def _place_music(self, project_id: str, song: AssetRead) -> None:
         """曲を音声のトラックに頭から置く（前に置いた曲は外す）。"""
         c = self.c
@@ -799,6 +928,11 @@ class BuildService:
         skipped = list(getattr(res, "skipped", []) or [])
         if skipped:
             notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")
+        try:
+            notes += await self._place_audio(project_id, sid)
+        except Exception as exc:  # noqa: BLE001 - BGM・効果音が無くても動画は作る
+            log.warning("build_audio_failed", error=str(exc)[:300])
+            notes.append(f"BGM・効果音を付けられませんでした（{type(exc).__name__}）")
 
         await at("check")
         rreq = RenderRequest(
