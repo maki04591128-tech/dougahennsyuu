@@ -345,3 +345,12 @@ def test_round29_masuno():
     m = parse_style("四国めたん", BUILTIN["四国めたん"].text())
     _, iss = check_line(0, "わたくしは、ゆっくりとやりますの", m)
     assert any(x.kind == "avoid" for x in iss)
+
+
+def test_round30():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert check_line(0, "要点は四つのだ", z)[0] == "要点は四つなのだ"
+    assert check_line(0, "さぁ、どうしようかのだ", z)[0] == "さぁ、どうしようかなのだ"
+    assert check_line(0, "コツは覚えただろうかなのだ？", z)[0] == "コツは覚えたのだ？"
+    assert check_line(0, "使うのだから大事なのだ", z)[0] == "使うのだから大事なのだ"
+    assert check_line(0, "ここで待つのだ", z)[0] == "ここで待つのだ"
