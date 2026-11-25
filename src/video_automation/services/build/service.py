@@ -96,7 +96,6 @@ STEPS = [  # 実際に行う順
 
 MUSIC_NAME = "曲: "  # 構成で取り込んだ曲の素材の名前の頭
 MUSIC_TRACK = "曲"
-LYRICS_TITLE = "歌詞: "  # 曲の文字起こしで作る台本の題名の頭
 # 曲から作るとき（MV・リリック）の手順。台本・声の代わりに、歌の時刻を文字起こしで取る
 MV_STEPS = [
     ("lyrics", "歌詞と時刻を合わせる"),
@@ -348,6 +347,11 @@ class BuildService:
         can_run = all(r.ok for r in ready if r.required)
         song = await self._asset(project_id, MUSIC_NAME, AssetKind.AUDIO)
         if song is not None:
+            # 曲から作るときは声を使わないので、VOICEVOX は無くてよい
+            for r in ready:
+                if r.key == "voice":
+                    r.required = False
+            can_run = all(r.ok for r in ready if r.required)
             t = c.transcriber.status()
             ready.append(
                 ReadinessItem(
@@ -632,7 +636,7 @@ class BuildService:
             i = keys.index(key)
             await progress((i + frac) / len(keys), f"{labels[key]}（{i + 1}/{len(keys)}）")
 
-        sid = await self._lyrics_script(project_id)
+        sid = await self._lyrics_script(project_id, detail.id)
         if not req.keep_script or sid is None:
             await at("lyrics")
 
@@ -645,7 +649,7 @@ class BuildService:
                         project_id=project_id,
                         asset_id=song.id,
                         lyrics=detail.settings.reference or None,
-                        title=f"{LYRICS_TITLE}{detail.title}"[:255],
+                        title=detail.title[:255],  # 題名は動画の題名になる
                     ),
                     tp,
                 )
@@ -704,16 +708,17 @@ class BuildService:
         await progress(1.0, "できあがりました")
         return {"render_id": r.id, "video": video, "notes": notes, "script_id": sid}
 
-    async def _lyrics_script(self, project_id: str) -> str | None:
+    async def _lyrics_script(self, project_id: str, plan_sid: str) -> str | None:
         """前に文字起こしで作った歌詞の台本（新しいもの）。"""
         async with self.c.db.session_factory() as s:
             from sqlalchemy import select
 
             from video_automation.database.models import Script
 
+            # 構成で作った台本（歌詞の参考を持つ空の台本）以外の、新しい台本
             q = (
                 select(Script.id)
-                .where(Script.project_id == project_id, Script.title.like(f"{LYRICS_TITLE}%"))
+                .where(Script.project_id == project_id, Script.id != plan_sid)
                 .order_by(Script.created_at.desc())
             )
             return (await s.execute(q)).scalars().first()

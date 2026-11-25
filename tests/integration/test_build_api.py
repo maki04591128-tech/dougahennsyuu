@@ -280,6 +280,7 @@ async def test_music_video_from_song_and_lyrics(bclient, media_dir):
     # 文字起こしのモデルが無いと作れない
     ready = {x["key"]: x for x in plan["readiness"]}
     assert not ready["transcribe"]["ok"] and not plan["can_run"]
+    assert ready["voice"]["required"] is False  # 曲から作るときは声を使わない
 
     def fake(audio, language):
         return Recognized(
@@ -300,6 +301,8 @@ async def test_music_video_from_song_and_lyrics(bclient, media_dir):
     assert Path(job.result["video"]).is_file() and job.result["script_id"] != plan["script_id"]
     lines = (await c.get(f"/scripts/{job.result['script_id']}/detail")).json()["segments"]
     assert [x["text"] for x in lines] == ["夜をこえて", "光のほうへ"]
+    detail = (await c.get(f"/scripts/{job.result['script_id']}/detail")).json()
+    assert detail["title"] == plan["title"]  # 題名に「歌詞:」などを付けない
     tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
     song = next(t for t in tl["tracks"] if t["name"] == "曲")
     assert song["kind"] == "audio" and any(x["track_id"] == song["id"] for x in tl["clips"])

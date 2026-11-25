@@ -576,6 +576,10 @@ class DirectionService:
         if plan.title:
             use(Component.TITLE_CARD)
             title_end = min(total, max(lines[0].end, frames(3.0)))
+            if prof is not None and prof.allows(Component.LYRIC_TEXT):
+                # 歌詞が出る型（MV・リリック）は、最初の歌詞が出る前に題名を消す
+                # （前奏が長い曲で題名と歌詞が重ならないように。短くても 2 秒は出す）
+                title_end = min(total, max(frames(2.0), min(title_end, lines[0].start)))
             dur = min(sec(title_end), 30.0)
             # 冒頭の題名だけは 1 文字ずつ跳ねて出す（情報系では 1 本に 1 回。短い 1 行の題名のみ）
             kinetic = (
