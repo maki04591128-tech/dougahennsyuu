@@ -185,8 +185,13 @@ def _copied(item: str, lines: list[str]) -> bool:
     return False
 
 
-def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> DirectionPlan:
+def normalize(
+    plan: DirectionPlan, lines: list[str], title: str = "", names: tuple[str, ...] = ()
+) -> DirectionPlan:
+    """names は話し手の名前（カードの要点に話し手の名前を並べたもの（実機:「ずんだもん、
+    四国めたん、熱中症の怖さ」）は要点ではないので外す）。"""
     n = len(lines)
+    names = tuple(x for x in names if len(x) >= 2)  # 「A」のような 1 文字の名前は語と紛れる
     notes = list(plan.notes)
     all_text = _norm("".join(lines))
     shots: list[Shot] = []
@@ -206,7 +211,10 @@ def normalize(plan: DirectionPlan, lines: list[str], title: str = "") -> Directi
             junk = [
                 b
                 for b in s.body
-                if _META.match(b.strip()) or _norm(b) in same or _norm(b).endswith("解説動画")
+                if _META.match(b.strip())
+                or _norm(b) in same
+                or _norm(b).endswith("解説動画")
+                or any(x in b for x in names)
             ]
             if junk:  # 小さなモデルは項目名や指示の言葉を本文に入れることがある
                 notes.append(

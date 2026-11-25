@@ -341,6 +341,7 @@ class DirectionService:
     async def plan(self, req: DirectionPlanRequest) -> DirectionPlanResult:
         p, sc, lines = await self._script(req.script_id)
         texts = [x.text for x in lines]
+        names = tuple({x.speaker for x in lines})
         if not texts:
             raise CommandError("script has no lines")
         title = sc.title or ""
@@ -371,7 +372,7 @@ class DirectionService:
             raw = from_llm(res.data)
             if not raw.shots:  # AI が何も出さなかったときは規則の演出（数値のテロップ）で補う
                 raw.shots = rule_plan(texts, title).shots
-            plan = normalize(raw, texts, title)
+            plan = normalize(raw, texts, title, names)
             # 図・カードが少なすぎる（同じカードが出続けて画面が止まる）ときは 1 回だけ直させる。
             # 目安は 4 発話に 1 つ（SYSTEM の「2〜4 発話に 1 つ」の下限）
             need = max(2, -(-len(texts) // 4)) if len(texts) >= 4 else 1
@@ -401,13 +402,13 @@ class DirectionService:
                         temperature=0.3,
                         retries=1,
                     )
-                    plan2 = normalize(from_llm(res2.data), texts, title)
+                    plan2 = normalize(from_llm(res2.data), texts, title, names)
                     if sum(1 for x in plan2.shots if x.kind in MAIN_KINDS) > have:
                         plan = plan2
                 except LLMError:
                     pass  # 直せなければ最初の案のまま
         else:
-            plan = normalize(rule_plan(texts, title), texts, title)
+            plan = normalize(rule_plan(texts, title), texts, title, names)
         log.info(
             "direction_plan",
             script_id=req.script_id,
@@ -465,7 +466,7 @@ class DirectionService:
         p, _, lines = await self._script(req.script_id)
         if not lines or any(x.end <= x.start for x in lines):
             raise CommandError("generate voices and synchronize subtitles first")
-        plan = normalize(req.plan, [x.text for x in lines])
+        plan = normalize(req.plan, [x.text for x in lines], "", tuple({x.speaker for x in lines}))
         ts = req.text_scale
         prof = await self.design.profile_for(p.id) if self.design else None
         extras = (await self.design.get(p.id)).extras if self.design and prof else []
