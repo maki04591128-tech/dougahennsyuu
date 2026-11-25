@@ -169,6 +169,16 @@ class ReadingService:
         it = iter(have)
         return len(want) < len(have) and all(ch in it for ch in want)
 
+    async def _fewer_sounds(self, surface: str, reading: str, style_id: int) -> bool:
+        try:
+            have = (await self._kana(surface, style_id)).replace("/", "").replace("、", "")
+        except Exception:  # noqa: BLE001 - 判定できないときは候補として残す
+            return False
+        small = "ァィゥェォャュョヮ"
+        return len([c for c in reading if c not in small]) < len(
+            [c for c in have if c not in small]
+        )
+
     async def check_script(self, script_id: str, req: ReadingCheckRequest) -> ReadingCheckResult:
         async with self.db.session_factory() as s:
             sc = await s.get(Script, script_id)
@@ -226,6 +236,12 @@ class ReadingService:
                 if await self._already_read(reading, kana, seg.voice_style_id or 0):
                     continue
                 if await self._not_better(surface, reading, seg.voice_style_id or 0):
+                    continue
+                # 漢字とかなだけの語で、エンジンの読みより音が少ない提案は採らない
+                # （実機:「葉裏」→「ハオ」。エンジンは「ハウラ」と正しく読んでいた）
+                if not re.search(
+                    r"[A-Za-z0-9Ａ-Ｚａ-ｚ０-９ァ-ヺ]", surface
+                ) and await self._fewer_sounds(surface, reading, seg.voice_style_id or 0):
                     continue
                 # 送り仮名の読みが合わない提案（「防げる」→「フセグ」）は採らない
                 tail = re.search(r"[ぁ-ゖ]+$", surface)
