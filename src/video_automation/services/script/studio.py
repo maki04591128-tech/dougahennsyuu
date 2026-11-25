@@ -388,21 +388,42 @@ class ScriptStudio:
                 "\n\n前のセリフに無い言葉を聞き返している反応（前のセリフに合う反応に書き直す）: "
                 + "、".join(echo)
             )
+        msgs = [
+            ChatMessage(role="system", content=P.POLISH_SYSTEM),
+            ChatMessage(role="user", content=body),
+        ]
         try:
             res = await self.llm.complete_json(
-                TaskType.PROOFREADING,
-                [
-                    ChatMessage(role="system", content=P.POLISH_SYSTEM),
-                    ChatMessage(role="user", content=body),
-                ],
-                P.POLISH_SCHEMA,
-                model_key=model_key,
-                temperature=0.2,
+                TaskType.PROOFREADING, msgs, P.POLISH_SCHEMA, model_key=model_key, temperature=0.2
             )
+            fixes = list(res.data.get("fixes") or [])
+            if not fixes and len(turns) >= 6:
+                # 小さなモデルは「直すものは無い」と答えがち（実機で「継続こそ力なりわ」
+                # 「触り心地良かしら」が残った）。いちばん不自然なものを選ばせて直させる
+                k = max(2, len(turns) // 6)
+                more = (
+                    f"もう一度読み直し、この台本でいちばん不自然なセリフ・日本語の誤り・"
+                    f"内容の薄いセリフを {k} 個選んで、自然で具体的なセリフに書き直してください。"
+                    "同じ JSON の形で答えます。"
+                )
+                res2 = await self.llm.complete_json(
+                    TaskType.PROOFREADING,
+                    [
+                        *msgs,
+                        ChatMessage(
+                            role="assistant", content=json.dumps(res.data, ensure_ascii=False)
+                        ),
+                        ChatMessage(role="user", content=more),
+                    ],
+                    P.POLISH_SCHEMA,
+                    model_key=model_key,
+                    temperature=0.2,
+                )
+                fixes = list(res2.data.get("fixes") or [])[:k]
         except LLMError:
             return []
         done = 0
-        for f in res.data.get("fixes") or []:
+        for f in fixes:
             i = ids.get((f.get("id") or "").strip("[] ").upper())
             new = _strip_label(f.get("text") or "", personas)
             if i is None or i not in editable or not new:

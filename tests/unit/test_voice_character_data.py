@@ -278,3 +278,33 @@ async def test_avoided_endings_fall_back_to_a_simple_fix():
     notes = await ScriptStudio(None, _LLM())._enforce_persona(items, personas, None)  # type: ignore[arg-type]
     assert items[0]["text"] == "わたくし、節電の達人よ"
     assert notes == ["語尾が設定と違うセリフを 1 件書き直しました"]
+
+
+@pytest.mark.asyncio
+async def test_polish_asks_again_for_worst_lines_when_nothing_found():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.persona import parse_style
+    from video_automation.services.script.studio import ScriptStudio
+    from video_automation.services.voice.characters import BUILTIN
+
+    calls = []
+
+    class _LLM:
+        async def complete_json(self, task, msgs, schema, **kw):
+            calls.append(msgs[-1].content)
+            if len(calls) == 1:
+                return SimpleNamespace(data={"fixes": []}, model_key="m")
+            return SimpleNamespace(
+                data={"fixes": [{"id": "L2", "problem": "誤り", "text": "継続こそ力なのよ。"}]},
+                model_key="m",
+            )
+
+    personas = {"めたん": parse_style("めたん", BUILTIN["四国めたん"].text())}
+    turns = [{"speaker": "めたん", "text": f"セリフその{i}よ。"} for i in range(6)]
+    turns[1]["text"] = "継続こそ力なりわ。"
+    studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
+    notes = await studio._polish(turns, set(range(6)), personas, None)
+    assert len(calls) == 2 and "いちばん不自然" in calls[1]
+    assert turns[1]["text"] == "継続こそ力なのよ。"
+    assert notes == ["会話として不自然なセリフを 1 件書き直しました"]

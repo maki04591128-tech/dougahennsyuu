@@ -107,6 +107,8 @@ class PersonaIssue:
     def message(self) -> str:
         if self.kind == "ending":
             return f"語尾「{self.expected}」がありません: {self.found}"
+        if self.kind == "grammar":
+            return f"「{self.found}」を「{self.expected}」に直しました"
         if self.kind == "quote":
             return "セリフ全体を囲んでいた「」を外しました"
         if self.kind == "noda":
@@ -366,6 +368,12 @@ def check_line(
     others は同じ台本のキャラクター（呼び名の照合に使う）。"""
     issues: list[PersonaIssue] = []
     fixed = one_line(text)
+    # 形容詞の語幹に「かしら」を付ける誤り（「触り心地良かしら」→「良いかしら」）
+    # （「最高かしら」のような名詞もあるので「良」だけ）
+    new = fixed.replace("良かしら", "良いかしら")
+    if new != fixed:
+        issues.append(PersonaIssue(index, "grammar", "良かしら", "良いかしら", new))
+        fixed = new
     # セリフ全体を「」で囲む癖（「「ブルーライトが…」」）は外す
     m = re.fullmatch(r"\s*[「『]([^「」『』]+)[」』]\s*", fixed)
     if m:
@@ -397,6 +405,8 @@ def check_line(
         # 命令形＋「なのだ」（「備えろなのだ」「入れておけなのだ」）を直す
         new = re.sub(r"([えけげせぜてでねべめれ])ろなのだ", r"\1るのだ", new)
         new = re.sub(r"ておけなのだ", "ておくのだ", new)
+        # 「試してみななのだ」→「試してみるのだ」
+        new = re.sub(r"てみななのだ", "てみるのだ", new)
         # 「始めようのだ」→「始めるのだ」、「しようのだ」→「するのだ」
         new = re.sub(r"しようのだ", "するのだ", new)
         new = re.sub(r"([えけげせぜてでねべめれ])ようのだ", r"\1るのだ", new)
