@@ -299,6 +299,44 @@ def _fix_calls(
     return fixed
 
 
+_VERB_END = set("うくすつぬふむゆるぐぶぷたい")
+
+
+def add_noda(sentence: str) -> str:
+    """「のだ」の付いていない文に「のだ」を付ける（書き直しで直らなかったときの最後の手当て）。
+
+    「28 度だ！」→「28 度なのだ！」、「消す！」→「消すのだ！」"""
+    core = sentence.rstrip(_TRAIL)
+    tail = sentence[len(core) :]
+    if not core or core.endswith("のだ"):
+        return sentence
+    particle = ""
+    if len(core) > 1 and core[-1] in "よね":
+        core, particle = core[:-1], core[-1]
+    if core.endswith(("ます", "です", "ました", "でした", "わ", "の")):
+        return sentence  # 丁寧語・ほかの語尾はつなげると壊れるので触らない
+    if core.endswith("だ"):
+        core = core[:-1] + "なのだ"
+    elif core[-1] in _VERB_END:
+        core += "のだ"
+    else:
+        core += "なのだ"
+    return core + particle + tail
+
+
+def fill_endings(text: str, p: Persona) -> str:
+    """語尾が「のだ」のキャラクターで、語尾の抜けた文に「のだ」を付ける。"""
+    if not any(e.endswith("のだ") for e in p.endings):
+        return text
+    out, last = [], 0
+    for m in _SENT.finditer(text):
+        sent = m.group(0)
+        if len(sent.strip().rstrip(_TRAIL)) >= 5 and not _ending_ok(sent.strip(), p.endings):
+            out.append(text[last : m.start()] + add_noda(sent))
+            last = m.end()
+    return "".join(out) + text[last:]
+
+
 def check_line(
     index: int,
     text: str,
@@ -333,6 +371,8 @@ def check_line(
         new = re.sub(
             r"(なるほど|そう|本当|ほんと|大丈夫|簡単|便利|大事|大切)のだ", r"\1なのだ", new
         )
+        # 形容詞・「〜たい」の後は「のだ」（「食べたいなのだ」→「食べたいのだ」）
+        new = re.sub(r"(たい|ない|しい|いい|よい|かった)なのだ", r"\1のだ", new)
         if new != fixed:
             issues.append(PersonaIssue(index, "noda", "のだ", "なのだ", new))
             fixed = new

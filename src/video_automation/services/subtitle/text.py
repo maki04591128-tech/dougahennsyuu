@@ -16,6 +16,7 @@ from typing import Any
 
 _SPEAKER_LINE = re.compile(r"^\s*([^\s：:「」]{1,20})\s*[：:]\s*(.+)$")
 _SENTENCE_END = "。！？!?"
+SHORT_SENTENCE = 6  # これより短い文（「えっ！」）は次の文と 1 枚にまとめる
 _STRONG_AFTER = set("、。，．！？!?」』）)】〕…")
 _NO_LINE_START = set("、。，．！？!?」』）)】〕ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ・…")
 
@@ -54,13 +55,16 @@ def split_script(text: str) -> list[SegmentDraft]:
 
 def _sentences(line: str) -> list[str]:
     parts, buf, depth = [], "", 0
-    for ch in line:
+    for i, ch in enumerate(line):
         buf += ch
         if ch in "「『（(":
             depth += 1
         elif ch in "」』）)":
             depth = max(0, depth - 1)
         elif ch in _SENTENCE_END and depth == 0:
+            # 「！？」「…！！」のように続く記号は 1 つの文末（「？」だけの 1 枚を作らない）
+            if i + 1 < len(line) and line[i + 1] in _SENTENCE_END:
+                continue
             parts.append(buf.strip())
             buf = ""
     if buf.strip():
@@ -211,9 +215,20 @@ def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> 
         return []
     sents = _sentences(t)
     if len(sents) > 1 and len(t) > max_chars:
-        # 1 枚に 1 文（1 行に収まる短い掛け合い「えっ！本当？」は 1 枚のまま）
-        out: list[str] = []
+        # 1 枚に 1 文（1 行に収まる短い掛け合い「えっ！本当？」は 1 枚のまま）。
+        # 「えっ！」のような短い文は、次の文と 1 枚に収まれば一緒にする（一瞬で消えないように）
+        merged: list[str] = []
         for x in sents:
+            if (
+                merged
+                and len(merged[-1]) < SHORT_SENTENCE
+                and _fits(merged[-1] + x, max_chars, max_lines)
+            ):
+                merged[-1] += x
+            else:
+                merged.append(x)
+        out: list[str] = []
+        for x in merged:
             out += make_cues(x, max_chars, max_lines, strip_period)
         return out
     if strip_period:

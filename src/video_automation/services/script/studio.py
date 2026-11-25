@@ -59,6 +59,7 @@ from video_automation.services.script.persona import (
     Persona,
     check_line,
     check_lines,
+    fill_endings,
     foreign_endings,
     parse_style,
 )
@@ -500,6 +501,9 @@ class ScriptStudio:
             new = _simple_fix(it["text"])
             p = personas[it["speaker"]]
             _, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
+            if any(x.kind == "ending" for x in iss):
+                new = fill_endings(new, p)
+                _, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
             if new != it["text"] and not any(x.kind in ("ending", "avoid") for x in iss):
                 it["text"] = new
             else:
