@@ -224,3 +224,27 @@ async def test_polish_marks_duplicates_and_rejects_fixes_that_duplicate():
     notes = await studio._polish(turns, {0, 1, 2, 3}, {}, None)
     assert "前と同じセリフ（必ず別の内容に書き直す）: L3" in seen["body"]
     assert notes == [] and turns[3]["text"] == "温度は？"
+
+
+@pytest.mark.asyncio
+async def test_polish_flags_echo_reactions_to_words_not_said_before():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.studio import ScriptStudio
+
+    seen = {}
+
+    class _LLM:
+        async def complete_json(self, task, msgs, schema, **kw):
+            seen["body"] = msgs[-1].content
+            return SimpleNamespace(data={"fixes": []}, model_key="m")
+
+    turns = [
+        {"speaker": "めたん", "text": "設定を少し上げるだけで電気代が抑えられるわ"},
+        {"speaker": "ずんだもん", "text": "半分！？すぐに設定し直すのだ！"},
+        {"speaker": "めたん", "text": "照明も消しなさいよ"},
+        {"speaker": "ずんだもん", "text": "なるほど！無駄遣いしないのだ"},
+    ]
+    await ScriptStudio(None, _LLM())._polish(turns, {0, 1, 2, 3}, {}, None)  # type: ignore[arg-type]
+    assert "前のセリフに合う反応に書き直す）: L2" in seen["body"]
+    assert "L4" not in seen["body"].split("反応に書き直す）:")[1]

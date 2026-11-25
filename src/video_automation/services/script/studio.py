@@ -93,6 +93,14 @@ SHORTEN_RATIO = 1.3  # 目標の尺のこの倍を超えて長く書いたら、
 LENGTHEN_RATIO = 0.8  # 目標の尺のこの倍に届かないときは、足りない分を書き足させる
 
 
+# セリフの頭の聞き返し（「半分！？」「28 度？」）
+_ECHO = re.compile(r"^([^、。！？!?\s]{1,8})[！？!?]{1,3}")
+_CONTENT = re.compile(r"[一-龥ァ-ヴ0-9０-９]")  # 漢字・カタカナ・数字を含む語（感動詞を除く）
+_INTERJECTIONS = {
+    "本当", "本当に", "大丈夫", "了解", "正解", "最高", "完璧", "感動", "天才", "驚き",
+}  # fmt: skip
+
+
 def _broken(text: str) -> bool:
     """日本語の台本として壊れている（ロシア文字などが混ざる・「しますのだ」）か。"""
     return bool(FOREIGN_SCRIPT.search(text)) or any(b in text for b in BAD_JOINS)
@@ -296,11 +304,24 @@ class ScriptStudio:
         ids = {f"L{i + 1}": i for i in range(len(turns))}
         seen: dict[str, int] = {}
         dup: list[str] = []
+        echo: list[str] = []
         for i, t in enumerate(turns):
             k = _norm(t["text"])
             if k in seen and i in editable:
                 dup.append(f"L{i + 1}")
             seen.setdefault(k, i)
+            # 「半分！？」のように、前のセリフに無い言葉を聞き返す反応（前を直した後に残りやすい）
+            m = _ECHO.match(t["text"].strip())
+            w = m.group(1) if m else ""
+            if (
+                w
+                and i > 0
+                and i in editable
+                and _CONTENT.search(w)
+                and w not in _INTERJECTIONS
+                and w not in turns[i - 1]["text"]
+            ):
+                echo.append(f"L{i + 1}")
         rules = P.persona_rules_text(
             {n: p for n, p in personas.items() if any(t["speaker"] == n for t in turns)}
         )
@@ -311,6 +332,11 @@ class ScriptStudio:
         )
         if dup:
             body += "\n\n前と同じセリフ（必ず別の内容に書き直す）: " + "、".join(dup)
+        if echo:
+            body += (
+                "\n\n前のセリフに無い言葉を聞き返している反応（前のセリフに合う反応に書き直す）: "
+                + "、".join(echo)
+            )
         try:
             res = await self.llm.complete_json(
                 TaskType.PROOFREADING,
@@ -348,6 +374,64 @@ class ScriptStudio:
         log.info("script_polish", fixes=done)
         return [f"会話として不自然なセリフを {done} 件書き直しました"] if done else []
 
+    async def _rewrite_once(
+        self,
+        items: list[dict[str, Any]],
+        need: list[int],
+        why: dict[int, str],
+        personas: dict[str, Persona],
+        model_key: str | None,
+    ) -> list[int]:
+        """規則に合わないセリフを 1 回書き直させる。戻り値はまだ直らない位置。"""
+        ids = {f"T{k + 1}": i for k, i in enumerate(need)}
+        rules = "\n".join(
+            "- " + personas[items[i]["speaker"]].rules_text()
+            for i in {items[i]["speaker"]: i for i in need}.values()
+        )
+        body = (
+            "次のセリフは口調の規則を守っていないか、日本語として誤りがあります（かっこの中が理由）。"
+            "意味・長さ・内容はそのままに、規則どおりの自然な日本語に書き直してください。\n口調の規則:\n"
+            + rules
+            + "\n\nセリフ:\n"
+            + "\n".join(
+                f"[{k}] {items[i]['speaker']}: {items[i]['text']}（{why.get(i, '')}）"
+                for k, i in ids.items()
+            )
+        )
+        try:
+            res = await self.llm.complete_json(
+                TaskType.SCRIPT_GENERATION,
+                [
+                    ChatMessage(role="system", content=P.COMMON),
+                    ChatMessage(role="user", content=body),
+                ],
+                P.PERSONA_FIX_SCHEMA,
+                model_key=model_key,
+            )
+            fixes = {
+                (f.get("id") or "").strip("[] ").upper(): (f.get("text") or "").strip()
+                for f in res.data.get("fixes") or []
+            }
+        except LLMError:
+            fixes = {}
+        left: list[int] = []
+        for k, i in ids.items():
+            it = items[i]
+            new = fixes.get(k, "")
+            p = personas[it["speaker"]]
+            ok = bool(new) and len(new) <= max(len(it["text"]) * 1.6, len(it["text"]) + 12)
+            if ok:
+                new_fixed, iss = check_line(
+                    0, new, p, foreign_endings(personas, it["speaker"]), personas
+                )
+                ok = not iss or all(x.kind not in ("ending", "avoid") for x in iss)
+                new = new_fixed
+            if ok:
+                it["text"] = new[:2000]
+            else:
+                left.append(i)
+        return left
+
     async def _enforce_persona(
         self, items: list[dict[str, Any]], personas: dict[str, Persona], model_key: str | None
     ) -> list[str]:
@@ -381,54 +465,13 @@ class ScriptStudio:
             notes.append(head + "、".join(uniq[:6]))
         if not need:
             return notes
-        ids = {f"T{k + 1}": i for k, i in enumerate(need)}
-        rules = "\n".join(
-            "- " + personas[items[i]["speaker"]].rules_text()
-            for i in {items[i]["speaker"]: i for i in need}.values()
-        )
-        body = (
-            "次のセリフは口調の規則を守っていないか、日本語として誤りがあります（かっこの中が理由）。"
-            "意味・長さ・内容はそのままに、規則どおりの自然な日本語に書き直してください。\n口調の規則:\n"
-            + rules
-            + "\n\nセリフ:\n"
-            + "\n".join(
-                f"[{k}] {items[i]['speaker']}: {items[i]['text']}（{why.get(i, '')}）"
-                for k, i in ids.items()
-            )
-        )
-        try:
-            res = await self.llm.complete_json(
-                TaskType.SCRIPT_GENERATION,
-                [
-                    ChatMessage(role="system", content=P.COMMON),
-                    ChatMessage(role="user", content=body),
-                ],
-                P.PERSONA_FIX_SCHEMA,
-                model_key=model_key,
-            )
-            fixes = {
-                (f.get("id") or "").strip("[] ").upper(): (f.get("text") or "").strip()
-                for f in res.data.get("fixes") or []
-            }
-        except LLMError:
-            fixes = {}
-        left = 0
-        for k, i in ids.items():
-            it = items[i]
-            new = fixes.get(k, "")
-            p = personas[it["speaker"]]
-            ok = bool(new) and len(new) <= max(len(it["text"]) * 1.6, len(it["text"]) + 12)
-            if ok:
-                new_fixed, iss = check_line(
-                    0, new, p, foreign_endings(personas, it["speaker"]), personas
-                )
-                ok = not iss or all(x.kind not in ("ending", "avoid") for x in iss)
-                new = new_fixed
-            if ok:
-                it["text"] = new[:2000]
-            else:
-                left += 1
-        done = len(ids) - left
+        total = len(need)
+        for _attempt in range(2):  # 案が規則に合わなければ、残りをもう 1 回だけ頼む
+            if not need:
+                break
+            need = await self._rewrite_once(items, need, why, personas, model_key)
+        left = len(need)
+        done = total - left
         if done:
             notes.append(f"語尾が設定と違うセリフを {done} 件書き直しました")
         if left:
