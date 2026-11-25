@@ -342,6 +342,17 @@ def fill_endings(text: str, p: Persona) -> str:
     return "".join(out) + text[last:]
 
 
+def one_line(text: str) -> str:
+    """セリフの中の改行を文の区切りにする（「…のだ\nそれなら…」→「…のだ。それなら…」）。"""
+    parts = [x.strip() for x in re.split(r"[\r\n]+", text) if x.strip()]
+    out = ""
+    for x in parts:
+        if out and out[-1] not in "。！？!?…、」』）)♪":
+            out += "。"
+        out += x
+    return out
+
+
 def check_line(
     index: int,
     text: str,
@@ -354,7 +365,7 @@ def check_line(
     foreign はほかのキャラクターに決まっている語尾（めたんが「〜のだ」を使わないように）。
     others は同じ台本のキャラクター（呼び名の照合に使う）。"""
     issues: list[PersonaIssue] = []
-    fixed = text
+    fixed = one_line(text)
     # セリフ全体を「」で囲む癖（「「ブルーライトが…」」）は外す
     m = re.fullmatch(r"\s*[「『]([^「」『』]+)[」』]\s*", fixed)
     if m:
@@ -385,6 +396,8 @@ def check_line(
         new = re.sub(r"(たい|ない|しい|いい|よい|かった)なのだ", r"\1のだ", new)
         # 「聞いてなのだ」→「聞いてほしいのだ」
         new = re.sub(r"([てで])なのだ", r"\1ほしいのだ", new)
+        # 「疲れたのかいなのだ？」「痛くないのかのだ」→「疲れたのだ？」「痛くないのだ？」
+        new = re.sub(r"のかい?な?のだ([？?]?)", lambda m: "のだ" + (m.group(1) or "？"), new)
         if new != fixed:
             issues.append(PersonaIssue(index, "noda", "のだ", "なのだ", new))
             fixed = new
