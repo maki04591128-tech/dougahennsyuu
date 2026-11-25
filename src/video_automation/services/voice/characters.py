@@ -97,7 +97,7 @@ class VoiceCharacterStyle(BaseModel):
     tone: str = Field(default="", max_length=300)  # 話し方の特徴
     # 語尾の手がかり（守らせる規則ではなく、話し方の目安としてだけ渡す）
     ending_hints: list[str] = Field(default_factory=list, max_length=8)
-    avoid: list[str] = Field(default_factory=list, max_length=8)  # 使わない言い方
+    avoid: list[str] = Field(default_factory=list, max_length=10)  # 使わない言い方
     # ほかのキャラクター（話者名）→ 公式の呼び名
     call_names: dict[str, str] = Field(default_factory=dict)
     # 感情 → スタイル名（空なら EMOTION_STYLES）

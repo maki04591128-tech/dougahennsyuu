@@ -107,6 +107,8 @@ class PersonaIssue:
     def message(self) -> str:
         if self.kind == "ending":
             return f"語尾「{self.expected}」がありません: {self.found}"
+        if self.kind == "quote":
+            return "セリフ全体を囲んでいた「」を外しました"
         if self.kind == "noda":
             return "「のだ」の付け方（「なるほどのだ」「やるののだ」）を直しました"
         if self.kind == "avoid":
@@ -313,8 +315,11 @@ def add_noda(sentence: str) -> str:
     particle = ""
     if len(core) > 1 and core[-1] in "よね":
         core, particle = core[:-1], core[-1]
-    if core.endswith(("ます", "です", "ました", "でした", "わ", "の")):
-        return sentence  # 丁寧語・ほかの語尾はつなげると壊れるので触らない
+    if core.endswith(("ます", "です", "ました", "でした", "わ", "の")) or (
+        core[-1] in "をにがはへとで" and not core.endswith("まで")
+    ):
+        # 丁寧語・ほかの語尾・助詞で終わる文（「習慣を！」）は、つなげると壊れるので触らない
+        return sentence
     if core.endswith("だ"):
         core = core[:-1] + "なのだ"
     elif core[-1] in _VERB_END:
@@ -350,6 +355,11 @@ def check_line(
     others は同じ台本のキャラクター（呼び名の照合に使う）。"""
     issues: list[PersonaIssue] = []
     fixed = text
+    # セリフ全体を「」で囲む癖（「「ブルーライトが…」」）は外す
+    m = re.fullmatch(r"\s*[「『]([^「」『』]+)[」』]\s*", fixed)
+    if m:
+        fixed = m.group(1)
+        issues.append(PersonaIssue(index, "quote", "「」", "", fixed))
     # 「のだ、長く使えるのだ」のように語尾だけを文頭に置く癖（口調の真似の誤り）を外す
     # 1 文字の語尾（「わ」「ね」）は感動詞と紛れるので対象にしない
     for e in sorted((x for x in {*p.endings, *foreign} if len(x) >= 2), key=len, reverse=True):
