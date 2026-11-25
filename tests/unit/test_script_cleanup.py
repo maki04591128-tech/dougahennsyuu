@@ -156,3 +156,13 @@ def test_round13_rules():
     assert not any(x.expected == "命令口調" for x in iss)
     z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
     assert check_line(0, "喉も渇いて声が出ないのだ！'", z)[0] == "喉も渇いて声が出ないのだ！"
+
+
+def test_round14_labels():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "L3 ずんだもん: まず、この道に慣れるのだ！", z)[0]
+        == "まず、この道に慣れるのだ！"
+    )
+    assert check_line(0, "L5サイズの箱を使うのだ", z)[0] == "L5サイズの箱を使うのだ"
+    assert check_line(0, "おはようのだ！", z)[0] == "おはようなのだ！"

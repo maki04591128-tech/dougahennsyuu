@@ -430,6 +430,20 @@ def check_line(
     others は同じ台本のキャラクター（呼び名の照合に使う）。"""
     issues: list[PersonaIssue] = []
     fixed = one_line(text)
+    # 行の頭に付いた見出し（「L3 ずんだもん: 」「[L5] 」）を外す
+    names = [p.name, *(others or {})]
+    m = re.match(r"\s*\[?[LT]\d+\]?\s*[:：]?\s*", fixed)
+    if m and m.end() > 0 and re.match(r"\s*\[?[LT]\d", fixed):
+        rest = fixed[m.end() :]
+        labeled = bool(re.search(r"[\]:：]", m.group(0)))
+        for n in sorted(names, key=len, reverse=True):
+            mm = re.match(rf"{re.escape(n)}\s*[:：]\s*", rest)
+            if mm:
+                rest, labeled = rest[mm.end() :], True
+                break
+        if labeled and rest.strip():
+            issues.append(PersonaIssue(index, "grammar", "行の見出し", "", rest))
+            fixed = rest
     # 簡体字は日本語の字に置き換える（置き換えられない字は下の「日本語以外の文字」で知らせる）
     new = fix_simplified(fixed)
     if new != fixed:
@@ -472,7 +486,9 @@ def check_line(
     if any(e.endswith("のだ") for e in p.endings):
         new = re.sub(r"のの(だ)", r"の\1", fixed)
         new = re.sub(
-            r"(なるほど|そう|本当|ほんと|大丈夫|簡単|便利|大事|大切)のだ", r"\1なのだ", new
+            r"(なるほど|そう|本当|ほんと|大丈夫|簡単|便利|大事|大切|おはよう|ありがとう)のだ",
+            r"\1なのだ",
+            new,
         )
         # 形容詞・「〜たい」の後は「のだ」（「食べたいなのだ」→「食べたいのだ」）
         new = re.sub(r"(たい|ない|しい|いい|よい|かった)なのだ", r"\1のだ", new)
