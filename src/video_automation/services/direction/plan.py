@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from video_automation.schemas.direction import MAIN_KINDS, DirectionPlan, Shot, ShotKind
+from video_automation.services.script.persona import fix_simplified
 from video_automation.services.voice.reading import UNITS, emphasis_terms
 
 PLAN_SCHEMA: dict[str, Any] = {
@@ -203,6 +204,10 @@ def normalize(
         s = sh.model_copy(deep=True)
         s.from_line = min(max(1, s.from_line), n)
         s.to_line = min(max(s.from_line, s.to_line or s.from_line), n)
+        s.heading = fix_simplified(s.heading)
+        s.body = [fix_simplified(x) for x in s.body]
+        s.text = fix_simplified(s.text)
+        s.labels = [fix_simplified(x) for x in s.labels]
         if s.kind == ShotKind.CARD:
             s.heading = _trim(_unquote(s.heading), 20)
             s.body = [_unquote(x) for b in s.body for x in _split_items(b)]
