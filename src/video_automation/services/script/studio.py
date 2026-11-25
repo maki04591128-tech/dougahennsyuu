@@ -1446,17 +1446,22 @@ class ScriptStudio:
         _drop_repeated_openers([ordered[i] for i in sorted(editable)], personas)
         # 推敲で直らなかった同じセリフ（実機:「20 秒以上は洗うのだ…」が 2 回）は後の方を省く
         seen_text: set[str] = set()
+        dropped_dup = 0
         for sc_ in res.data["scenes"]:
             kept = []
             for t in sc_["turns"]:
                 k = _norm(t["text"])
                 prev = _norm(kept[-1]["text"]) if kept else ""
-                near = bool(prev) and SequenceMatcher(None, prev, k).ratio() >= 0.8
+                # 短い相づち（「了解なのだ」）は似ていても省かない
+                near = len(k) >= 12 and bool(prev) and SequenceMatcher(None, prev, k).ratio() >= 0.8
                 if (k in seen_text or near) and k not in fixed_keys:
+                    dropped_dup += 1
                     continue
                 seen_text.add(k)
                 kept.append(t)
             sc_["turns"] = kept
+        if dropped_dup:
+            notes.append(f"同じ・よく似たセリフを {dropped_dup} 件省きました")
         res.data["scenes"] = [sc_ for sc_ in res.data["scenes"] if sc_["turns"]]
         if st.target_duration_sec:
             # 推敲・書き直しでセリフが伸びることがある（実機: 45 秒の指定で 55 秒）
