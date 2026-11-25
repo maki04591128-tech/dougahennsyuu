@@ -175,3 +175,23 @@ def test_swallow_noda_forms():
     )
     assert check_line(0, "今日から実践してごらんのだ。", z)[0] == "今日から実践してほしいのだ。"
     assert check_line(0, "覚えておくんなのだ", z)[0] == "覚えておくのだ"
+
+
+def test_round15_particles():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "ネットの闇に足を踏み入れないでよのだ。", z)[0]
+        == "ネットの闇に足を踏み入れないでほしいのだ。"
+    )
+    assert check_line(0, "まずは深呼吸だぜのだ。", z)[0] == "まずは深呼吸なのだ。"
+    assert check_line(0, "さあ、しっかり守ろうねのだ。", z)[0] == "さあ、しっかり守るのだ。"
+    assert check_line(0, "さあ、一緒に行こうのだ。", z)[0] == "さあ、一緒に行くのだ。"
+    assert check_line(0, "ボクはそう思うのだ。", z)[0] == "ボクはそう思うのだ。"
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "それは危険を防ぐのわ。", m)[0] == "それは危険を防ぐのよ。"
+
+
+def test_reading_skeleton_wo():
+    from video_automation.services.voice.reading_service import _skeleton
+
+    assert _skeleton("コジンジョオホオオ") == _skeleton("コジンジョオホオヲ")

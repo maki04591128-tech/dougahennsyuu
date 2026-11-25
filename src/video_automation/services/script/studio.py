@@ -1256,7 +1256,13 @@ class ScriptStudio:
                 if t["speaker"] not in names and (near := _near_name(t["speaker"], names)):
                     t["speaker"] = near
         unknown = sorted({t["speaker"] for sc_ in res.data["scenes"] for t in sc_["turns"]} - names)
-        notes = list(res.data.get("notes") or [])
+        # AI の書き込みのうち、指示の繰り返し（「語尾は各発話で必ず入れる。」
+        # 「合計約 324 文字に調整した」）は利用者に見せない
+        notes = [
+            n
+            for n in (res.data.get("notes") or [])
+            if not re.search(r"語尾|口調|一人称|文字|発話|感情|のだ|ですわ", n)
+        ]
         if unknown:
             notes.append(f"設定に無い話者を除外しました: {', '.join(unknown)}")
         fixed_keys = {_norm(x.text) for x in fixed}
