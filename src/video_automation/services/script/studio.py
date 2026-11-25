@@ -1321,6 +1321,12 @@ class ScriptStudio:
         editable = {i for i, t in enumerate(ordered) if _norm(t["text"]) not in fixed_keys}
         notes += await self._polish(ordered, editable, personas, req.model_key)
         _drop_repeated_openers([ordered[i] for i in sorted(editable)], personas)
+        if st.target_duration_sec:
+            # 推敲・書き直しでセリフが伸びることがある（実機: 45 秒の指定で 55 秒）
+            res.data["scenes"], fit_notes = fit_to_duration(
+                res.data["scenes"], st.target_duration_sec, st.chars_per_sec, fixed_keys
+            )
+            notes += fit_notes
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
