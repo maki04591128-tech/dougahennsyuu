@@ -64,6 +64,7 @@ from video_automation.services.direction.plan import (
     rule_plan,
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
+from video_automation.services.rendering.pictogram import pick_icon
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.timeline.timeline_service import (
@@ -680,6 +681,8 @@ class DirectionService:
             if s.kind == ShotKind.CARD:
                 use(Component.CARD)
                 steps = _reveal_steps(s, lines, start, end, frames(REVEAL_MIN_SEC))
+                # 見出しの語に合う絵記号を添える（合うものが無ければ付けない）
+                icon = pick_icon(s.heading, s.body)
                 last = len(steps) - 1
                 for k, (t0, t1, reveal) in enumerate(steps):
                     a = await self.titles.card(
@@ -696,6 +699,7 @@ class DirectionService:
                             reveal=reveal,
                             # 録画の上に出す章カードは、後ろの細かい画面が透けないよう濃く
                             panel_opacity=0.96 if recording else 0.88,
+                            icon=icon,
                         )
                     )
                     # 順に出すときは同じ大きさの絵を切り替えるだけ。出入りの動きは最初と最後のみ

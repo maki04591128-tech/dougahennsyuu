@@ -4,6 +4,7 @@ Blender の PNG 連番 → FFmpeg で透過付き MOV（PNG コーデック）�
 複雑な演出は Phase 7 で拡張する。
 """
 
+import asyncio
 import tempfile
 import time
 from pathlib import Path
@@ -428,8 +429,23 @@ class TitleCardService:
                 ],
                 timeout=60,
             )
+        if layout.icon is not None and req.icon:
+            await asyncio.to_thread(_paste_icon, out, req.icon, layout.icon, req.accent_color)
         label = req.heading or (req.body[0] if req.body else "")
         asset = await self.timeline.register_generated(
             req.project_id, out, AssetKind.IMAGE, "ffmpeg", f"カード「{label[:20]}」"
         )
         return AssetRead.model_validate(asset)
+
+
+def _paste_icon(path: Path, name: str, box: tuple[int, int, int], color: str) -> None:
+    """カードの PNG に絵記号を重ねる（同じファイルに書き戻す）。"""
+    from PIL import Image
+
+    from video_automation.services.rendering.pictogram import render_icon
+
+    x, y, size = box
+    with Image.open(path) as im:
+        card = im.convert("RGBA")
+    card.alpha_composite(render_icon(name, size, color), (x, y))
+    card.save(path)

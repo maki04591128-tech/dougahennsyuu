@@ -50,6 +50,7 @@ from video_automation.schemas.timeline import (
     RenderStatus,
     TrackKind,
 )
+from video_automation.schemas.voice import ReadingCheckRequest
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.direction.service import native_transform
 from video_automation.services.transcribe.service import TranscribeRequest
@@ -463,6 +464,14 @@ class BuildService:
         notes += list(getattr(d, "notes", []) or [])[:5]
 
         await at("voice")
+        # 声にする前に、読み間違い（英語・専門用語など）を AI に確かめさせて読みのルールにする
+        try:
+            chk = await c.readings.check_script(sid, ReadingCheckRequest(apply=True))
+            if chk.issues:
+                words = "、".join(f"{x.surface}→{x.reading}" for x in chk.issues[:5])
+                notes.append(f"読み間違いを {len(chk.issues)} 語直しました: {words}")
+        except Exception as exc:  # noqa: BLE001 - 読みの確認ができなくても声は作る
+            log.info("build_reading_check_skipped", error=type(exc).__name__)
 
         async def vp(v: float) -> None:
             await at("voice", v)

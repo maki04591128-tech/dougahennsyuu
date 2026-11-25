@@ -218,6 +218,8 @@ class CardRequest(BaseModel):
     scale: float = Field(default=1.0, ge=0.5, le=2.0)  # 文字の大きさの倍率
     # 本文を先頭から何項目まで描くか（順に出す演出用）。None は全部。大きさは全部のときと同じ
     reveal: int | None = Field(default=None, ge=0, le=6)
+    # 見出しの左に添える絵記号（pictogram.ICONS の名前）。None は付けない
+    icon: str | None = Field(default=None, max_length=20)
     # 書体（ファミリー名。用途の型の見出し書体）。None は既定の書体
     font: str | None = Field(default=None, max_length=60)
 

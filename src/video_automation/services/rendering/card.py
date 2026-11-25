@@ -9,6 +9,7 @@ from pathlib import Path
 
 from video_automation.integrations.ffmpeg.runner import filter_path
 from video_automation.schemas.animation import CardRequest
+from video_automation.services.rendering.pictogram import ICONS
 from video_automation.services.subtitle.text import wrap_lines
 
 
@@ -31,6 +32,7 @@ class CardLayout:
     divider: tuple[int, int, int, int] | None = None  # x, y, w, h
     bullets: list[tuple[int, int, int]] = field(default_factory=list)  # x, y, 一辺
     bullet_items: list[int] = field(default_factory=list)  # bullets と同じ順の本文番号
+    icon: tuple[int, int, int] | None = None  # 絵記号の x, y, 一辺
 
 
 def text_width(text: str, size: int) -> float:
@@ -75,6 +77,12 @@ def card_layout(req: CardRequest, canvas_w: int, canvas_h: int) -> CardLayout:
     layout = CardLayout(width, 0, bar)
     x = bar + pad
     y = pad
+    if req.icon and req.icon in ICONS:
+        # 絵記号は左の列に置き、文字はその右から（列の幅 = 見出し 1.5 行分）
+        size = round(hs * 1.5)
+        layout.icon = (x, y, size)
+        x += size + round(pad * 0.7)
+        inner -= size + round(pad * 0.7)
     if req.heading:
         color = accent if req.style == "summary" else white
         for ln in _wrap(req.heading, hs, inner):
@@ -102,6 +110,8 @@ def card_layout(req: CardRequest, canvas_w: int, canvas_h: int) -> CardLayout:
         y -= round(bs * 0.12)
     else:
         y -= round(hs * 0.3)
+    if layout.icon is not None:  # 本文が短くても絵記号が切れない高さにする
+        y = max(y, layout.icon[1] + layout.icon[2])
     layout.height = y + pad
     # 文が短いときはカードの幅を内容に合わせて詰める（最小は画面幅の 30%）
     used = max(ln.x + text_width(ln.text, ln.size) for ln in layout.lines) + pad
