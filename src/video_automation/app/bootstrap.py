@@ -181,7 +181,9 @@ async def build_container(
         transport=http_transport,
         resolver=dns_resolver,
     )
-    voice_characters = VoiceCharacterService(db, voice)
+    voice_characters = VoiceCharacterService(
+        db, voice, Path(settings.data_dir) / "voicevox_characters.json"
+    )
     studio = ScriptStudio(db, llm, voice_characters)
 
     characters = CharacterService(settings, db, timeline, ffmpeg)

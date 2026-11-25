@@ -126,3 +126,39 @@ def test_foreign_ending_before_a_comma_is_fixed():
     )
     assert fixed == "工夫で長持ちさせられるのよ、貴女。"
     assert any(i.kind == "foreign_ending" for i in iss)
+
+
+def test_watashi_kanji_is_ok_for_watakushi_but_not_for_boku():
+    m = _p("四国めたん")  # わたくし → 「私」と書いても同じ読み
+    assert check_line(0, "私も行くわ。", m)[1] == []
+    z = _p("ずんだもん")
+    fixed, iss = check_line(0, "私も行くのだ。", z)
+    assert fixed == "僕も行くのだ。" and [i.kind for i in iss] == ["first_person"]
+
+
+def test_call_names_follow_the_official_table():
+    from video_automation.services.script.persona import Persona
+
+    tsumugi = Persona(
+        "つむぎ", first=["あーし"], calls={"めたん": "めたん先輩", "ずん": "ずんだもん先輩"}
+    )
+    metan = Persona("めたん", known_as=["四国めたん", "めたん", "めたんさん", "めたんちゃん"])
+    zun = Persona("ずん", known_as=["ずんだもん", "ずんずん"])
+    personas = {"つむぎ": tsumugi, "めたん": metan, "ずん": zun}
+    fixed, iss = check_line(0, "めたんさん、ずんずんとアルバム見よ！", tsumugi, (), personas)
+    assert fixed == "めたん先輩、ずんだもん先輩とアルバム見よ！"
+    assert [i.kind for i in iss] == ["call_name", "call_name"]
+    # 公式の呼び名はそのまま。かぎかっこの中（引用）は変えない
+    ok = "めたん先輩が「めたんさん」って呼ばれてた"
+    assert check_line(0, ok, tsumugi, (), personas) == (ok, [])
+    assert "めたんを「めたん先輩」" in tsumugi.rules_text()
+
+
+def test_call_name_does_not_match_inside_a_longer_katakana_word():
+    from video_automation.services.script.persona import Persona
+
+    a = Persona("A", calls={"ニア": "ニアちゃん"})
+    nia = Persona("ニア", known_as=["琴詠ニア", "ニア", "ニアさん"])
+    text = "エンジニアの話をしよう。ニアさんも来て"
+    fixed, _ = check_line(0, text, a, (), {"A": a, "ニア": nia})
+    assert fixed == "エンジニアの話をしよう。ニアちゃんも来て"

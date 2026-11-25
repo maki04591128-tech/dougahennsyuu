@@ -190,10 +190,65 @@ class ScriptStudio:
             out.append(c)
         return out
 
-    @staticmethod
-    def _personas(chars: list[dict[str, Any]]) -> dict[str, Persona]:
-        """キャラクターの口調の文から、一人称・呼び方・語尾の規則を読む。"""
-        return {c["name"]: parse_style(c["name"], c.get("speaking_style") or "") for c in chars}
+    async def _personas(self, chars: list[dict[str, Any]]) -> dict[str, Persona]:
+        """キャラクターの口調の文から、一人称・呼び方・語尾の規則を読む。
+
+        声（話者）がわかるキャラクター同士は、公式の呼び名（めたん→ずんだもん「ずんだもん」、
+        つむぎ→めたん「めたん先輩」）も規則に入れる。"""
+        out = {c["name"]: parse_style(c["name"], c.get("speaking_style") or "") for c in chars}
+        if self.voice_characters is None:
+            return out
+        speakers: dict[str, tuple[str, Any]] = {}
+        for c in chars:
+            sid = (c.get("voice") or {}).get("style_id")
+            if sid is None:
+                sid = c.get("voice_style_id")
+            if sid is None:
+                continue
+            try:
+                sp, style = await self.voice_characters.for_style(int(sid))
+            except Exception:  # noqa: BLE001 - エンジンが止まっていても台本は作れるようにする
+                continue
+            if sp:
+                speakers[c["name"]] = (sp, style)
+        if not speakers:
+            return out
+        by_speaker = {sp: n for n, (sp, _) in speakers.items()}
+        known = await self.voice_characters.known_as()
+        for n, (sp, style) in speakers.items():
+            p = out[n]
+            p.known_as = [sp, *known.get(sp, [])]
+            if style is None:
+                continue
+            for target_sp, call in style.call_names.items():
+                target = by_speaker.get(target_sp)
+                if target and target != n and call:
+                    p.calls[target] = call
+        return out
+
+    async def _emotion_styles(
+        self, chars: list[dict[str, Any]], scenes: list[dict[str, Any]]
+    ) -> dict[tuple[str, str], int]:
+        """(話者, 感情) → その感情に合うスタイルの ID。合うものが無い組は入れない（既定の声）。"""
+        out: dict[tuple[str, str], int] = {}
+        if self.voice_characters is None:
+            return out
+        sids = {c["name"]: (c.get("voice") or {}).get("style_id") for c in chars}
+        tried: set[tuple[str, str]] = set()
+        for sc_ in scenes:
+            for t in sc_.get("turns") or []:
+                key = (t.get("speaker") or "", t.get("emotion") or "")
+                sid = sids.get(key[0])
+                if sid is None or key[1] in ("", "neutral") or key in tried:
+                    continue
+                tried.add(key)
+                try:
+                    alt = await self.voice_characters.emotion_style_id(int(sid), key[1])
+                except Exception:  # noqa: BLE001 - エンジンが止まっていたら既定の声のまま
+                    alt = None
+                if alt is not None:
+                    out[key] = alt
+        return out
 
     async def _enforce_persona(
         self, items: list[dict[str, Any]], personas: dict[str, Persona], model_key: str | None
@@ -209,7 +264,9 @@ class ScriptStudio:
             p = personas.get(it["speaker"])
             if p is None or p.empty:
                 continue
-            fixed, iss = check_line(i, it["text"], p, foreign_endings(personas, it["speaker"]))
+            fixed, iss = check_line(
+                i, it["text"], p, foreign_endings(personas, it["speaker"]), personas
+            )
             for x in iss:
                 if x.kind in ("foreign_ending", "stray_ending") and x.fixed is not None:
                     swapped.append(f"{it['speaker']}の語尾「{x.found}」")
@@ -259,7 +316,9 @@ class ScriptStudio:
             p = personas[it["speaker"]]
             ok = bool(new) and len(new) <= max(len(it["text"]) * 1.6, len(it["text"]) + 12)
             if ok:
-                new_fixed, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]))
+                new_fixed, iss = check_line(
+                    0, new, p, foreign_endings(personas, it["speaker"]), personas
+                )
                 ok = not iss or all(x.kind != "ending" for x in iss)
                 new = new_fixed
             if ok:
@@ -640,14 +699,17 @@ class ScriptStudio:
                 mode = ScriptMode(sc.mode)
                 if mode == ScriptMode.USER_ONE_SIDE and sum(c.is_user for c in req.characters) != 1:
                     raise ScriptStudioError("exactly one character must be is_user=true")
-                old = {c.name: c.id for c in (await self._rows(s, script_id))[0]}
+                old_rows = (await self._rows(s, script_id))[0]
+                old = {c.name: c.id for c in old_rows}
+                old_sid = {c.name: c.voice_style_id for c in old_rows}
                 await s.execute(
                     delete(ScriptCharacter).where(ScriptCharacter.script_id == script_id)
                 )
                 for i, c in enumerate(await self._with_voice_style(req.characters)):
                     s.add(self._char_row(script_id, i, c, old.get(c.name)))
                     # 音声設定をそのキャラクターのセリフへ反映（音声は作り直しが必要）
-                    if c.voice.style_id is not None:
+                    # （声を変えたときだけ。感情で選んだスタイルは声が同じなら残す）
+                    if c.voice.style_id is not None and c.voice.style_id != old_sid.get(c.name):
                         for seg in (await self._rows(s, script_id))[2]:
                             if seg.speaker == c.name and seg.voice_style_id != c.voice.style_id:
                                 seg.voice_style_id = c.voice.style_id
@@ -863,7 +925,7 @@ class ScriptStudio:
         # 発話の間（実機で 1 発話あたり 0.3〜0.5 秒）の分だけ文字を少なめに頼む。
         # 実機では 60 秒の指定で 71 秒になっていた
         total_chars = int((st.target_duration_sec or 90) * st.chars_per_sec * 0.9)
-        personas = self._personas(cdata)
+        personas = await self._personas(cdata)
         user = [
             P.settings_text(inp["settings"]) or "テーマ: （未指定。一般的な紹介動画）",
             "キャラクター:\n" + P.characters_text(cdata),
@@ -879,6 +941,7 @@ class ScriptStudio:
             )
         if req.instruction:
             user.append(f"追加の指示: {req.instruction}")
+        user.append(P.EMOTION_TEXT)
         user.append("speaker には上のキャラクター名だけを使い、指定のJSONで出力してください。")
         msgs = [
             ChatMessage(role="system", content=P.COMMON),
@@ -931,6 +994,7 @@ class ScriptStudio:
             if t["speaker"] in names and _norm(t["text"]) not in fixed_keys
         ]
         notes += await self._enforce_persona(ai_turns, personas, req.model_key)
+        emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
             chars, _, segs = await self._rows(s, script_id)
@@ -968,7 +1032,9 @@ class ScriptStudio:
                         speaker=t["speaker"],
                         text=t["text"][:2000],
                         generation_source=GenerationSource.AI.value,
-                        voice_style_id=voice.get(t["speaker"]),
+                        voice_style_id=emo_sid.get(
+                            (t["speaker"], t.get("emotion") or ""), voice.get(t["speaker"])
+                        ),
                         generation_run_id=run.id,
                     )
                     s.add(seg)
@@ -1035,7 +1101,7 @@ class ScriptStudio:
             elif is_fixed(x):
                 convo.append(f"（固定）{x.speaker}: {x.text}")
         user_total = sum(len(x.text) for x in user_lines)
-        personas = self._personas(cdata)
+        personas = await self._personas(cdata)
         body = [
             P.settings_text(inp["settings"]),
             "キャラクター:\n" + P.characters_text(cdata),
@@ -1164,7 +1230,7 @@ class ScriptStudio:
                 "candidates": req.candidates,
             }
             run = await self._run(s, script_id, "regenerate", P.REGEN_VERSION, inp)
-        personas = self._personas(cdata)
+        personas = await self._personas(cdata)
         body = [
             P.settings_text(st.model_dump(mode="json")),
             "キャラクター:\n" + P.characters_text(cdata),
@@ -1202,7 +1268,7 @@ class ScriptStudio:
         cands = [c.strip()[:2000] for c in res.data["candidates"] if c.strip()][: req.candidates]
         if seg.speaker in personas:  # 一人称・呼び方の取り違えは規則で直す
             fe = foreign_endings(personas, seg.speaker)
-            cands = [check_line(0, c, personas[seg.speaker], fe)[0] for c in cands]
+            cands = [check_line(0, c, personas[seg.speaker], fe, personas)[0] for c in cands]
         await self._finish(
             run.id,
             status="SUCCEEDED",
@@ -1244,7 +1310,7 @@ class ScriptStudio:
         turns = [t for t in d.segments if t.text.strip()]
         if not turns:
             return []
-        personas = self._personas([c.model_dump() for c in d.characters])
+        personas = await self._personas([c.model_dump() for c in d.characters])
         ids = {f"T{i + 1}": t for i, t in enumerate(turns)}
         body = ""
         if d.settings.reference.strip():
@@ -1273,7 +1339,7 @@ class ScriptStudio:
                 continue
             p = personas.get(t.speaker)
             if p is not None and not p.empty:
-                new, iss = check_line(0, new, p, foreign_endings(personas, t.speaker))
+                new, iss = check_line(0, new, p, foreign_endings(personas, t.speaker), personas)
                 if any(x.kind == "ending" for x in iss):
                     continue
             try:
@@ -1357,7 +1423,7 @@ class ScriptStudio:
                     )
                 )
         # 口調（一人称・呼び方・語尾）
-        personas = self._personas([c.model_dump() for c in d.characters])
+        personas = await self._personas([c.model_dump() for c in d.characters])
         _, p_issues = check_lines([(t.speaker, t.text) for t in d.segments], personas)
         for pi in p_issues:
             issues.append(

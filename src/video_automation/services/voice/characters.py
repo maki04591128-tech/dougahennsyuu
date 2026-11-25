@@ -5,13 +5,24 @@
 （https://voicevox.hiroshiba.jp/dormitory/<名前>/ と .../calls/、2026-11-24 確認）から。
 それ以外の声（VOICEVOX Nemo の「女声1」など、または組み込みに無いキャラクター）は
 ユーザーが登録する。登録は組み込みより優先する。
+
+公式データ（VOICEVOX/voicevox_blog の callNameInfo.ts など）から作った全キャラクター分の
+口調・呼び名は「VOICEVOX の開発のための利用のみ許可」のため、このリポジトリには含めない。
+手元の data/voicevox_characters.json に置くと読み込み、組み込みより優先する
+（ユーザーの登録はさらに優先）。形式は VoiceCharacterStyle の JSON の配列。
+
+感情 → スタイル名の対応（EMOTION_STYLES）は、エンジンのスタイル名の意味から決めた初期案。
+話者ごとに人が変えられる（emotion_styles）。
 """
 
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from video_automation.database.database import Database
 from video_automation.database.models import SystemSetting
@@ -19,7 +30,61 @@ from video_automation.database.models import SystemSetting
 if TYPE_CHECKING:
     from video_automation.services.voice.voice_service import VoiceService
 
+logger = logging.getLogger(__name__)
+
 SETTING_KEY = "voice_character_styles"
+DATA_FILE = "voicevox_characters.json"
+
+# 台本の発話ごとに選ぶ感情（LLM が出す）。neutral は既定のスタイルのまま
+EMOTIONS = (
+    "neutral", "happy", "sad", "angry", "surprise", "fear", "tired",
+    "excited", "calm", "sweet", "tsun", "whisper", "serious", "annoyed",
+)  # fmt: skip
+EMOTION_LABELS = {
+    "neutral": "ふつう", "happy": "うれしい", "sad": "悲しい", "angry": "怒り",
+    "surprise": "驚き", "fear": "こわい", "tired": "疲れ", "excited": "熱くなる",
+    "calm": "落ち着き", "sweet": "甘える", "tsun": "ツンとする", "whisper": "ささやく",
+    "serious": "真剣", "annoyed": "呆れ",
+}  # fmt: skip
+
+# 感情 → スタイル名（話者ごと）。姿や別人格が変わるスタイル（鬼ver.・あん子・ツクモちゃん等）や
+# セクシー系は自動では選ばない（ここに入れない）。ハミング・歌も台詞には使わない
+EMOTION_STYLES: dict[str, dict[str, str]] = {
+    "四国めたん": {"sweet": "あまあま", "tsun": "ツンツン", "whisper": "ささやき"},
+    "ずんだもん": {
+        "sweet": "あまあま", "tsun": "ツンツン", "whisper": "ささやき",
+        "tired": "ヘロヘロ", "sad": "なみだめ",
+    },
+    "玄野武宏": {"happy": "喜び", "angry": "ツンギレ", "sad": "悲しみ"},
+    "白上虎太郎": {"happy": "わーい", "angry": "おこ", "fear": "びくびく", "sad": "びえーん"},
+    "青山龍星": {
+        "excited": "熱血", "angry": "不機嫌", "happy": "喜び", "calm": "しっとり",
+        "sad": "かなしみ", "whisper": "囁き",
+    },
+    "九州そら": {"sweet": "あまあま", "tsun": "ツンツン", "whisper": "ささやき"},
+    "もち子さん": {"sad": "泣き", "angry": "怒り", "happy": "喜び", "calm": "のんびり"},
+    "WhiteCUL": {"happy": "たのしい", "sad": "かなしい"},
+    "後鬼": {"angry": "人間（怒り）ver."},
+    "No.7": {"calm": "読み聞かせ"},
+    "ナースロボ＿タイプＴ": {"calm": "楽々", "fear": "恐怖", "whisper": "内緒話"},
+    "猫使アル": {
+        "calm": "おちつき", "happy": "うきうき", "excited": "つよつよ", "tired": "へろへろ",
+    },
+    "猫使ビィ": {"calm": "おちつき", "fear": "人見知り", "excited": "つよつよ"},
+    "中国うさぎ": {"surprise": "おどろき", "fear": "こわがり", "tired": "へろへろ"},
+    "満別花丸": {"happy": "元気", "whisper": "ささやき", "sweet": "ぶりっ子"},
+    "ぞん子": {"tired": "低血圧"},
+    "中部つるぎ": {
+        "angry": "怒り", "whisper": "ヒソヒソ", "fear": "おどおど", "sad": "絶望と敗北",
+    },
+    "離途": {"serious": "シリアス"},
+    "ユーレイちゃん": {"sweet": "甘々", "sad": "哀しみ", "whisper": "ささやき"},
+    "あんこもん": {"excited": "つよつよ", "tired": "よわよわ", "whisper": "ささやき"},
+    "夜語トバリ": {"happy": "明るい", "sad": "哀しみ", "annoyed": "呆れ"},
+    "暁記ミタマ": {"angry": "怒り", "sad": "哀しみ", "whisper": "ささやき"},
+}  # fmt: skip
+# 既定のスタイルが「ノーマル」でない話者
+DEFAULT_STYLES = {"白上虎太郎": "ふつう", "後鬼": "人間ver.", "里石ユカ": "つぼみ"}
 
 
 class VoiceCharacterStyle(BaseModel):
@@ -30,6 +95,13 @@ class VoiceCharacterStyle(BaseModel):
     second_person: str = Field(default="", max_length=40)  # 相手の呼び方（二人称）
     endings: list[str] = Field(default_factory=list, max_length=8)  # 語尾
     tone: str = Field(default="", max_length=300)  # 話し方の特徴
+    # 語尾の手がかり（守らせる規則ではなく、話し方の目安としてだけ渡す）
+    ending_hints: list[str] = Field(default_factory=list, max_length=8)
+    avoid: list[str] = Field(default_factory=list, max_length=8)  # 使わない言い方
+    # ほかのキャラクター（話者名）→ 公式の呼び名
+    call_names: dict[str, str] = Field(default_factory=dict)
+    # 感情 → スタイル名（空なら EMOTION_STYLES）
+    emotion_styles: dict[str, str] = Field(default_factory=dict)
     source: str = Field(default="", max_length=300)  # 出典（組み込みのとき）
     builtin: bool = False
 
@@ -42,9 +114,18 @@ class VoiceCharacterStyle(BaseModel):
             parts.append(f"相手は「{self.second_person}」と呼ぶ")
         if self.endings:
             parts.append("語尾は" + "・".join(f"「{e}」" for e in self.endings))
+        if self.ending_hints:
+            parts.append("話し方の目安は" + "・".join(f"『{e}』" for e in self.ending_hints))
+        if self.avoid:
+            parts.append("『" + "』『".join(self.avoid) + "』のような言い方はしない")
         if self.tone:
             parts.append(self.tone)
         return "。".join(parts)
+
+    def style_for(self, emotion: str) -> str | None:
+        """感情に合うスタイル名（無ければ None = 既定のまま）。"""
+        table = self.emotion_styles or EMOTION_STYLES.get(self.speaker, {})
+        return table.get(emotion)
 
 
 BUILTIN: dict[str, VoiceCharacterStyle] = {
@@ -63,7 +144,9 @@ BUILTIN: dict[str, VoiceCharacterStyle] = {
             speaker="四国めたん",
             first_person="わたくし",
             second_person="アンタ・貴女",
-            tone="誰にでも遠慮しないので基本的にタメ口。若干ツンデレ気味。趣味は中二病妄想、常に金欠",
+            ending_hints=["〜よ", "〜わ", "〜かしら"],
+            avoid=["〜だぜ", "〜しろよ", "〜みないか"],
+            tone="お嬢様風のタメ口。誰にでも遠慮しない。若干ツンデレ気味。趣味は中二病妄想、常に金欠",
             source="ボイボ寮 shikoku_metan（紹介・呼び方）",
             builtin=True,
         ),
@@ -177,10 +260,71 @@ BUILTIN: dict[str, VoiceCharacterStyle] = {
 }
 
 
+def load_data_file(path: Path | None) -> dict[str, VoiceCharacterStyle]:
+    """手元の口調データ（VoiceCharacterStyle の JSON の配列）。無い・壊れているときは空。"""
+    if path is None or not path.is_file():
+        return {}
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("口調データを読めませんでした: %s (%s)", path.name, exc)
+        return {}
+    out: dict[str, VoiceCharacterStyle] = {}
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            st = VoiceCharacterStyle.model_validate({**row, "builtin": True})
+        except ValidationError as exc:
+            logger.warning("口調データの 1 件を飛ばしました: %s", exc.errors()[0].get("msg"))
+            continue
+        out[st.speaker] = st
+    return out
+
+
 class VoiceCharacterService:
-    def __init__(self, db: Database, voice: VoiceService | None = None) -> None:
+    def __init__(
+        self, db: Database, voice: VoiceService | None = None, data_file: Path | None = None
+    ) -> None:
         self.db = db
         self.voice = voice
+        self.data_file = data_file
+        self._data: dict[str, VoiceCharacterStyle] | None = None
+
+    def _builtin(self) -> dict[str, VoiceCharacterStyle]:
+        """組み込み + 手元の口調データ（データが優先）。"""
+        if self._data is None:
+            self._data = load_data_file(self.data_file)
+        return {**BUILTIN, **self._data}
+
+    async def known_as(self) -> dict[str, list[str]]:
+        """話者名 → ほかのキャラクターからの呼ばれ方（呼び名の取り違えを見つけるのに使う）。"""
+        out: dict[str, list[str]] = {}
+        for st in await self.list():
+            for target, call in st.call_names.items():
+                names = out.setdefault(target, [])
+                if call not in names:
+                    names.append(call)
+        return out
+
+    async def emotion_style_id(self, style_id: int, emotion: str) -> int | None:
+        """声（style_id）の話者で、感情に合うスタイルの ID。
+
+        既定のスタイル（ノーマル等）を選んでいる声だけ切り替える（人が「あまあま」などを
+        選んでいたら、その選択を変えない）。合うスタイルが無ければ None。"""
+        if self.voice is None or not emotion or emotion == "neutral":
+            return None
+        sp = await self.voice.speaker_of(style_id)
+        if sp is None:
+            return None
+        current = next((x for x in sp.styles if x.id == style_id), None)
+        default = DEFAULT_STYLES.get(sp.name, "ノーマル")
+        if current is None or current.name != default:
+            return None
+        style = await self.get(sp.name)
+        name = style.style_for(emotion) if style else EMOTION_STYLES.get(sp.name, {}).get(emotion)
+        if not name:
+            return None
+        hit = next((x for x in sp.styles if x.name == name and x.is_talk), None)
+        return hit.id if hit else None
 
     async def for_style(self, style_id: int) -> tuple[str | None, VoiceCharacterStyle | None]:
         """声（style_id）の話者名と、その口調（登録が無ければ None）。"""
@@ -197,7 +341,7 @@ class VoiceCharacterService:
             return dict(row.value or {}) if row else {}
 
     async def list(self) -> list[VoiceCharacterStyle]:
-        out = dict(BUILTIN)
+        out = self._builtin()
         for name, v in (await self._user()).items():
             out[name] = VoiceCharacterStyle.model_validate({**v, "speaker": name})
         return sorted(out.values(), key=lambda x: (not x.builtin, x.speaker))
@@ -206,7 +350,7 @@ class VoiceCharacterService:
         user = await self._user()
         if speaker in user:
             return VoiceCharacterStyle.model_validate({**user[speaker], "speaker": speaker})
-        return BUILTIN.get(speaker)
+        return self._builtin().get(speaker)
 
     async def put(self, style: VoiceCharacterStyle) -> VoiceCharacterStyle:
         """ユーザーの登録（組み込みと同じ名前なら上書き）。"""

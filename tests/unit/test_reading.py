@@ -92,3 +92,14 @@ def test_join_split_words() -> None:
     assert not changed2 and len(same) == 2
     # 元の句は変えない
     assert len(phrases) == 4
+
+
+def test_symbols_and_character_names_for_speech():
+    from video_automation.services.voice.reading import normalize_for_speech as n
+
+    assert n("えっと……そうなの！！") == "えっと、そうなの！"
+    assert n("何？！本当に♪") == "何？本当に"
+    assert n("†聖騎士 紅桜†と雀松朱司") == "ホーリーナイトベニザクラとワカマツアカシ"
+    assert n("待って――ください") == "待って、ください"
+    # 一般語と同じ字の「雌雄」だけは置き換えない
+    assert n("雌雄を決する") == "雌雄を決する"
