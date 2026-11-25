@@ -88,6 +88,7 @@ class FixedTurnError(ScriptStudioError):
 
 
 SHORTEN_RATIO = 1.3  # 目標の尺のこの倍を超えて長く書いたら、短く書き直させる
+LENGTHEN_RATIO = 0.8  # 目標の尺のこの倍に届かないときは、足りない分を書き足させる
 
 
 def _near_name(name: str, names: set[str]) -> str | None:
@@ -980,6 +981,44 @@ class ScriptStudio:
         new = sum(estimated_sec(t.get("text", ""), st.chars_per_sec) for t in turns)
         return res.data if new < est else None
 
+    async def _lengthen(
+        self,
+        msgs: list[ChatMessage],
+        data: dict[str, Any],
+        est: float,
+        st: Any,
+        total_chars: int,
+        model_key: str | None,
+    ) -> dict[str, Any] | None:
+        """短すぎる台本に、内容を書き足させる。長くならなければ None。
+
+        実機で 60 秒の指定に 42 秒の台本が出ていた（声にすると短い動画になる）。"""
+        ask = (
+            f"この台本は短すぎます（推定 {round(est)} 秒。"
+            f"目標は約 {round(st.target_duration_sec)} 秒）。"
+            f"同じ JSON の形で、セリフの合計を約{total_chars}文字に増やした台本を出してください。"
+            "今のセリフはできるだけ残し、新しい具体的な内容（別のコツ・理由・身近な例・数値）を"
+            "足します。同じ説明を言い換えて繰り返すことはしません。口調の規則は同じです。"
+        )
+        try:
+            res = await self.llm.complete_json(
+                TaskType.SCRIPT_GENERATION,
+                [
+                    *msgs,
+                    ChatMessage(role="assistant", content=json.dumps(data, ensure_ascii=False)),
+                    ChatMessage(role="user", content=ask),
+                ],
+                P.FULL_SCHEMA,
+                model_key=model_key,
+            )
+        except LLMError:
+            return None
+        turns = [t for sc_ in res.data.get("scenes") or [] for t in sc_.get("turns") or []]
+        if not turns:
+            return None
+        new = sum(estimated_sec(t.get("text", ""), st.chars_per_sec) for t in turns)
+        return res.data if new > est * 1.1 else None
+
     async def _generate_full(
         self, script_id: str, req: ScriptGenerateRequest, propose: bool
     ) -> ScriptDetail | ProposalRead:
@@ -1062,6 +1101,20 @@ class ScriptStudio:
                     notes.append(
                         f"長すぎた台本（推定 {round(est)} 秒）を目標の約 "
                         f"{round(st.target_duration_sec)} 秒に合わせて書き直させました"
+                    )
+            elif est < st.target_duration_sec * LENGTHEN_RATIO:
+                more = await self._lengthen(msgs, res.data, est, st, total_chars, req.model_key)
+                if more is not None:
+                    res.data = more
+                    for sc_ in res.data["scenes"]:  # 書き足しでも話者名の書き損じは直す
+                        for t in sc_.get("turns") or []:
+                            if t.get("speaker") not in names and (
+                                near := _near_name(t.get("speaker") or "", names)
+                            ):
+                                t["speaker"] = near
+                    notes.append(
+                        f"短すぎた台本（推定 {round(est)} 秒）に、目標の約 "
+                        f"{round(st.target_duration_sec)} 秒になるよう内容を書き足させました"
                     )
         if st.target_duration_sec:  # 目標の尺より長く書いたときは場面ごと省く
             res.data["scenes"], fit_notes = fit_to_duration(
