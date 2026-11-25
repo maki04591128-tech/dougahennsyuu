@@ -223,6 +223,7 @@ class ScriptStudio:
             p.known_as = [sp, *known.get(sp, [])]
             if style is None:
                 continue
+            p.examples = list(style.examples[:4])
             for target_sp, call in style.call_names.items():
                 target = by_speaker.get(target_sp)
                 if target and target != n and call:
@@ -256,6 +257,61 @@ class ScriptStudio:
                 if alt is not None:
                     out[key] = alt
         return out
+
+    async def _polish(
+        self,
+        turns: list[dict[str, Any]],
+        editable: set[int],
+        personas: dict[str, Persona],
+        model_key: str | None,
+    ) -> list[str]:
+        """台本全体を読ませ、会話として不自然なセリフ（意味が通らない・流れに合わない・
+        言葉遊びのような的外れなやり取り）を書き直させる。口調の規則に合う案だけを採る。
+
+        turns は台本の順の {"speaker", "text"}（書き換える）。editable は直してよい位置
+        （固定セリフは直さない）。"""
+        if len(turns) < 3 or not editable:
+            return []
+        ids = {f"L{i + 1}": i for i in range(len(turns))}
+        rules = P.persona_rules_text(
+            {n: p for n, p in personas.items() if any(t["speaker"] == n for t in turns)}
+        )
+        body = (
+            (rules + "\n\n" if rules else "")
+            + "台本:\n"
+            + "\n".join(f"[{k}] {turns[i]['speaker']}: {turns[i]['text']}" for k, i in ids.items())
+        )
+        try:
+            res = await self.llm.complete_json(
+                TaskType.PROOFREADING,
+                [
+                    ChatMessage(role="system", content=P.POLISH_SYSTEM),
+                    ChatMessage(role="user", content=body),
+                ],
+                P.POLISH_SCHEMA,
+                model_key=model_key,
+                temperature=0.2,
+            )
+        except LLMError:
+            return []
+        done = 0
+        for f in res.data.get("fixes") or []:
+            i = ids.get((f.get("id") or "").strip("[] ").upper())
+            new = (f.get("text") or "").strip()
+            if i is None or i not in editable or not new:
+                continue
+            it = turns[i]
+            if new == it["text"] or len(new) > max(len(it["text"]) * 1.6, len(it["text"]) + 15):
+                continue
+            p = personas.get(it["speaker"])
+            if p is not None and not p.empty:
+                new, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
+                if any(x.kind in ("ending", "avoid") for x in iss):
+                    continue
+            it["text"] = new[:2000]
+            done += 1
+        log.info("script_polish", fixes=done)
+        return [f"会話として不自然なセリフを {done} 件書き直しました"] if done else []
 
     async def _enforce_persona(
         self, items: list[dict[str, Any]], personas: dict[str, Persona], model_key: str | None
@@ -1001,6 +1057,9 @@ class ScriptStudio:
             if t["speaker"] in names and _norm(t["text"]) not in fixed_keys
         ]
         notes += await self._enforce_persona(ai_turns, personas, req.model_key)
+        ordered = [t for sc_ in res.data["scenes"] for t in sc_["turns"] if t["speaker"] in names]
+        editable = {i for i, t in enumerate(ordered) if _norm(t["text"]) not in fixed_keys}
+        notes += await self._polish(ordered, editable, personas, req.model_key)
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)

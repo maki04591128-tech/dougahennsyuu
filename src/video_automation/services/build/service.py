@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -128,6 +129,28 @@ class BuildError(Exception):
     """利用者に見せる失敗（ジョブの error に本文を付ける）。"""
 
     public_message = True
+
+
+_BIG = re.compile(r"(文字|字幕|テロップ|字|カード|見出し)[^。\n]{0,12}?(大き|でか|太く|読みやすく)")
+_SMALL = re.compile(r"(文字|字幕|テロップ|字|カード|見出し)[^。\n]{0,12}?(小さ|控えめ)")
+_MORE = re.compile(r"(もっと|かなり|すごく|とても|もう少しだけ|少しだけ|ちょっと)")
+
+
+FIT_TOLERANCE = 1.08  # 目標の長さをこれ以上超えたら話す速さで合わせる
+MAX_SPEED_UP = 1.2  # 速くしすぎると聞き取りにくい
+
+
+def text_size_factor(instruction: str) -> float | None:
+    """手直しの文章から、文字の大きさの変え方（倍率）を読む。触れていなければ None。"""
+    t = instruction or ""
+    m = _MORE.search(t)
+    strong = bool(m) and m.group(1) in ("もっと", "かなり", "すごく", "とても")
+    light = bool(m) and m.group(1) in ("もう少しだけ", "少しだけ", "ちょっと")
+    if _BIG.search(t):
+        return 1.35 if strong else 1.1 if light else 1.2
+    if _SMALL.search(t):
+        return 0.75 if strong else 0.92 if light else 0.85
+    return None
 
 
 def _title(instruction: str) -> str:
@@ -460,6 +483,81 @@ class BuildService:
         await c.studio.update(req.script_id, ScriptUpdate(settings=settings, characters=chars))
         return await self._view(project_id, req.script_id, notes=notes)
 
+    async def _base_subtitle_ratio(self, project_id: str) -> float:
+        from video_automation.schemas.subtitle import SubtitleStyle
+        from video_automation.services.subtitle.subtitle_service import style_from_profile
+
+        prof = await self.c.design.profile_for(project_id)
+        return (style_from_profile(prof) if prof else SubtitleStyle()).font_size_ratio
+
+    async def _resize_text(self, project_id: str, k: float) -> str:
+        """字幕の文字の大きさを k 倍にして保存する。
+
+        カード・テロップは _text_scale で同じ割合にする。"""
+        c = self.c
+        st = await c.subtitles.project_style(project_id)
+        base = await self._base_subtitle_ratio(project_id)
+        ratio = min(base * 1.5, max(base * 0.7, st.font_size_ratio * k))
+        size = None if st.font_size is None else max(8, min(400, round(st.font_size * k)))
+        await c.subtitles.set_project_style(
+            project_id,
+            st.model_copy(update={"font_size_ratio": round(ratio, 4), "font_size": size}),
+        )
+        word = "大きく" if k > 1 else "小さく"
+        return f"文字を{word}しました（字幕・カード・テロップ、元の {round(ratio / base * 100)}%）"
+
+    async def _text_scale(self, project_id: str) -> float:
+        """カード・テロップの文字の倍率（字幕を手直しで変えた割合に合わせる）。"""
+        try:
+            st = await self.c.subtitles.project_style(project_id)
+            base = await self._base_subtitle_ratio(project_id)
+            return round(min(1.5, max(0.7, st.font_size_ratio / base)), 3)
+        except Exception:  # noqa: BLE001 - 分からなければ元の大きさ
+            return 1.0
+
+    async def _fit_voice_length(self, sid: str, notes: list[str]) -> bool:
+        """声が目標の長さを大きく超えたら、話す速さを上げて作り直す（最大 1.2 倍）。
+
+        台本の長さは文字数から見積もるが、ささやき等のスタイルは話すのが遅く、実機で
+        50 秒の指定が 60 秒になっていた。戻り値は作り直したか。"""
+        from sqlalchemy import select
+
+        from video_automation.database.models import ScriptCharacter, ScriptSegment
+
+        c = self.c
+        d = await c.studio.detail(sid)
+        target = d.settings.target_duration_sec
+        ends = [x.end_frame for x in d.segments if x.end_frame]
+        if not target or not ends:
+            return False
+        actual = max(ends) / 30
+        if actual <= target * FIT_TOLERANCE:
+            return False
+        # 間（発話の間）は速さで縮まないので、話している時間だけを縮める
+        talk = sum((x.end_frame or 0) - (x.start_frame or 0) for x in d.segments) / 30
+        gaps = max(0.0, actual - talk)
+        room = max(target - gaps, talk / MAX_SPEED_UP)
+        speed = round(min(MAX_SPEED_UP, talk / room), 3)
+        async with c.db.session_factory() as s:
+            chars = (
+                await s.execute(select(ScriptCharacter).where(ScriptCharacter.script_id == sid))
+            ).scalars()
+            for ch in chars:
+                v = dict(ch.voice or {})
+                v["speed_scale"] = round(min(2.0, float(v.get("speed_scale") or 1.0) * speed), 3)
+                ch.voice = v
+            segs = (
+                await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sid))
+            ).scalars()
+            for x in segs:
+                x.audio_file_id, x.start_frame, x.end_frame = None, None, None
+            await s.commit()
+        notes.append(
+            f"声が目標より長かった（{round(actual)} 秒 / 目標 {round(target)} 秒）ため、"
+            f"話す速さを {speed} 倍にして作り直しました"
+        )
+        return True
+
     async def _script_to_tachie(
         self, sid: str, has_tachie: bool, redo: str, at: Any, notes: list[str]
     ) -> None:
@@ -505,6 +603,10 @@ class BuildService:
         await at("subtitles")
         await c.subtitles.generate(SubtitleGenerateRequest(script_id=sid))
         await c.subtitles.synchronize(SubtitleSyncRequest(script_id=sid))
+        if await self._fit_voice_length(sid, notes):
+            await c.subtitles.generate_voices(sid, False, vp)
+            await c.subtitles.generate(SubtitleGenerateRequest(script_id=sid))
+            await c.subtitles.synchronize(SubtitleSyncRequest(script_id=sid))
 
         if has_tachie:
             await at("tachie")
@@ -713,6 +815,9 @@ class BuildService:
             await at("music")
             await self._place_music(project_id, song)
         await at("direction")
+        if req.keep_script and (k := text_size_factor(req.instruction)) is not None:
+            notes.append(await self._resize_text(project_id, k))
+        text_scale = await self._text_scale(project_id)
         plan = (
             await c.direction.plan(
                 DirectionPlanRequest(
@@ -722,7 +827,9 @@ class BuildService:
                 )
             )
         ).plan
-        res = await c.direction.apply(DirectionApplyRequest(script_id=sid, plan=plan))
+        res = await c.direction.apply(
+            DirectionApplyRequest(script_id=sid, plan=plan, text_scale=text_scale)
+        )
         skipped = list(getattr(res, "skipped", []) or [])
         if skipped:
             notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")
@@ -949,6 +1056,9 @@ class BuildService:
                 notes += await self._place_recording(project_id, sid, rec, at)
 
         await at("direction")
+        if req.keep_script and (k := text_size_factor(redo)) is not None:
+            notes.append(await self._resize_text(project_id, k))
+        text_scale = await self._text_scale(project_id)
         plan = (
             await c.direction.plan(
                 DirectionPlanRequest(
@@ -958,7 +1068,9 @@ class BuildService:
                 )
             )
         ).plan
-        res = await c.direction.apply(DirectionApplyRequest(script_id=sid, plan=plan))
+        res = await c.direction.apply(
+            DirectionApplyRequest(script_id=sid, plan=plan, text_scale=text_scale)
+        )
         skipped = list(getattr(res, "skipped", []) or [])
         if skipped:
             notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")

@@ -102,6 +102,8 @@ class VoiceCharacterStyle(BaseModel):
     call_names: dict[str, str] = Field(default_factory=dict)
     # 感情 → スタイル名（空なら EMOTION_STYLES）
     emotion_styles: dict[str, str] = Field(default_factory=dict)
+    # 手本のセリフ（話し方の参考。台本にそのまま使わせない）
+    examples: list[str] = Field(default_factory=list, max_length=8)
     source: str = Field(default="", max_length=300)  # 出典（組み込みのとき）
     builtin: bool = False
 

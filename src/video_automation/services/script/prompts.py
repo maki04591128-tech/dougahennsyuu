@@ -160,9 +160,18 @@ def persona_rules_text(personas: dict[str, Any]) -> str:
     """キャラクターごとの必ず守る口調の規則（一人称・呼び方・語尾）。"""
     rows = [p.rules_text() for p in personas.values() if not p.empty]
     rows = [r for r in rows if r]
-    if not rows:
-        return ""
-    return "口調の規則（必ず守る）:\n" + "\n".join(f"- {r}" for r in rows)
+    text = "口調の規則（必ず守る）:\n" + "\n".join(f"- {r}" for r in rows) if rows else ""
+    ex = [
+        f"- {p.name}: " + " ".join(f"「{e}」" for e in p.examples[:4])
+        for p in personas.values()
+        if getattr(p, "examples", None)
+    ]
+    if ex:
+        text += (
+            "\n\n話し方の手本（公式のセリフ。口調・言い回しの参考にし、文はそのまま使わない）:\n"
+            + "\n".join(ex)
+        )
+    return text.strip()
 
 
 def settings_text(st: dict[str, Any]) -> str:
@@ -180,6 +189,37 @@ def settings_text(st: dict[str, Any]) -> str:
     if st.get("reference"):
         text += f"\n参考資料（この内容を根拠にする）:\n{st['reference'][:8000]}"
     return text
+
+
+# ---------- 推敲（会話として不自然なセリフを直す） ----------
+POLISH_VERSION = "script.polish.v1"
+POLISH_SYSTEM = (
+    "あなたは掛け合い動画の台本の推敲者です。台本を通して読み、会話として不自然なセリフだけを"
+    "挙げて書き直します。対象は、意味が通らない・前のセリフの流れに合っていない・同じことを"
+    "繰り返している・言葉そのものを話題にする的外れなやり取り・日本語として不自然、のどれかです。"
+    "書き直すときは、そのキャラクターの口調の規則（一人称・相手の呼び方・語尾・使わない言い方）を"
+    "守り、伝える内容と長さは元のセリフと同じくらいにします。問題の無いセリフは挙げません。"
+    "直すものが無ければ fixes は空配列にします。"
+)
+POLISH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "problem": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["id", "problem", "text"],
+            },
+            "maxItems": 8,
+        }
+    },
+    "required": ["fixes"],
+}
 
 
 # ---------- 事実の確認（解説の台本の誤りを直す） ----------

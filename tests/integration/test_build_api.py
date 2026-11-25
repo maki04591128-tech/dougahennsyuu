@@ -194,12 +194,50 @@ async def test_change_plan_and_revise_after_build(bclient, fake):
     assert len(prompts) == n and Path(job.result["video"]).is_file()
     same = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
     assert same == first
+    # 「文字を大きく」は字幕・カードの文字を大きくする（演出の AI 任せにしない）
+    before = (await c.get(f"/subtitles/style/{pid}")).json()["font_size_ratio"]
+    job = await run(instruction="文字を大きくして", keep_script=True)
+    after = (await c.get(f"/subtitles/style/{pid}")).json()["font_size_ratio"]
+    assert after == pytest.approx(before * 1.2, rel=0.01)
+    assert any("文字を大きく" in n for n in job.result["notes"])
 
     # 台本から作り直す: 前の台本と直したいことを渡す
     await run(instruction="もっと短くして")
     assert "前に作った台本" in prompts[-1] and "もっと短くして" in prompts[-1]
     new = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
     assert new[0] == "短く話します。"
+
+
+async def test_voice_longer_than_target_is_sped_up(bclient, fake):
+    """声が目標の長さを大きく超えたら、話す速さを上げて作り直す（最大 1.2 倍）。"""
+    c = bclient
+    await c.post("/providers/discover")
+    plan = (
+        await c.post("/build/plan", json={"instruction": "電池のコツの解説", "duration_sec": 15})
+    ).json()
+    pid, sid = plan["project_id"], plan["script_id"]
+    names = [x["name"] for x in plan["characters"]]
+    long = "電池を長持ちさせるには画面の明るさを下げて使わないアプリを閉じるのが大切です"
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "scenes" not in props:
+            return None
+        turns = [{"speaker": names[i % len(names)], "text": long} for i in range(3)]
+        return {"scenes": [{"purpose": "本題", "turns": turns}], "notes": []}
+
+    fake.chat_responder = responder
+    # 文字数からの見積もりが実際の声より短く出る状況（実機ではささやき等のスタイル）を作る
+    st = (await c.get(f"/scripts/{sid}/detail")).json()["settings"]
+    r = await c.put(f"/scripts/{sid}", json={"settings": {**st, "chars_per_sec": 15}})
+    assert r.status_code == 200, r.text
+    r = await c.post(f"/build/{pid}/run", json={"script_id": sid, "use_llm_direction": False})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert any("話す速さを" in n for n in job.result["notes"]), job.result["notes"]
+    d = (await c.get(f"/scripts/{sid}/detail")).json()
+    assert all(1.0 < ch["voice"]["speed_scale"] <= 1.2 for ch in d["characters"])
+    assert all(s["audio_file_id"] and s["end_frame"] for s in d["segments"])
 
 
 async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path):

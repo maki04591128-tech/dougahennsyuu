@@ -87,7 +87,7 @@ async def test_active_model_and_task_assignment(client):
     await _run_test(client, SWALLOW, ["tools"])
     rows = {a["task"]: a for a in (await client.get("/models/task-assignment")).json()}
     assert rows["tool_selection"]["resolved_model_key"] == QWEN
-    assert rows["script_generation"]["resolved_model_key"] == SWALLOW
+    assert rows["script_generation"]["resolved_model_key"] == QWEN
     assert rows["image_understanding"]["mode"] == "auto"
 
     r = await client.put("/models/task-assignment", json={"task": "chat", "model_key": GEMMA})

@@ -60,6 +60,8 @@ class DirectionPlanResult(BaseModel):
 class DirectionApplyRequest(BaseModel):
     script_id: str
     plan: DirectionPlan
+    # カード・テロップ・題名の文字の大きさの倍率（手直しの「文字を大きく」等）
+    text_scale: float = Field(default=1.0, ge=0.7, le=1.5)
 
 
 class DirectionApplyResult(BaseModel):

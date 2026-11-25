@@ -74,6 +74,7 @@ class Persona:
     # このキャラクターの呼ばれ方（名前・ほかのキャラクターからの呼び名）
     known_as: list[str] = field(default_factory=list)
     avoid: list[str] = field(default_factory=list)  # 文末に使わない言い方（「〜」は除く）
+    examples: list[str] = field(default_factory=list)  # 手本のセリフ（規則ではなく参考）
 
     @property
     def empty(self) -> bool:
