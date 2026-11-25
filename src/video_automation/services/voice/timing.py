@@ -90,7 +90,9 @@ def mora_times(
 
 
 SPEECH_LEVEL_DB = -20.0  # セリフの音量のそろえ先（話している部分の RMS、dBFS）
-SPEECH_PEAK_DB = -1.5  # そろえた後のピークの上限（dBFS）
+SPEECH_PEAK_DB = (
+    -3.0
+)  # そろえた後のピークの上限（dBFS。実機で -1.5 だとトゥルーピークが -0.9 になった）
 SPEECH_MAX_GAIN_DB = 9.0  # 上げ・下げの上限（無音に近い声を無理に持ち上げない）
 
 
