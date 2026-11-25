@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 # 調べる一人称・二人称（長いものから照合する）。「うち」「わし」は普通の言葉と紛れるので除く
 FIRST_PERSONS = [
@@ -107,6 +108,8 @@ class PersonaIssue:
     def message(self) -> str:
         if self.kind == "ending":
             return f"語尾「{self.expected}」がありません: {self.found}"
+        if self.kind == "example_copy":
+            return f"手本のセリフの写し（{self.found}）を外しました"
         if self.kind == "grammar":
             return f"「{self.found}」を「{self.expected}」に直しました"
         if self.kind == "quote":
@@ -344,6 +347,46 @@ def fill_endings(text: str, p: Persona) -> str:
     return "".join(out) + text[last:]
 
 
+def _example_sentences(p: Persona) -> list[str]:
+    out = []
+    for ex in p.examples:
+        for m in _SENT.finditer(ex):
+            core = re.sub(r"[\s、。！？!?…]", "", m.group(0))
+            if len(core) >= 6:
+                out.append(core)
+    return out
+
+
+def _drop_copied_examples(index: int, text: str, p: Persona, issues: list[PersonaIssue]) -> str:
+    exs = _example_sentences(p)
+    if not exs:
+        return text
+    kept, dropped = [], []
+    for m in _SENT.finditer(text):
+        sent = m.group(0)
+        core = re.sub(r"[\s、。！？!?…]", "", sent)
+        copied = len(core) >= 6 and any(
+            e in core or SequenceMatcher(None, e, core).ratio() >= 0.75 for e in exs
+        )
+        (dropped if copied else kept).append(sent)
+    if not dropped:
+        return text
+    rest = "".join(kept).strip()
+    if len(re.sub(r"[\s、。！？!?…]", "", rest)) >= 4:
+        issues.append(PersonaIssue(index, "example_copy", dropped[0][:40], "", rest))
+        return rest
+    issues.append(PersonaIssue(index, "avoid", text[:40], "手本のセリフの写し"))
+    return text
+
+
+_GRAMMAR_FIXES = (
+    (re.compile(r"てみまっす(?!ぐ)"), "てみるっす"),
+    (re.compile(r"しまっす(?!ぐ)"), "するっす"),
+    (re.compile(r"んだっすか"), "んすか"),
+    (re.compile(r"んだっす"), "んす"),
+)  # fmt: skip（「まっすぐ」は直さない）
+
+
 def one_line(text: str) -> str:
     """セリフの中の改行を文の区切りにする（「…のだ\nそれなら…」→「…のだ。それなら…」）。"""
     parts = [x.strip() for x in re.split(r"[\r\n]+", text) if x.strip()]
@@ -371,9 +414,16 @@ def check_line(
     # 形容詞の語幹に「かしら」を付ける誤り（「触り心地良かしら」→「良いかしら」）
     # （「最高かしら」のような名詞もあるので「良」だけ）
     new = fixed.replace("良かしら", "良いかしら")
+    # 「〜っす」の付け方の誤り（「してみまっす」「勉強するんだっすか」）
+    for pat, to in _GRAMMAR_FIXES:
+        new = pat.sub(to, new)
     if new != fixed:
-        issues.append(PersonaIssue(index, "grammar", "良かしら", "良いかしら", new))
+        issues.append(PersonaIssue(index, "grammar", "言い回し", "正しい形", new))
         fixed = new
+    # 手本のセリフ（公式の決めゼリフなど）をそのまま写した文は外す（実機で解説の途中に
+    # 「すべての白地図を四国に染める女よ」「埼玉、いいところだよ」が出ていた）
+    if p.examples:
+        fixed = _drop_copied_examples(index, fixed, p, issues)
     # セリフ全体を「」で囲む癖（「「ブルーライトが…」」）は外す
     m = re.fullmatch(r"\s*[「『]([^「」『』]+)[」』]\s*", fixed)
     if m:
@@ -405,6 +455,8 @@ def check_line(
         # 命令形＋「なのだ」（「備えろなのだ」「入れておけなのだ」）を直す
         new = re.sub(r"([えけげせぜてでねべめれ])ろなのだ", r"\1るのだ", new)
         new = re.sub(r"ておけなのだ", "ておくのだ", new)
+        # 「知ってるのだか？」→「知ってるのだ？」（「のだから」は直さない）
+        new = re.sub(r"のだか(?=[？?。！!]|$)", "のだ", new)
         # 「試してみななのだ」→「試してみるのだ」
         new = re.sub(r"てみななのだ", "てみるのだ", new)
         # 「始めようのだ」→「始めるのだ」、「しようのだ」→「するのだ」

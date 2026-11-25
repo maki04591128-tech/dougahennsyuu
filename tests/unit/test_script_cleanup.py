@@ -83,3 +83,37 @@ def test_round7_rules():
         check_line(0, "手帳の方が、触り心地良かしら。", m)[0] == "手帳の方が、触り心地良いかしら。"
     )
     assert check_line(0, "これは最高かしら。", m)[0] == "これは最高かしら。"
+
+
+def test_nodaka():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    assert (
+        check_line(0, "つむぎ、その理由を知ってるのだか？", z)[0]
+        == "つむぎ、その理由を知ってるのだ？"
+    )
+    assert check_line(0, "大事なのだから、守るのだ", z)[0] == "大事なのだから、守るのだ"
+
+
+def test_copied_example_sentence_is_dropped():
+    from video_automation.services.script.persona import Persona
+
+    m = Persona(
+        "四国めたん",
+        first=["わたくし"],
+        examples=["わたくしは四国めたん、すべての白地図を四国に染める女よ"],
+    )
+    t = "わたくしは四国めたん、すべての白地図を四国に染める女よ。朝の使い方を教えるわ。"
+    fixed, iss = check_line(0, t, m)
+    assert fixed == "朝の使い方を教えるわ。"
+    assert any(x.kind == "example_copy" for x in iss)
+    fixed, iss = check_line(0, "すべての白地図を四国に染める女よ。", m)
+    assert any(x.kind == "avoid" for x in iss)
+
+
+def test_ssu_grammar():
+    from video_automation.services.script.persona import Persona
+
+    t = Persona("春日部つむぎ", first=["あーし"])
+    assert check_line(0, "今日から早起きしてみまっす！", t)[0] == "今日から早起きしてみるっす！"
+    assert check_line(0, "運動してから勉強するんだっすか。", t)[0] == "運動してから勉強するんすか。"
+    assert check_line(0, "背筋を少しまっすぐにするっす", t)[0] == "背筋を少しまっすぐにするっす"
