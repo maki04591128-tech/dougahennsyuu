@@ -54,6 +54,8 @@ from video_automation.schemas.subtitle import ScriptMode
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.script import prompts as P
 from video_automation.services.script.persona import (
+    BAD_JOINS,
+    FOREIGN_SCRIPT,
     Persona,
     check_line,
     check_lines,
@@ -89,6 +91,11 @@ class FixedTurnError(ScriptStudioError):
 
 SHORTEN_RATIO = 1.3  # 目標の尺のこの倍を超えて長く書いたら、短く書き直させる
 LENGTHEN_RATIO = 0.8  # 目標の尺のこの倍に届かないときは、足りない分を書き足させる
+
+
+def _broken(text: str) -> bool:
+    """日本語の台本として壊れている（ロシア文字などが混ざる・「しますのだ」）か。"""
+    return bool(FOREIGN_SCRIPT.search(text)) or any(b in text for b in BAD_JOINS)
 
 
 def _near_name(name: str, names: set[str]) -> str | None:
@@ -287,6 +294,13 @@ class ScriptStudio:
         if len(turns) < 3 or not editable:
             return []
         ids = {f"L{i + 1}": i for i in range(len(turns))}
+        seen: dict[str, int] = {}
+        dup: list[str] = []
+        for i, t in enumerate(turns):
+            k = _norm(t["text"])
+            if k in seen and i in editable:
+                dup.append(f"L{i + 1}")
+            seen.setdefault(k, i)
         rules = P.persona_rules_text(
             {n: p for n, p in personas.items() if any(t["speaker"] == n for t in turns)}
         )
@@ -295,6 +309,8 @@ class ScriptStudio:
             + "台本:\n"
             + "\n".join(f"[{k}] {turns[i]['speaker']}: {turns[i]['text']}" for k, i in ids.items())
         )
+        if dup:
+            body += "\n\n前と同じセリフ（必ず別の内容に書き直す）: " + "、".join(dup)
         try:
             res = await self.llm.complete_json(
                 TaskType.PROOFREADING,
@@ -317,6 +333,11 @@ class ScriptStudio:
             it = turns[i]
             if new == it["text"] or len(new) > max(len(it["text"]) * 1.6, len(it["text"]) + 15):
                 continue
+            if _broken(new):
+                continue
+            others = {_norm(t["text"]) for j, t in enumerate(turns) if j != i}
+            if _norm(new) in others:  # 書き直した結果がほかのセリフと同じになるものは採らない
+                continue
             p = personas.get(it["speaker"])
             if p is not None and not p.empty:
                 new, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
@@ -337,6 +358,7 @@ class ScriptStudio:
         notes: list[str] = []
         swapped: list[str] = []
         need: list[int] = []
+        why: dict[int, str] = {}
         for i, it in enumerate(items):
             p = personas.get(it["speaker"])
             if p is None or p.empty:
@@ -351,6 +373,7 @@ class ScriptStudio:
                     swapped.append(f"{it['speaker']}「{x.found}」→「{x.expected}」")
                 if x.kind in ("ending", "avoid") and i not in need:
                     need.append(i)
+                    why[i] = x.message()
             it["text"] = fixed
         if swapped:
             uniq = sorted(set(swapped))
@@ -364,11 +387,14 @@ class ScriptStudio:
             for i in {items[i]["speaker"]: i for i in need}.values()
         )
         body = (
-            "次のセリフは語尾の規則を守っていません。意味・長さ・内容はそのままに、"
-            "規則どおりの語尾に書き直してください。\n口調の規則:\n"
+            "次のセリフは口調の規則を守っていないか、日本語として誤りがあります（かっこの中が理由）。"
+            "意味・長さ・内容はそのままに、規則どおりの自然な日本語に書き直してください。\n口調の規則:\n"
             + rules
             + "\n\nセリフ:\n"
-            + "\n".join(f"[{k}] {items[i]['speaker']}: {items[i]['text']}" for k, i in ids.items())
+            + "\n".join(
+                f"[{k}] {items[i]['speaker']}: {items[i]['text']}（{why.get(i, '')}）"
+                for k, i in ids.items()
+            )
         )
         try:
             res = await self.llm.complete_json(
@@ -1439,6 +1465,23 @@ class ScriptStudio:
         return await self.detail(script_id)
 
     # ---------- 事実の確認 ----------
+    async def polish(self, script_id: str, model_key: str | None = None) -> list[str]:
+        """保存済みの台本を推敲する（事実の確認で直した後の、流れの合わない反応などを直す）。"""
+        d = await self.detail(script_id)
+        segs = [t for t in d.segments if t.text.strip()]
+        if len(segs) < 3:
+            return []
+        personas = await self._personas([c.model_dump() for c in d.characters])
+        turns = [{"speaker": t.speaker, "text": t.text} for t in segs]
+        notes = await self._polish(turns, set(range(len(turns))), personas, model_key)
+        for t, new in zip(segs, turns, strict=True):
+            if new["text"] != t.text:
+                try:
+                    await self._apply_ai_text(script_id, t.id, new["text"][:2000], None, "推敲")
+                except FixedTurnError:
+                    continue
+        return notes
+
     async def fact_check(self, script_id: str, model_key: str | None = None) -> list[str]:
         """台本の事実の誤りを AI に挙げさせ、口調を保ったまま直す。戻り値は画面に出す説明。
 
@@ -1473,6 +1516,8 @@ class ScriptStudio:
             t = ids.get((f.get("id") or "").strip("[] ").upper())
             new = (f.get("text") or "").strip()
             if t is None or not new or new == t.text or len(new) > len(t.text) * 1.6 + 8:
+                continue
+            if _broken(new):
                 continue
             p = personas.get(t.speaker)
             if p is not None and not p.empty:
