@@ -143,6 +143,23 @@ class ReadingService:
             return False
         return bool(want) and want in flat
 
+    async def _not_better(self, surface: str, reading: str, style_id: int) -> bool:
+        """提案の読みが、エンジンがその語だけを読んだ読みと同じか、音を落としただけか。
+
+        実機で「照明は」→「ショメエワ」（エンジンは「ショオメエワ」と正しく読んでいた）の
+        ように、長音を落とした誤った提案が採用されていた。"""
+        try:
+            have = (await self._kana(surface, style_id)).replace("/", "").replace("、", "")
+            want = (await self._kana(reading, style_id)).replace("/", "").replace("、", "")
+        except Exception:  # noqa: BLE001 - 判定できないときは候補として残す
+            return False
+        if not have or not want:
+            return False
+        if want == have:
+            return True
+        it = iter(have)
+        return len(want) < len(have) and all(ch in it for ch in want)
+
     async def check_script(self, script_id: str, req: ReadingCheckRequest) -> ReadingCheckResult:
         async with self.db.session_factory() as s:
             sc = await s.get(Script, script_id)
@@ -198,6 +215,8 @@ class ReadingService:
                     continue
                 # すでにその読みで読めているもの（モデルの勘違い）は採用しない
                 if await self._already_read(reading, kana, seg.voice_style_id or 0):
+                    continue
+                if await self._not_better(surface, reading, seg.voice_style_id or 0):
                     continue
                 issue = ReadingIssue(
                     segment_id=seg.id, text=seg.text, surface=surface, wrong=kana, reading=reading

@@ -90,6 +90,9 @@ class FixedTurnError(ScriptStudioError):
 SHORTEN_RATIO = 1.3  # 目標の尺のこの倍を超えて長く書いたら、短く書き直させる
 
 
+QUIET_EMOTIONS = {"whisper", "sad", "tired", "calm"}
+
+
 def estimated_sec(text: str, chars_per_sec: float) -> float:
     n = len(_SPACE.sub("", text))
     return round(n / chars_per_sec + 0.3, 2)
@@ -237,7 +240,11 @@ class ScriptStudio:
         tried: set[tuple[str, str]] = set()
         for sc_ in scenes:
             for t in sc_.get("turns") or []:
-                key = (t.get("speaker") or "", t.get("emotion") or "")
+                emo = t.get("emotion") or ""
+                # 声を張るセリフ（「！」で終わる）に、ささやき・悲しみ・疲れの声は合わない
+                if emo in QUIET_EMOTIONS and (t.get("text") or "").rstrip().endswith(("！", "!")):
+                    t["emotion"] = emo = "neutral"
+                key = (t.get("speaker") or "", emo)
                 sid = sids.get(key[0])
                 if sid is None or key[1] in ("", "neutral") or key in tried:
                     continue
