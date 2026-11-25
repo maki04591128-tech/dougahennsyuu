@@ -301,3 +301,10 @@ def test_signature_terms():
     assert any(x.kind == "avoid" and "白地図" in x.expected for x in iss)
     set_signature(m, "白地図の塗り方")
     assert m.signature == set()
+
+
+def test_round24():
+    z = parse_style("ずんだもん", "一人称は「ボク」。語尾は「〜のだ」・「〜なのだ」")
+    m = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert check_line(0, "コツを聞かせてくれないのだ！", z)[0] == "コツを聞かせてほしいのだ！"
+    assert check_line(0, "これで疲れにくくなりやすいのよ。", m)[0] == "これで疲れにくくなるのよ。"
