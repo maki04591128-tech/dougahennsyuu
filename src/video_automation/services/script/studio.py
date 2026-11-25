@@ -424,6 +424,19 @@ class ScriptStudio:
                 "\n\n前のセリフに無い言葉を聞き返している反応（前のセリフに合う反応に書き直す）: "
                 + "、".join(echo)
             )
+        # 同じ言い回しの繰り返し（実機:「〜が大事なのだ」が 5 回）。3 回目からを直させる
+        tails: dict[str, int] = {}
+        rep: list[str] = []
+        for i, t in enumerate(turns):
+            for sent in re.findall(r"[^。！？!?]+", t["text"]):
+                tail = re.sub(r"[\s、。！？!?…〜ー]", "", sent)[-5:]
+                if len(tail) < 4:
+                    continue
+                tails[tail] = tails.get(tail, 0) + 1
+                if tails[tail] >= 3 and i in editable and f"L{i + 1}" not in rep:
+                    rep.append(f"L{i + 1}")
+        if rep:
+            body += "\n\n同じ言い回しの繰り返し（別の言い方に書き直す）: " + "、".join(rep)
         msgs = [
             ChatMessage(role="system", content=P.POLISH_SYSTEM),
             ChatMessage(role="user", content=body),
