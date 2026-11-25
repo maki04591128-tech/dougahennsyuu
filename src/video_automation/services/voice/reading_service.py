@@ -68,6 +68,7 @@ def _to_katakana(s: str) -> str:
 
 def _skeleton(kana: str) -> str:
     """長音（ー・伸ばす母音）と促音を除いた読みの骨組み（音を伸ばしただけの違いを見分ける）。"""
+    kana = kana.translate(str.maketrans("ヲヅヂ", "オズジ"))  # 同じ音の書き分け
     return kana[:1] + re.sub(r"[ーッアイウエオ]", "", kana[1:])
 
 
