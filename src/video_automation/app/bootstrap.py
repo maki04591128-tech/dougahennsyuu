@@ -189,10 +189,38 @@ async def build_container(
     characters = CharacterService(settings, db, timeline, ffmpeg)
     render.characters = characters
 
+    async def _voice_credits(project_id: str) -> list[str]:
+        """台本の音声のクレジット（VOICEVOX:キャラ名 / VOICEVOX Nemo）。
+
+        「動画をつくる」は声をタイムラインの素材にせず台本から直接重ねるため、素材の
+        クレジットだけでは声が抜ける。台本のセリフが使っている音声から集める。"""
+        from sqlalchemy import select
+
+        from video_automation.database.models import AudioFile, Script, ScriptSegment
+
+        async with db.session_factory() as s:
+            rows = await s.execute(
+                select(AudioFile.credit)
+                .join(ScriptSegment, ScriptSegment.audio_file_id == AudioFile.id)
+                .join(Script, Script.id == ScriptSegment.script_id)
+                .where(Script.project_id == project_id)
+                .order_by(ScriptSegment.sequence)
+            )
+            out: list[str] = []
+            for (credit,) in rows:
+                if credit and credit not in out:
+                    out.append(credit)
+        return out
+
     async def _used_credits(project_id: str) -> str:
         text = (await asset_sources.credits(project_id, used_only=True)).text
         extra = await characters.project_credits(project_id)
-        return "\n".join([x for x in [text, *extra] if x])
+        head = []
+        if not text.startswith("音声: "):  # 声がタイムラインの素材に無いとき（台本から重ねる）
+            voices = await _voice_credits(project_id)
+            if voices:
+                head.append("音声: " + " / ".join(voices))
+        return "\n".join([x for x in [*head, text, *extra] if x])
 
     render.credits_for = _used_credits
     approvals = ApprovalService(settings, db, timeline, render, asset_sources, studio)
