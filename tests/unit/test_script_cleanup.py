@@ -219,3 +219,10 @@ def test_round17_polite():
         check_line(0, "さあ、みんななのだ！今日のテーマなのだ。", z)[0]
         == "さあ、みんな！今日のテーマなのだ。"
     )
+
+
+def test_round18_masu():
+    assert _simple_fix("わたくしも、一緒に歩きましょうか。") == "わたくしも、一緒に歩こうかしら。"
+    assert _simple_fix("約束したのですから、やめられませんの") == "約束したのだから、やめられないの"
+    assert _simple_fix("さあ、始めましょう") == "さあ、始めよう"
+    assert _simple_fix("それはしません") == "それはしない"

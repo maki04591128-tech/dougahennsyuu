@@ -149,11 +149,42 @@ def _drop_repeated_openers(turns: list[dict[str, Any]], personas: dict[str, Pers
     return n
 
 
+_I_ROW, _O_ROW, _A_ROW = "いきぎしちにびみり", "おこごそとのぼもろ", "わかがさたなばまら"
+_E_ROW = "えけげせてねべめれ"
+
+
+def _plain_masu(m: re.Match[str]) -> str:
+    """「歩きましょうか」→「歩こうかしら」、「やめられませんの」→「やめられないの」。"""
+    stem, form, tail = m.group(1), m.group(2), m.group(3) or ""
+    if form == "ましょう":
+        if stem == "し":
+            base = "しよう"
+        elif stem in _E_ROW or stem == "見":
+            base = stem + "よう"
+        elif stem in _I_ROW:
+            base = _O_ROW[_I_ROW.index(stem)] + "う"
+        else:
+            return m.group(0)
+        return base + ("かしら" if tail == "か" else "")
+    # ません
+    if stem == "し":
+        base = "しない"
+    elif stem in _E_ROW or stem == "見":
+        base = stem + "ない"
+    elif stem in _I_ROW:
+        base = _A_ROW[_I_ROW.index(stem)] + "ない"
+    else:
+        return m.group(0)
+    return base + tail
+
+
 def _simple_fix(text: str) -> str:
     out = text
     for a, b in _SIMPLE_FIXES:
         out = out.replace(a, b)
-    return out
+    out = out.replace("のですから", "のだから")
+    # 丁寧語の動詞を言い切りに（です・ます調を使わないキャラクターの最後の手当て）
+    return re.sub(r"(.)(ましょう|ません)(か|の)?", _plain_masu, out)
 
 
 def _broken(text: str) -> bool:
