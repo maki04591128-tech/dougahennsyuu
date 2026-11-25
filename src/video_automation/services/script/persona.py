@@ -236,6 +236,13 @@ def _strip_foreign(sentence: str, e: str) -> str | None:
     return None
 
 
+# 日本語の台本に出てはいけない文字（実機で「一 градус 上げる」が出た）
+FOREIGN_SCRIPT = re.compile(
+    r"[\u0370-\u03FF\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\uAC00-\uD7AF]"
+)
+# どのキャラクターでも誤りになる語尾のつなぎ方（「しますのだ」「しなさいわ」）
+BAD_JOINS = ("ますのだ", "ですのだ", "ましたのだ", "でしたのだ", "なさいわ", "なさいのだ")
+
 _KATA = re.compile(r"[ァ-ヴーA-Za-zＡ-Ｚａ-ｚ]")
 
 
@@ -380,6 +387,11 @@ def check_line(
             for x in issues:
                 if x.kind == "foreign_ending":
                     x.fixed = fixed
+    if FOREIGN_SCRIPT.search(fixed):
+        issues.append(PersonaIssue(index, "avoid", fixed[:40], "日本語以外の文字"))
+    bad_join = next((b for b in BAD_JOINS if b in fixed), None)
+    if bad_join is not None:
+        issues.append(PersonaIssue(index, "avoid", fixed[:40], bad_join))
     if p.avoid:
         # 文末と、読点で区切った句の終わり（「ご存じですわ、アンタ。」）を見る
         parts = [x for x in re.split(r"(?<=[、,])", fixed) if x.strip()]

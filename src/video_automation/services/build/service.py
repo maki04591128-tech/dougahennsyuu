@@ -578,7 +578,10 @@ class BuildService:
             raise BuildError(f"台本を作れませんでした: {type(exc).__name__}") from exc
         notes += list(getattr(d, "notes", []) or [])[:5]
         # 解説の内容の誤り（「コンセントを抜くと電気が貯まる」など）を直してから声にする
-        notes += await c.studio.fact_check(sid)
+        fact = await c.studio.fact_check(sid)
+        notes += fact
+        if fact:  # 直したセリフの前後で反応が合わなくなる（「半分！？」が残る）ので推敲し直す
+            notes += await c.studio.polish(sid)
 
         await at("voice")
         # 声にする前に、読み間違い（英語・専門用語など）を AI に確かめさせて読みのルールにする

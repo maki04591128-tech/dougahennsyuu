@@ -191,3 +191,36 @@ def test_speaker_typos_map_to_the_one_near_name():
     assert _near_name("四国来たん", cast) == "四国めたん"
     assert _near_name("つむぎ", cast) is None or _near_name("つむぎ", cast) == "春日部つむぎ"
     assert _near_name("謎の人", cast) is None
+
+
+@pytest.mark.asyncio
+async def test_polish_marks_duplicates_and_rejects_fixes_that_duplicate():
+    from types import SimpleNamespace
+
+    from video_automation.services.script.studio import ScriptStudio
+
+    seen = {}
+
+    class _LLM:
+        async def complete_json(self, task, msgs, schema, **kw):
+            seen["body"] = msgs[-1].content
+            return SimpleNamespace(
+                data={
+                    "fixes": [
+                        {"id": "L3", "problem": "重複", "text": "まず、洗濯機はまとめて回すわ"},
+                        {"id": "L4", "problem": "x", "text": "一 градус 上げるのよ"},
+                    ]
+                },
+                model_key="m",
+            )
+
+    turns = [
+        {"speaker": "めたん", "text": "まず、洗濯機はまとめて回すわ"},
+        {"speaker": "ずんだもん", "text": "まとめて？"},
+        {"speaker": "めたん", "text": "まず、洗濯機はまとめて回すわ"},
+        {"speaker": "ずんだもん", "text": "温度は？"},
+    ]
+    studio = ScriptStudio(None, _LLM())  # type: ignore[arg-type]
+    notes = await studio._polish(turns, {0, 1, 2, 3}, {}, None)
+    assert "前と同じセリフ（必ず別の内容に書き直す）: L3" in seen["body"]
+    assert notes == [] and turns[3]["text"] == "温度は？"

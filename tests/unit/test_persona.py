@@ -185,3 +185,13 @@ def test_avoided_ending_before_a_comma_is_found():
     assert [i.kind for i in iss] == ["avoid"]
     # 読点の前でも、タメ口なら問題なし
     assert check_line(0, "知ってるわ、アンタ。", m)[1] == []
+
+
+def test_broken_japanese_asks_for_a_rewrite():
+    # 実機: 「一 градус 上げるだけで」「すぐに設定し直しますのだ」「設定しなさいわ」
+    z = _p("ずんだもん")
+    m = _p("四国めたん")
+    assert [i.kind for i in check_line(0, "一 градус 上げるのだ。", z)[1]] == ["avoid"]
+    assert [i.kind for i in check_line(0, "すぐに設定し直しますのだ！", z)[1]] == ["avoid"]
+    assert [i.kind for i in check_line(0, "エアコンは 28 度に設定しなさいわ。", m)[1]] == ["avoid"]
+    assert check_line(0, "28 度に設定するのだ。", z)[1] == []
