@@ -88,6 +88,11 @@ async def test_build_from_one_sentence(bclient, fake, media_settings):
     sfx = [x for x in tl["clips"] if x["track_id"] == tracks["効果音"]["id"]]
     assert sfx and all(x["volume"] < 1.0 for x in sfx)
     assert any("BGM" in n for n in job.result["notes"])
+    # キャラクターの声: セリフごとに「ナレーション」トラックへ置かれ、書き出しに音が入る
+    segs = (await c.get(f"/scripts/{plan['script_id']}/detail")).json()["segments"]
+    voice = [x for x in tl["clips"] if x["track_id"] == tracks["ナレーション"]["id"]]
+    assert tracks["ナレーション"]["kind"] == "audio"
+    assert sorted(x["start_frame"] for x in voice) == sorted(s["start_frame"] for s in segs)
     # 声は台本から重ねるが、概要欄用のクレジットには声（VOICEVOX）が入る
     cred = video.with_suffix(".credits.txt")
     assert cred.read_text(encoding="utf-8").startswith("音声: VOICEVOX")
@@ -206,6 +211,12 @@ async def test_change_plan_and_revise_after_build(bclient, fake):
     assert "前に作った台本" in prompts[-1] and "もっと短くして" in prompts[-1]
     new = [s["text"] for s in (await c.get(f"/scripts/{sid}/detail")).json()["segments"]]
     assert new[0] == "短く話します。"
+    # 何度作り直しても声は二重にならない（ナレーションのトラックは 1 本・セリフと同じ数）
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    narr = [t for t in tl["tracks"] if t["name"] == "ナレーション"]
+    assert len(narr) == 1
+    voice = [x for x in tl["clips"] if x["track_id"] == narr[0]["id"]]
+    assert len(voice) == len(new)
 
 
 async def test_voice_longer_than_target_is_sped_up(bclient, fake):

@@ -9,6 +9,8 @@
 - summary.txt: 件数（段階・話し手ごと）
 
 同じ組は 1 件にまとめる。データは PC の中だけで使い、公開しない。
+学習するのはセリフ回し（口調・言い回し）だけ。内容の誤りの修正（段階 fact）は使わない
+（LoRA で事実を覚えさせても正確にならず、もっともらしい誤りが増えるため）。
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+
+SKIP_STAGES = frozenset({"fact"})  # 学習に使わない段階
 
 SYSTEM = (
     "あなたは掛け合い解説動画の台本作家です。"
@@ -43,6 +47,8 @@ def export(src: Path, out: Path) -> dict[str, int]:
         except json.JSONDecodeError:
             continue
         key = (r.get("speaker"), r.get("before"), r.get("after"))
+        if r.get("stage") in SKIP_STAGES:
+            continue
         if not r.get("after") or not r.get("before") or key in seen:
             continue
         seen.add(key)

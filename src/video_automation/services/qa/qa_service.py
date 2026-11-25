@@ -185,7 +185,7 @@ class QAService:
             width, height = p.width, p.height
         wanted = req.sections or list(QASectionName)
         steps: list[tuple[QASectionName, Callable[[], Awaitable[QASection]]]] = [
-            (QASectionName.PROJECT, lambda: self._project(project_id)),
+            (QASectionName.PROJECT, lambda: self._project(project_id, script_id)),
             (QASectionName.AUDIO, lambda: self._audio(script_id)),
             (
                 QASectionName.SUBTITLE,
@@ -262,7 +262,7 @@ class QAService:
         )
 
     # ---------- タイムライン ----------
-    async def _project(self, project_id: str) -> QASection:
+    async def _project(self, project_id: str, script_id: str | None = None) -> QASection:
         v = await self.timeline.validate_project(project_id)
         checks = [
             QACheck(
@@ -275,6 +275,7 @@ class QAService:
             if not i.message.startswith("license")  # ライセンスは専用の項目で詳しく見る
         ]
         tl = await self.timeline.get_timeline(project_id)
+        checks += await self._voice_placed(tl, script_id)
         return self._section(
             QASectionName.PROJECT,
             checks,
@@ -284,6 +285,52 @@ class QAService:
                 "duration_sec": round(tl.duration_frames * tl.fps_den / tl.fps_num, 2),
             },
         )
+
+    async def _voice_placed(self, tl: Any, script_id: str | None) -> list[QACheck]:
+        """声を作ったセリフが、聞こえる状態でタイムラインに置かれているか。
+
+        声のファイルがあってもタイムラインに無ければ、書き出した動画は無音になる。"""
+        if script_id is None:
+            return []
+        async with self.db.session_factory() as s:
+            voiced = {
+                x
+                for x in (
+                    await s.execute(
+                        select(ScriptSegment.audio_file_id).where(
+                            ScriptSegment.script_id == script_id,
+                            ScriptSegment.audio_file_id.is_not(None),
+                        )
+                    )
+                ).scalars()
+            }
+        if not voiced:
+            return []
+        muted = {t.id for t in tl.tracks if t.muted}
+        assets = {a.id: a for a in tl.assets}
+        placed = {
+            assets[c.asset_id].audio_file_id
+            for c in tl.clips
+            if c.asset_id in assets and c.track_id not in muted and c.volume > 0
+        }
+        lost = voiced - placed
+        if not lost:
+            return []
+        if len(lost) == len(voiced):
+            return [
+                QACheck(
+                    level=QALevel.ERROR,
+                    code="voice_not_placed",
+                    message="キャラクターの声がタイムラインに置かれていません（書き出すと無音です）",
+                )
+            ]
+        return [
+            QACheck(
+                level=QALevel.WARNING,
+                code="voice_not_placed",
+                message=f"声がタイムラインに無いセリフが {len(lost)} 件あります",
+            )
+        ]
 
     # ---------- P9-02 音声品質 ----------
     async def _audio(self, script_id: str | None) -> QASection:
