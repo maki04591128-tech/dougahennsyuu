@@ -129,7 +129,25 @@ _SUB = {
     ),
 }
 _LANDSCAPE = SafeArea(top=0.05, bottom=0.05, left=0.05, right=0.05)
-_VERTICAL = SafeArea(top=0.1, bottom=0.2, left=0.05, right=0.12)  # 1080x1920 の UI 位置
+# 統合版 S9: 最後の 15 秒を終了画面にする用途（2.3 の「最後の15秒」）。横長の動画だけ
+END_SCREEN = frozenset(
+    {
+        Purpose.INTERVIEW,
+        Purpose.DOCUMENTARY,
+        Purpose.PODCAST,
+        Purpose.EXPLAINER,
+        Purpose.LECTURE,
+        Purpose.TUTORIAL,
+        Purpose.RECIPE,
+        Purpose.GAME,
+        Purpose.VLOG,
+        Purpose.RANKING,
+        Purpose.PRODUCT,
+    }
+)
+# 統合版 S5: 縦型の安全範囲（ショートの UI・広告の文字と重ならない所）。縦型の動画を作るときは、
+# 用途によらずこの値を使う（safe_area_for）
+_VERTICAL = SafeArea(top=0.15, bottom=0.35, left=0.06, right=0.10)
 _MOTION = {Family.CALM: 0, Family.INFO: 1, Family.ENERGETIC: 3, Family.EXPRESSIVE: 4}
 _HUES = {Family.CALM: 3, Family.INFO: 3, Family.ENERGETIC: 4, Family.EXPRESSIVE: 4}
 _CONCURRENT = {Family.CALM: 1, Family.INFO: 3, Family.ENERGETIC: 3, Family.EXPRESSIVE: 2}
@@ -601,3 +619,10 @@ def summarize(p: DesignProfile) -> ProfileSummary:
         limited=limited,
         denied=denied,
     )
+
+
+def safe_area_for(p: DesignProfile | None, width: int, height: int) -> SafeArea:
+    """画面の向きに合った安全範囲（統合版 S5: 縦型は用途によらず縦型ショートの値）。"""
+    if height > width:
+        return _VERTICAL
+    return p.safe_area if p is not None and p.orientation != "vertical" else _LANDSCAPE

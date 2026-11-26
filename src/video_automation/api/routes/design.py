@@ -118,3 +118,18 @@ async def check(
     )
     assert chk is not None
     return chk
+
+
+@projects.post("/thumbnails", status_code=202)
+async def thumbnails(project_id: str, c: AppContainer = Depends(get_container)) -> Any:
+    """統合版 S4: サムネイルを 3 案作る（ジョブ）。結果はおすすめ順のファイルの一覧と注意。"""
+    if c.thumbnails is None:
+        raise HTTPException(status_code=404, detail="サムネイルを作れません")
+    await c.timeline.get_timeline(project_id)  # 存在確認
+
+    async def run(progress: Any) -> dict[str, Any]:
+        notes: list[str] = []
+        paths = await c.thumbnails.make(project_id, notes)
+        return {"thumbnails": paths, "notes": notes}
+
+    return c.jobs.submit("thumbnails", run)

@@ -122,6 +122,12 @@ class DesignService:
             await s.commit()
         return design
 
+    async def direction_record(self, project_id: str) -> dict[str, Any]:
+        """演出を適用したときの記録（部品・背景だけの区間・題名・章の区切りなど）。"""
+        async with self.db.session_factory() as s:
+            p = await self._project(s, project_id)
+            return dict((p.design_manifest or {}).get("direction") or {})
+
     async def clip_roles(self, project_id: str) -> dict[str, str]:
         """演出が作ったクリップの部品（クリップ ID → 部品）。"""
         async with self.db.session_factory() as s:
@@ -232,6 +238,9 @@ class DesignService:
             m.empty_spans.extend((a, b) for a, b in rec.get("empty_spans") or [])
             for kind, sizes, chars, a, b in rec.get("texts") or []:
                 m.texts.append(TextUse(kind, list(sizes), int(chars), float(a), float(b)))
+            es = (rec.get("outline") or {}).get("end_screen")
+            if es is not None:
+                m.end_screen_at = float(es)
         if rows and subtitle_style is not None and subtitle_style.mode == "lyric":
             # 歌詞として出す（字幕の大きさ・行の長さ・速さの決まりは当てない）
             m.add(Component.LYRIC_TEXT, len(rows))

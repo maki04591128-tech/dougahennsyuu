@@ -273,12 +273,14 @@ class RenderService:
             return style
         from video_automation.services.characters.overlay import layout
         from video_automation.services.characters.service import TRACK
+        from video_automation.services.design.profiles import safe_area_for
 
+        # 統合版 S5: 縦型の字幕は下の 35%（y = 1248px）より上
+        need = safe_area_for(None, width, height).bottom
         tl = await self.timeline.get_timeline(project_id)
         track = next((t for t in tl.tracks if t.name == TRACK and not t.muted), None)
-        if track is None or not any(c.track_id == track.id for c in tl.clips):
-            return style
-        need = round(layout(width, height)[1] + 0.03, 3)
+        if track is not None and any(c.track_id == track.id for c in tl.clips):
+            need = max(need, round(layout(width, height)[1] + 0.03, 3))
         if style.margin_v_ratio >= need:
             return style
         return style.model_copy(update={"margin_v_ratio": need})

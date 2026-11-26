@@ -80,6 +80,7 @@ class AppContainer:
     characters: CharacterService
     screencast: ScreencastService
     build: Any = None  # BuildService（コンテナ全体を使うので作った後で入れる）
+    thumbnails: Any = None  # ThumbnailService（統合版 S4）
 
     async def aclose(self) -> None:
         await self.asset_sources.aclose()
@@ -295,4 +296,7 @@ async def build_container(
     from video_automation.services.build.service import BuildService
 
     container.build = BuildService(container)
+    from video_automation.services.rendering.thumbnail_service import ThumbnailService
+
+    container.thumbnails = ThumbnailService(settings, timeline, render, design, titles, llm)
     return container

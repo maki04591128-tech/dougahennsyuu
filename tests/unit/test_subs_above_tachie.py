@@ -31,8 +31,9 @@ def test_portrait_with_tachie_raises_subtitles():
 def test_landscape_or_no_tachie_keeps_subtitles():
     st = SubtitleStyle(margin_v_ratio=0.12)
     assert asyncio.run(_svc(True)._clear_of_tachie("p", 1920, 1080, st)).margin_v_ratio == 0.12
-    assert asyncio.run(_svc(False)._clear_of_tachie("p", 1080, 1920, st)).margin_v_ratio == 0.12
+    # 統合版 S5: 縦型は立ち絵が無くても、字幕を下の 35%（y = 1248px）より上に出す
+    assert asyncio.run(_svc(False)._clear_of_tachie("p", 1080, 1920, st)).margin_v_ratio == 0.35
     assert (
         asyncio.run(_svc(True, muted=True)._clear_of_tachie("p", 1080, 1920, st)).margin_v_ratio
-        == 0.12
+        == 0.35
     )

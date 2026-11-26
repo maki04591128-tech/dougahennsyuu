@@ -63,7 +63,7 @@ from video_automation.services.animation.entrance import (
 from video_automation.services.assets.look import match_file, palette_colors
 from video_automation.services.design.edits import adjust_transform
 from video_automation.services.design.guard import Placement, TextUse, is_dark
-from video_automation.services.design.profiles import PROFILES
+from video_automation.services.design.profiles import END_SCREEN, PROFILES, safe_area_for
 from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction import prompts as plan_prompts
 from video_automation.services.direction.charts import anim_frames, chart_kind
@@ -76,6 +76,7 @@ from video_automation.services.direction.plan import (
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering.card import card_layout
+from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
 from video_automation.services.rendering.pictogram import pick_icon
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.skills.library import SkillLibrary
@@ -632,8 +633,9 @@ class DirectionService:
         heading_font = prof.typography.heading_font if prof else None
         # 題名の縁取り: 暗い文字なら背景の明るい色で縁取る
         title_outline = prof.palette.base if prof and is_dark(prof.palette.text) else "#000000"
-        strip_top = max(STRIP_TOP, prof.safe_area.top) if prof else STRIP_TOP
-        side = max(SIDE, prof.safe_area.right) if prof else SIDE
+        sa = safe_area_for(prof, w, h)  # 統合版 S5: 縦型は用途によらず縦型ショートの値
+        strip_top = max(STRIP_TOP, sa.top) if prof or h > w else STRIP_TOP
+        side = max(SIDE, sa.right) if prof or h > w else SIDE
         # 横長で立ち絵があるときは、図・カードを中央の列に収める（左右の端は立ち絵の列）
         tachie = w >= h and await self._has_tachie(req.script_id)
         main_w = TACHIE_MAIN_W if tachie else 0.92
@@ -758,18 +760,25 @@ class DirectionService:
             clips += 1
             return clip_id
 
+        # 統合版 S9: 最後の 15 秒を終了画面にする（横長の動画で、終了画面を使う用途だけ）
+        es = (
+            frames(END_SCREEN_SEC)
+            if prof is not None and prof.purpose in END_SCREEN and w >= h and not recording
+            else 0
+        )
+        bg_total = total + es
         # 背景（ゆっくり寄る）
         bg = await self._background(p.id, plan.background, w, h, prof)
         if bg.kind == AssetKind.VIDEO:
             # 動く背景は継ぎ目なく繰り返せる長さなので、並べて全体を覆う
-            loop = max(1, media_frames(bg, total))
+            loop = max(1, media_frames(bg, bg_total))
             pos = 0
-            while pos < total:
-                add(bg_t, bg.id, pos, min(loop, total - pos), role="background")
+            while pos < bg_total:
+                add(bg_t, bg.id, pos, min(loop, bg_total - pos), role="background")
                 pos += loop
             use(Component.BACKGROUND_MOTION)
         else:
-            cid = add(bg_t, bg.id, 0, total, role="background")
+            cid = add(bg_t, bg.id, 0, bg_total, role="background")
             if prof is None or prof.allows(Component.BACKGROUND_MOTION):
                 cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
                 use(Component.BACKGROUND_MOTION)
@@ -1113,6 +1122,30 @@ class DirectionService:
             else:
                 animate(cid, end - start, slide_preset("right", mspec))
 
+        if es:  # 終了画面（まとめの文字と、YouTube の要素を置く場所の目安の枠）
+            out = (
+                Path(self.settings.data_dir)
+                / "projects"
+                / p.id
+                / "assets"
+                / f"end_screen_{uuid4().hex[:8]}.png"
+            )
+            await asyncio.to_thread(
+                draw_end_screen,
+                out,
+                w,
+                h,
+                plan.title or "",
+                plan.subtitle,
+                self.titles.font_path(heading_font),
+                ink,
+                accent,
+            )
+            row = await self.timeline.register_generated(
+                p.id, out, AssetKind.IMAGE, "pillow", "終了画面"
+            )
+            cid = add(fig_t, row.id, total, es, role="end_screen")
+            animate(cid, es)
         res = await self.timeline.submit(
             p.id,
             CommandRequest(
@@ -1140,6 +1173,7 @@ class DirectionService:
             fonts = [Path(f).stem for f in [self.titles.font_path(heading_font)] if f]
             # 書き出し時の画面演出（rich_direction）が使う、題名と章の区切り
             outline = {
+                "end_screen": round(total / fps, 3) if es else None,
                 "title": plan.title,
                 "catch": plan.subtitle,
                 "chapters": [
