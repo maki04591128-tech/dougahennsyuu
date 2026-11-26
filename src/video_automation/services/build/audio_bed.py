@@ -136,9 +136,11 @@ async def make_bgm(
     )
     script = out.with_suffix(".filter.txt")
     script.write_text(filt, encoding="utf-8")  # 区間が多いと引数が長くなるのでファイルで渡す
+    # FFmpeg 7 以降は -filter_complex_script が無く、-/filter_complex でファイルを渡す（実機の PC で
+    # BGM が作れなかった）。書き出し（render_service）と同じ分け方
     try:
         await ffmpeg.run(
-            [*inputs, "-filter_complex_script", str(script), "-map", "[o]", str(out)],
+            [*inputs, *await ffmpeg.filter_script_args(str(script)), "-map", "[o]", str(out)],
             timeout=600,
         )
     finally:

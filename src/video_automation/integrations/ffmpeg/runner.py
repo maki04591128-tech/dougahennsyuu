@@ -117,6 +117,21 @@ class FFmpeg:
             self._version = m.group(1) if m else "unknown"
         return self._version
 
+    async def major_version(self) -> int:
+        """主の版の番号（"7.1.1"・"n6.1"・"8.0-full_build" → 7・6・8）。
+
+        日付の版（"2024-05-01-git-…"。開発版のビルド）は新しい版とみなして 99。読めなければ 0。"""
+        v = await self.version()
+        if m := re.match(r"n?(\d+)\.", v):
+            return int(m.group(1))
+        return 99 if re.match(r"(?:N-\d+-g|20\d\d-\d\d-\d\d)", v) else 0
+
+    async def filter_script_args(self, path: str) -> list[str]:
+        """フィルタグラフをファイルで渡す引数（FFmpeg 7 で -filter_complex_script が廃止）。"""
+        if await self.major_version() >= 7:
+            return ["-/filter_complex", path]
+        return ["-filter_complex_script", path]
+
     async def encoders(self) -> set[str]:
         if self._encoders is None:
             ff, _ = self._require()

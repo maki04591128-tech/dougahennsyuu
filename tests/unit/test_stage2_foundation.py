@@ -148,3 +148,19 @@ def test_viseme_short_shapes_are_held():
             runs.append([v, 0])
         runs[-1][1] += 1
     assert all(n >= 2 for _, n in runs[1:-1])
+
+
+def test_filter_script_flag_by_ffmpeg_version():
+    """FFmpeg 7 以降は -filter_complex_script が無い（実機の PC で BGM が作れなかった）。"""
+    import asyncio
+
+    from video_automation.integrations.ffmpeg.runner import FFmpeg
+
+    f = FFmpeg()
+    for v, flag in [
+        ("6.1.1-3ubuntu5", "-filter_complex_script"),
+        ("7.1.1-full_build-www.gyan.dev", "-/filter_complex"),
+        ("2025-01-02-git-0123abcd", "-/filter_complex"),
+    ]:
+        f._version = v
+        assert asyncio.run(f.filter_script_args("g.txt")) == [flag, "g.txt"]
