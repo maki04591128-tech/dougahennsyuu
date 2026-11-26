@@ -88,6 +88,8 @@ class SubtitleStyle(BaseModel):
     # 統合版 C1: 二重縁（下の層に暗い縁、上の層に文字の色の明るい縁）。outer は外側の縁の色の
     # 上書き（子ども向けは背景が明るいので型の base）
     double_outline: bool = False
+    # 統合版 2.2・3節: キャラクターごとの入り（ポップ小・フェード250 など）を使う
+    character_entrance: bool = False
     double_outline_outer: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     glow_color: str = "#C9B6FF"  # 歌詞の光のにじみの色
     glow: float = Field(default=6.0, ge=0, le=30)  # にじみの強さ（0 で無し）

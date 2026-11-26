@@ -320,6 +320,8 @@ class RenderService:
             style,
             speaker_accents=await self.subtitles.speaker_accents(script_id),
             speaker_fonts=await self.subtitles.speaker_fonts(script_id),
+            speaker_design=await self.subtitles.speaker_design(script_id),
+            speaker_entrance=await self.subtitles.speaker_entrance(script_id),
             # 範囲を切り出しても、話者名を出すかどうかは台本全体で決める
             multi_speaker=len({c.speaker for c in cues if c.speaker}) >= 2,
         )

@@ -178,6 +178,23 @@ DOUBLE_OUTLINE = frozenset(
     }
 )
 
+# 統合版 2.2: キャラクターの入り（3節の 8 種）を使う用途。他の用途は全員 3f のフェード
+CHARACTER_ENTRANCE = frozenset(
+    {
+        Purpose.EXPLAINER,
+        Purpose.TUTORIAL,
+        Purpose.RECIPE,
+        Purpose.SHORT,
+        Purpose.GAME,
+        Purpose.VLOG,
+        Purpose.RANKING,
+        Purpose.PRODUCT,
+        Purpose.PROMO,
+        Purpose.EVENT,
+        Purpose.KIDS,
+    }
+)
+
 _SOFT, _POPN, _EXPR = "pop_in_soft", "pop_in", "pop_express"
 _CALM_MV = _mv((12, 6), _SOFT, False, 1, (0, 0), None)
 _INFO_MV = _mv((10, 6), _SOFT, False, 1, (1, 6), 8.0)

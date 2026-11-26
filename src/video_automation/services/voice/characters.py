@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SETTING_KEY = "voice_character_styles"
+_HEX = r"^#[0-9A-Fa-f]{6}$"
 DATA_FILE = "voicevox_characters.json"
 
 # 台本の発話ごとに選ぶ感情（LLM が出す）。neutral は既定のスタイルのまま
@@ -106,6 +107,16 @@ class VoiceCharacterStyle(BaseModel):
     examples: list[str] = Field(default_factory=list, max_length=8)
     source: str = Field(default="", max_length=300)  # 出典（組み込みのとき）
     builtin: bool = False
+    # 統合版 K1・3節: 字幕のデザイン（手元のデータか利用者の登録。リポジトリには入れない）
+    color: str | None = Field(default=None, pattern=_HEX)  # 公式の色
+    light_color: str | None = Field(default=None, pattern=_HEX)  # 公式の薄い色
+    fill: str | None = Field(default=None, pattern=_HEX)  # 字幕の文字の色
+    outline: str | None = Field(default=None, pattern=_HEX)  # 字幕の縁
+    alt_outline: str | None = Field(default=None, pattern=_HEX)  # 代替の縁
+    frame: str | None = Field(default=None, pattern=_HEX)  # 枠・線
+    subtitle_font: str | None = Field(default=None, max_length=100)
+    subtitle_weight: str | None = Field(default=None, max_length=30)  # Medium / Bold など
+    entrance: str | None = Field(default=None, max_length=30)  # ポップ小 など（3節の8種）
 
     def text(self) -> str:
         """台本生成に渡す「口調」の文。"""
