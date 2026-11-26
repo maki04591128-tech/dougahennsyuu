@@ -58,9 +58,9 @@ from video_automation.services.animation.entrance import element_animation, slid
 from video_automation.services.design.guard import Placement, TextUse, is_dark
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.design.service import DesignService, manifest_record
+from video_automation.services.direction import prompts as plan_prompts
 from video_automation.services.direction.plan import (
     PLAN_SCHEMA,
-    SYSTEM,
     from_llm,
     normalize,
     prompt_lines,
@@ -413,20 +413,25 @@ class DirectionService:
         used_skills: list[str] = []
         if req.use_llm:
             ctx, used_skills = await self._skill_context(p.id)
+            prof = await self.design.profile_for(p.id) if self.design else None
+            extras = (await self.design.get(p.id)).extras if self.design and prof else []
             body = f"タイトル案: {title or '（なし）'}\n台本:\n" + prompt_lines(
                 [x.speaker for x in lines], texts
             )
             if req.instruction.strip():
                 body += (
-                    "\n\n演出への希望（作った人から。上の決まりに反しない範囲で従う）: "
+                    "\n\n演出への希望（作った人から。下の決まりに反しない範囲で従う）: "
                     + req.instruction.strip()
                 )
+            pp = plan_prompts.build(body, prof, extras, ctx)
+            sent = (pp.rules, pp.examples)
+            msgs = [
+                ChatMessage(role="system", content=pp.system),
+                ChatMessage(role="user", content=pp.user),
+            ]
             res = await self.llm.complete_json(  # 形式が合わないときは 2 回まで直させる
                 TaskType.EDIT_PLAN,
-                [
-                    ChatMessage(role="system", content=SYSTEM + ("\n\n" + ctx if ctx else "")),
-                    ChatMessage(role="user", content=body),
-                ],
+                msgs,
                 PLAN_SCHEMA,
                 model_key=req.model_key,
                 temperature=0.3,
@@ -434,28 +439,24 @@ class DirectionService:
             )
             model_key = res.model_key
             raw = from_llm(res.data)
-            if not raw.shots:  # AI が何も出さなかったときは規則の演出（数値のテロップ）で補う
+            usable = plan_prompts.usable(prof, extras)
+            if not usable:  # 題名だけの用途（字幕動画など）は演出が無いのが正しい
+                raw.notes = [x for x in raw.notes if "演出がありませんでした" not in x]
+            elif not raw.shots and "keyword" in usable:
+                # AI が何も出さなかったときは規則の演出（数値のテロップ）で補う
                 raw.shots = rule_plan(texts, title).shots
-            plan = normalize(raw, texts, title, names)
+            plan = normalize(raw, texts, title, names, sent)
             # 図・カードが少なすぎる（同じカードが出続けて画面が止まる）ときは 1 回だけ直させる。
-            # 目安は 4 発話に 1 つ（SYSTEM の「2〜4 発話に 1 つ」の下限）
-            need = max(2, -(-len(texts) // 4)) if len(texts) >= 4 else 1
+            # 目安は 4 発話に 1 つ（指示の「2〜4 発話に 1 つ」の下限）。使えない用途では直させない
+            need = plan_prompts.need_main(prof, extras, len(texts))
             have = sum(1 for x in plan.shots if x.kind in MAIN_KINDS)
             if have < need:
-                more = (
-                    f"card / chart / image が {have} 個しかありません。{len(texts)} 発話なので、"
-                    f"少なくとも {need} 個にしてください（2〜4 発話に 1 つ、話題の変わり目ごと）。"
-                    "最後の発話には style=summary のまとめのカードを置いてください。"
-                    "同じ JSON の形で、演出全体を出し直してください。"
-                )
+                more = plan_prompts.retry_text(prof, extras, have, len(texts), need)
                 try:
                     res2 = await self.llm.complete_json(
                         TaskType.EDIT_PLAN,
                         [
-                            ChatMessage(
-                                role="system", content=SYSTEM + ("\n\n" + ctx if ctx else "")
-                            ),
-                            ChatMessage(role="user", content=body),
+                            *msgs,
                             ChatMessage(
                                 role="assistant", content=json.dumps(res.data, ensure_ascii=False)
                             ),
@@ -466,7 +467,7 @@ class DirectionService:
                         temperature=0.3,
                         retries=1,
                     )
-                    plan2 = normalize(from_llm(res2.data), texts, title, names)
+                    plan2 = normalize(from_llm(res2.data), texts, title, names, sent)
                     if sum(1 for x in plan2.shots if x.kind in MAIN_KINDS) > have:
                         plan = plan2
                 except LLMError:

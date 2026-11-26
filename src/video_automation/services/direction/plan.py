@@ -59,28 +59,15 @@ PLAN_SCHEMA: dict[str, Any] = {
     "required": ["title", "shots"],
 }
 
-SYSTEM = (
-    "あなたは解説動画の演出担当です。発話番号つきの台本を読み、画面に出す演出を決めます。"
-    "字幕は画面下に自動で出るので、字幕と同じ文を画面に出してはいけません。\n"
-    "使える演出:\n"
-    "- card: 見出し(heading, 16文字以内)と要点(body, 1〜3項目, 各28文字以内)のカード。"
-    "話題が変わるところ・定義・比較・まとめに使う。最後の発話には style=summary のまとめを置く。\n"
-    "- chart: 棒グラフ。台本に出てくる数値を比べるときだけ使う。labels と values は同じ数"
-    "(2〜5)、unit は単位。台本に無い数値は絶対に作らない。強調する項目は highlight(0始まり)。\n"
-    "- keyword: 画面上部の短いテロップ(text, 12文字以内)。その発話に出てくる重要な語や数値。\n"
-    "- image: 画像が分かりやすい場面。query に画像検索の語(日本語か英語)。\n"
-    "from_line はその演出を出し始める発話番号、to_line はその演出が説明している最後の発話番号。"
-    "話題が変わったら（例: 計算の話から実験の話へ）、新しい card / chart を置く。"
-    "2〜4 発話に 1 つは card / chart / image を置く。"
-    "同じ発話から始まる card / chart / image は 1 つだけ。"
-    "title は動画のタイトル(20文字以内)、subtitle は興味を引く一言(24文字以内)。"
-    "card には必ず body を 1〜3 項目書く（見出しだけのカードは作らない）。"
-    "body はセリフを写さず、15 文字ほどの体言止めに要約する（字幕と同じ文を二重に出さない）。"
-    "台本で 2 つ以上の数値を比べている所には chart を置く。\n"
-    "使わない項目は空文字・空配列にする。\n"
-    "例: 電池の劣化の話なら、card（見出し「劣化の原因」、body「高温」「満充電のまま放置」）、"
-    "chart（labels「25℃」「40℃」、values 90 と 75、unit「%」）、keyword「40℃で75%」のようにする。"
-)
+
+def _system() -> str:
+    """用途の型が無いときの指示（解説の前半・後半。用途ごとの指示は prompts.build）。"""
+    from video_automation.services.direction import prompts
+
+    return prompts.ROLE + prompts.COMMON + "\n" + prompts.instructions(None)
+
+
+SYSTEM = _system()
 
 
 def _norm(text: str) -> str:
@@ -191,29 +178,45 @@ def _copied(item: str, lines: list[str]) -> bool:
     return False
 
 
-_SYSTEM_SENTENCES = [x for x in re.split(r"[。\n]", SYSTEM) if len(x) >= 6]
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"[。\n]", text) if len(x) >= 6]
 
 
-def _echoes_prompt(item: str, script: str) -> bool:
-    """要点が指示文（SYSTEM）の言い換えか（実機: 解説のカードに「解説動画の演出を担当します」
-    「画面に出す演出を決定します」と、指示の 1 文目を写した項目が出た）。台本にある語は外さない。"""
+_SYSTEM_SENTENCES = _sentences(SYSTEM)
+
+
+def _echoes_prompt(
+    item: str,
+    script: str,
+    rules: str = SYSTEM,
+    examples: str = "",
+    sentences: list[str] | None = None,
+) -> bool:
+    """要点が指示文の言い換えか（実機: 解説のカードに「解説動画の演出を担当します」
+    「画面に出す演出を決定します」と、指示の 1 文目を写した項目が出た）。台本にある語は外さない。
+    例（examples）の要点をそのまま写した項目も外す（例の台本は別の話題）。"""
     a = _norm(item)
     if len(a) < 4 or a in script:
         return False
-    if a in _norm(SYSTEM):  # 指示の例（「満充電のまま放置」）をそのまま写した
+    if a in _norm(rules) or (examples and a in _norm(examples)):
         return True
-    return len(a) >= 6 and any(
-        SequenceMatcher(None, a, _norm(x)).ratio() >= 0.5 for x in _SYSTEM_SENTENCES
-    )
+    sents = _SYSTEM_SENTENCES if sentences is None else sentences
+    return len(a) >= 6 and any(SequenceMatcher(None, a, _norm(x)).ratio() >= 0.5 for x in sents)
 
 
 def normalize(
-    plan: DirectionPlan, lines: list[str], title: str = "", names: tuple[str, ...] = ()
+    plan: DirectionPlan,
+    lines: list[str],
+    title: str = "",
+    names: tuple[str, ...] = (),
+    prompt: tuple[str, str] | None = None,
 ) -> DirectionPlan:
     """names は話し手の名前（カードの要点に話し手の名前を並べたもの（実機:「ずんだもん、
     四国めたん、熱中症の怖さ」）は要点ではないので外す）。"""
     n = len(lines)
     names = tuple(x for x in names if len(x) >= 2)  # 「A」のような 1 文字の名前は語と紛れる
+    rules, examples = prompt or (SYSTEM, "")  # 送った指示（指示の文, 例の文）
+    sents = _sentences(rules)
     notes = list(plan.notes)
     all_text = _norm("".join(lines))
     shots: list[Shot] = []
@@ -241,7 +244,7 @@ def normalize(
                 or _norm(b) in same
                 or _norm(b).endswith("解説動画")
                 or any(x in b for x in names)
-                or _echoes_prompt(b, all_text)
+                or _echoes_prompt(b, all_text, rules, examples, sents)
             ]
             if junk:  # 小さなモデルは項目名や指示の言葉を本文に入れることがある
                 notes.append(
