@@ -61,10 +61,20 @@ SPEAKER_PALETTE = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFD5
 
 
 # 話者ごとの字幕の書体（Windows 11 の日本語の書体。libass で引ける名前。形の違いが分かる順）
+# 統合版 Q6: 同梱の書体のフォルダ（起動時に data/fonts を足す）
+EXTRA_FONT_DIRS: list[Path] = []
+# 書体のファイルの中の名前が、統合版の書体名と違うもの（ASS はファイルの中の名前で探す）
+FONT_ALIASES = {"M PLUS Rounded 1c": "Rounded Mplus 1c"}
+# 書体名 → ファイル名の頭（書体名とファイル名が大きく違うもの）
+FONT_FILES_OF = {"UD Digi Kyokasho NK-B": "UDDigiKyokashoN"}
+# 入っていなければ代える書体（統合版 3節: UD デジタル 教科書体 → M PLUS Rounded 1c Medium）
+FONT_FALLBACK = {"UD Digi Kyokasho NK-B": ("M PLUS Rounded 1c", "Medium")}
+
+
 def _font_dirs() -> list[Path]:
     import os
 
-    dirs = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"]
+    dirs = [*EXTRA_FONT_DIRS, Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"]
     if local := os.environ.get("LOCALAPPDATA"):
         dirs.append(Path(local) / "Microsoft" / "Windows" / "Fonts")
     dirs += [Path("/usr/share/fonts"), Path.home() / ".fonts"]
@@ -88,7 +98,8 @@ def font_installed(family: str) -> bool:
     """書体がこの PC に入っているか（ファイル名で判断。MPLUSRounded1c-Bold.ttf など）。"""
     from video_automation.services.design.guard import font_key
 
-    return font_key(family) in _installed_font_keys()
+    keys = _installed_font_keys()
+    return font_key(family) in keys or font_key(FONT_FILES_OF.get(family, family)) in keys
 
 
 SPEAKER_FONTS = ["UD Digi Kyokasho NK", "BIZ UDPMincho Medium", "BIZ UDPGothic", "Meiryo"]
@@ -194,6 +205,10 @@ class SubtitleService:
         self.readings = readings
         self.design = design
         self.characters: VoiceCharacterService | None = None  # 起動時に設定（統合版 K1）
+        fonts = settings.data_dir / "fonts"
+        if fonts not in EXTRA_FONT_DIRS:
+            EXTRA_FONT_DIRS.append(fonts)
+            _installed_font_keys.cache_clear()
 
     async def _speech(self, project_id: str | None, text: str) -> str:
         """読み上げ用の文（読みのルール・略語・単位・括弧を整えたもの）。"""
@@ -532,9 +547,16 @@ class SubtitleService:
         for name, d in (await self._character_data(order)).items():
             if name in out or not d.subtitle_font:
                 continue
-            if font_installed(d.subtitle_font):
-                w = d.subtitle_weight
-                out[name] = f"{d.subtitle_font} {w}" if w else d.subtitle_font
+            font, weight = d.subtitle_font, d.subtitle_weight
+            if not font_installed(font) and font in FONT_FALLBACK:
+                font, weight = FONT_FALLBACK[font]
+            if font_installed(font):
+                fam = FONT_ALIASES.get(font, font)
+                # 太さ（統合版 T15）: Medium・SemiBold・Black は「書体名 太さ」の名前で選ぶ。
+                # Bold は書体のファイルの中で元の書体の太字なので、書体名と太字の指定で選ぶ
+                # （「Noto Sans CJK JP Bold」の名前では見つからず細い書体になった）
+                w = weight
+                out[name] = fam if not w or w == "Bold" else f"{fam} {w}"
         free = [f for f in SPEAKER_FONTS if f not in out.values()]
         i = 0
         for name in dict.fromkeys(order):

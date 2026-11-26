@@ -258,6 +258,11 @@ class RenderService:
             return Encoder.NVENC.value if self._nvenc else Encoder.LIBX264.value
         return choice.value
 
+    def _fontsdir(self) -> str:
+        """字幕（libass）が読む書体のフォルダ（統合版 Q6: data/fonts に置いた OFL の書体）。"""
+        d = self.settings.data_dir / "fonts"
+        return f":fontsdir='{filter_path(d)}'" if d.is_dir() else ""
+
     async def _clear_of_tachie(
         self, project_id: str, width: int, height: int, style: SubtitleStyle
     ) -> SubtitleStyle:
@@ -555,7 +560,7 @@ class RenderService:
 
         vout = base
         if ass_path is not None:
-            filters.append(f"[{vout}]ass='{filter_path(ass_path)}'[vsub]")
+            filters.append(f"[{vout}]ass='{filter_path(ass_path)}'{self._fontsdir()}[vsub]")
             vout = "vsub"
         # 静止画（プレビュー）は RGB のまま出す（YUV を通すと色が変わる）
         filters.append(f"[{vout}]{'format=rgb24' if single_frame is not None else TO_YUV}[vout]")
@@ -1035,7 +1040,11 @@ class RenderService:
         info0 = await self.ffmpeg.probe(rich_out)
         args = ["-i", str(rich_out)]
         if ass is not None:
-            args += ["-vf", f"ass='{filter_path(ass)}'", *video_codec_args(encoder, req.quality)]
+            args += [
+                "-vf",
+                f"ass='{filter_path(ass)}'{self._fontsdir()}",
+                *video_codec_args(encoder, req.quality),
+            ]
         else:
             args += ["-c:v", "copy"]
         args += ["-c:a", "copy", "-movflags", "+faststart", str(out)]
@@ -1119,7 +1128,7 @@ class RenderService:
         main_a = "[0:a]" if info.has_audio else "[3:a]"
         fc = (
             f"[0:v]setsar=1,{TO_YUV}[mv];"
-            f"[1:v]ass='{filter_path(ass)}',setsar=1,{TO_YUV}[cv];"
+            f"[1:v]ass='{filter_path(ass)}'{self._fontsdir()},setsar=1,{TO_YUV}[cv];"
             f"[2:a]atrim=0:{d:.3f},asetpts=N/SR/TB[ca];"
             f"{main_a}aresample=48000,aformat=channel_layouts=stereo[ma];"
             f"[mv][ma][cv][ca]concat=n=2:v=1:a=1[v][a]"

@@ -54,3 +54,32 @@ def test_character_entrances_only_where_allowed():
     assert "\\fscx92" not in d and "\\fad(100,100)" in d
     ass = build_ass(cues, Fraction(30), 1920, 1080, ex, speaker_entrance={"A": "上昇フェード"})
     assert "\\move(960," in ass
+
+
+def test_font_aliases_and_extra_dirs(tmp_path, monkeypatch):
+    from video_automation.services.subtitle import subtitle_service as ss
+
+    d = tmp_path / "fonts"
+    d.mkdir()
+    (d / "MPLUSRounded1c-Bold.ttf").write_bytes(b"x")
+    monkeypatch.setattr(ss, "EXTRA_FONT_DIRS", [d])
+    ss._installed_font_keys.cache_clear()
+    try:
+        assert ss.font_installed("M PLUS Rounded 1c")
+        assert ss.FONT_ALIASES["M PLUS Rounded 1c"] == "Rounded Mplus 1c"
+    finally:
+        ss._installed_font_keys.cache_clear()
+
+
+def test_named_weight_fonts_are_not_faux_bold():
+    ass = build_ass(
+        [(0, 30, "A", "あ"), (30, 60, "B", "い")],
+        Fraction(30),
+        1920,
+        1080,
+        SubtitleStyle(bold=True),
+        speaker_fonts={"A": "Zen Kaku Gothic New Medium", "B": "Noto Sans CJK JP"},
+    )
+    styles = {x.split(",")[1]: x.split(",") for x in ass.splitlines() if x.startswith("Style:")}
+    assert styles["Zen Kaku Gothic New Medium"][7] == "0"  # 太さを名前で選んだら太字を重ねない
+    assert styles["Noto Sans CJK JP"][7] == "-1"  # Bold は書体名＋太字の指定
