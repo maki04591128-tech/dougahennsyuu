@@ -953,6 +953,8 @@ class BuildService:
             )
             return AssetRead.model_validate(a)
 
+        learned = c.design.edits.overrides(purpose.value) if c.design.edits else {}
+        bgm_ratio = learned.get("bgm", {}).get("volume", 1.0)
         bgm = await register(
             await audio_bed.make_bgm(
                 c.ffmpeg, work / f"bgm_{uuid4().hex[:8]}.wav", total / fps + 0.5, speech
@@ -965,10 +967,16 @@ class BuildService:
                 asset_id=bgm.id,
                 start_frame=0,
                 duration_frames=total,
-                volume=1.0,  # 音量は BGM のファイルに焼いてある（声の区間で下げる）
+                # 音量は BGM のファイルに焼いてある（声の区間で下げる）。利用者が承認した
+                # 既定値の変更（統合版 W2）があれば、その比を掛ける
+                volume=round(min(4.0, max(0.0, bgm_ratio)), 4),
             )
         )
         notes = ["BGM を付けました（声の間は小さく、台詞の間は少し上げる）"]
+        if bgm_ratio != 1.0:
+            notes.append(f"BGM の音量を、承認した既定（{bgm_ratio * 100:.0f}%）にしました")
+        if c.design.edits is not None:
+            c.design.edits.made(project_id, purpose.value, ["bgm"])
         # 効果音の時刻: カード（場面の切り替え）の出始め・「ポン」と出る数値のテロップ
         # (置く始まりのフレーム, 種類, 「シュッ」の立ち上がりのフレーム数)
         cue: list[tuple[int, str, int]] = []

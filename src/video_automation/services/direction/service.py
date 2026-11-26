@@ -55,6 +55,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.services.animation.entrance import element_animation, slide_preset
+from video_automation.services.design.edits import adjust_transform
 from video_automation.services.design.guard import Placement, TextUse, is_dark
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.design.service import DesignService, manifest_record
@@ -681,9 +682,24 @@ class DirectionService:
                     cmds.append(MoveTrack(track_id=tid, index=1000))
         clips = 0
 
-        def add(track_id: str, asset_id: str, start: int, length: int, **kw: Any) -> str:
+        roles: dict[str, str] = {}  # クリップ → 部品（利用者の直しの記録に使う。統合版 W2）
+        learned = (
+            self.design.edits.overrides(prof.purpose.value)
+            if self.design is not None and self.design.edits is not None and prof is not None
+            else {}
+        )
+
+        def add(
+            track_id: str, asset_id: str, start: int, length: int, role: str = "", **kw: Any
+        ) -> str:
             nonlocal clips
             clip_id = str(uuid4())
+            if role:
+                roles[clip_id] = role
+                if learned.get(role):  # 利用者が承認した既定値の変更（位置・大きさ）
+                    kw["transform"] = adjust_transform(
+                        kw.get("transform") or ClipTransform(), learned[role]
+                    )
             cmds.append(
                 AddClip(
                     track_id=track_id,
@@ -704,11 +720,11 @@ class DirectionService:
             loop = max(1, media_frames(bg, total))
             pos = 0
             while pos < total:
-                add(bg_t, bg.id, pos, min(loop, total - pos))
+                add(bg_t, bg.id, pos, min(loop, total - pos), role="background")
                 pos += loop
             use(Component.BACKGROUND_MOTION)
         else:
-            cid = add(bg_t, bg.id, 0, total)
+            cid = add(bg_t, bg.id, 0, total, role="background")
             if prof is None or prof.allows(Component.BACKGROUND_MOTION):
                 cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
                 use(Component.BACKGROUND_MOTION)
@@ -757,6 +773,7 @@ class DirectionService:
                 t_asset.id,
                 0,
                 t_len,
+                role="title_card",
                 **({"transform": ClipTransform(y=title_dy)} if title_dy else {}),
             )
             animate(t_cid, t_len, None, title_exit=True)
@@ -781,6 +798,7 @@ class DirectionService:
                     sub.id,
                     st,
                     max(1, title_end - st),
+                    role="title_card",
                     transform=native_transform(
                         sub.width or 1,
                         sub.height or 1,
@@ -874,6 +892,7 @@ class DirectionService:
                         a.id,
                         t0,
                         t1 - t0,
+                        role="card",
                         transform=native_transform(
                             a.width or 1,
                             a.height or 1,
@@ -920,7 +939,7 @@ class DirectionService:
                 still_from = min(media - 1, frames(1.2) + 2)
                 seg = media - still_from
                 fill = length > shown_len and seg >= frames(1.0)
-                cid = add(fig_t, a.id, start, shown_len, transform=tf)
+                cid = add(fig_t, a.id, start, shown_len, role="chart", transform=tf)
                 # 繰り返せないほど短いときだけ、急に消さずに消す
                 animate(cid, shown_len, exit_=shown_len < length and not fill)
                 shown_end = start + shown_len
@@ -928,7 +947,15 @@ class DirectionService:
                     pos, stop = start + shown_len, start + length
                     while pos < stop:
                         n = min(seg, stop - pos)
-                        cid = add(fig_t, a.id, pos, n, source_in_frame=still_from, transform=tf)
+                        cid = add(
+                            fig_t,
+                            a.id,
+                            pos,
+                            n,
+                            role="chart",
+                            source_in_frame=still_from,
+                            transform=tf,
+                        )
                         if pos + n >= stop:
                             animate(cid, n, None)
                         pos += n
@@ -943,6 +970,7 @@ class DirectionService:
                     img.id,
                     start,
                     length,
+                    role="image",
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
                 animate(cid, length)
@@ -996,6 +1024,7 @@ class DirectionService:
                 a.id,
                 start,
                 end - start,
+                role="keyword",
                 transform=native_transform(aw, ah, w, h, cx=kx, cy=ky),
             )
             # 数値の要点は「ポンと飛び出す」動きで強調する（喋りテロップの動き。情報系は 1 本で
@@ -1045,8 +1074,12 @@ class DirectionService:
             await self.design.record(
                 p.id,
                 "direction",
-                manifest_record(used, colors, fonts, boxes, empty, outline=outline, texts=texts),
+                manifest_record(
+                    used, colors, fonts, boxes, empty, outline=outline, texts=texts, clips=roles
+                ),
             )
+            if self.design.edits is not None and prof is not None:  # 直さなかった本も数える（W2）
+                self.design.edits.made(p.id, prof.purpose.value, list(roles.values()))
         log.info("direction_applied", project_id=p.id, clips=clips, skipped=len(skipped))
         return DirectionApplyResult(
             command_id=res.id, status=res.status, clips=clips, skipped=skipped
