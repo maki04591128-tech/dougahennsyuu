@@ -54,6 +54,7 @@ from video_automation.schemas.timeline import (
     Batch,
     CommandRequest,
     DeleteClip,
+    RenderProfileName,
     RenderRequest,
     RenderStatus,
     TrackKind,
@@ -838,9 +839,20 @@ class BuildService:
             notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")
         await at("check")
         rreq = RenderRequest(
-            project_id=project_id, script_id=sid, rich_direction=req.rich_direction
+            project_id=project_id,
+            script_id=sid,
+            rich_direction=req.rich_direction,
+            profile=await self._render_profile(project_id),
         )
         return await self._check_and_render(rreq, at, notes, progress)
+
+    async def _render_profile(self, project_id: str) -> RenderProfileName:
+        """プロジェクトの向きに合う書き出しの大きさ（実機: 縦型ショートが 1920×1080 で書き出され、
+        縦の画面の配置が横長の画面に押し込まれていた）。"""
+        async with self.c.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+        portrait = p is not None and p.height > p.width
+        return RenderProfileName.FHD_PORTRAIT if portrait else RenderProfileName.FHD_LANDSCAPE
 
     async def _check_and_render(
         self, rreq: RenderRequest, at: Any, notes: list[str], progress: Any
@@ -1114,6 +1126,9 @@ class BuildService:
 
         await at("check")
         rreq = RenderRequest(
-            project_id=project_id, script_id=sid, rich_direction=req.rich_direction
+            project_id=project_id,
+            script_id=sid,
+            rich_direction=req.rich_direction,
+            profile=await self._render_profile(project_id),
         )
         return await self._check_and_render(rreq, at, notes, progress)

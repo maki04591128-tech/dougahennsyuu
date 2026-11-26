@@ -228,6 +228,8 @@ def test_double_outline_layers():
     ass = build_ass([(0, 30, "", "テスト")], Fraction(30), 1920, 1080, st)
     d = [x for x in ass.splitlines() if x.startswith("Dialogue")]
     assert len(d) == 2 and "\\1a&HFF&" in d[0] and "\\bord" in d[1]
+    # 上の層の縁は暗い色、下の層（外側）の縁は明るい色（文字がつぶれないように）
+    assert "\\3c&H000000&" in d[1] and "\\3c&H000000&" not in d[0]
     assert not style_from_profile(PROFILES[Purpose.EXPLAINER]).double_outline
     assert style_from_profile(PROFILES[Purpose.KIDS]).double_outline_outer == "#FFF6E5"
 
