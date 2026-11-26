@@ -85,8 +85,8 @@ def test_build_ass_and_srt():
         speaker_accents={"A": "#4FC3F7"},
         speaker_fonts={"A": "BIZ UDPMincho", "B": "Meiryo UI"},
     )
-    # 文字=薄い水色（#BCE8FC）、縁=暗い水色、書体=話者の書体
-    assert "Style: Default_S1,BIZ UDPMincho,67,&H00FCE8BC,&H000000FF,&H00685221" in ass
+    # 文字=薄い水色（OKLCH で L 0.95 の #DCF3FF）、縁=暗い水色（L 0.36）、書体=話者の書体（統合版 K2）
+    assert "Style: Default_S1,BIZ UDPMincho,67,&H00FFF3DC,&H000000FF,&H005C4300" in ass
     assert "Style: Default_S2,Meiryo UI,67,&H00FFFFFF" in ass
     assert "{\\r}" not in ass and ",Default_S1,A," in ass and ",Default_S2,B," in ass
     assert ass.count("Dialogue: 0,") == 2 and "\\p1}m 0 0 l 1920 0" in ass

@@ -136,8 +136,13 @@ def _split_items(text: str) -> list[str]:
     return out
 
 
+_CJK = r"[\u3040-\u30ff\u3400-\u9fff々〆ー、。！？「」]"
+
+
 def _trim(text: str, n: int) -> str:
     text = re.sub(r"\s+", " ", text).strip()  # 改行や連続した空白は 1 つの空白に
+    # 和文と数字・和文どうしの間の空白は取る（実機:「直径約 11 万 6,000km」）
+    text = re.sub(rf"(?<={_CJK}) (?=[0-9{_CJK[1:-1]}])|(?<=[0-9]) (?={_CJK})", "", text)
     return text if len(text) <= n else text[: n - 1] + "…"
 
 

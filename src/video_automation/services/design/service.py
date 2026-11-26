@@ -4,7 +4,14 @@ from fractions import Fraction
 from typing import Any
 
 from video_automation.database.database import Database
-from video_automation.database.models import AudioFile, Clip, Project, ScriptSegment, Subtitle
+from video_automation.database.models import (
+    AudioFile,
+    Clip,
+    Project,
+    ScriptSegment,
+    Subtitle,
+    Track,
+)
 from video_automation.schemas.design import (
     ClassifyRequest,
     ClassifyResult,
@@ -18,6 +25,7 @@ from video_automation.schemas.design import (
 from video_automation.schemas.subtitle import SubtitleStyle
 from video_automation.services.design.classify import classify
 from video_automation.services.design.guard import (
+    ClipMotion,
     DesignManifest,
     Placement,
     SubtitleUse,
@@ -164,14 +172,29 @@ class DesignService:
             # 切り替え（入りのトランジション）の時刻と種類、動画の長さ（統合版 E1）
             clip_rows = (
                 await s.execute(
-                    select(Clip.start_frame, Clip.end_frame, Clip.animation).where(
-                        Clip.project_id == project_id
+                    select(
+                        Clip.start_frame, Clip.end_frame, Clip.animation, Clip.track_id, Track.kind
                     )
+                    .join(Track, Track.id == Clip.track_id)
+                    .where(Clip.project_id == project_id)
                 )
             ).all()
-        m = DesignManifest(vertical=h > w)
-        for st, en, anim in clip_rows:
+        m = DesignManifest(vertical=h > w, size=(w, h))
+        for st, en, anim, track_id, kind in clip_rows:
             m.duration_sec = max(m.duration_sec, float(Fraction(en) / fps))
+            if kind == "video":  # 動きの検査（統合版 G2・G3・M4・Q2）に使う
+                m.clips.append(
+                    ClipMotion(
+                        track=track_id,
+                        start=float(Fraction(st) / fps),
+                        end=float(Fraction(en) / fps),
+                        keys=[
+                            (float(Fraction(k["frame"]) / fps), k)
+                            for k in (anim or {}).get("keyframes") or []
+                        ],
+                        preset=(anim or {}).get("preset"),
+                    )
+                )
             tran = (anim or {}).get("transition_in")
             if tran:
                 m.transitions.append(

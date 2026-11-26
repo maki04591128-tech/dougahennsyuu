@@ -121,6 +121,7 @@ class SubtitleSpec(BaseModel):
     # 音声に合わせた字幕の上限。音声と同時に聞けるので「読める速さ」より速くてよいが、
     # これを超えると音声があっても追えない
     speech_chars_per_sec: float = Field(default=12.0, gt=0, le=20)
+    double_outline: bool = False  # 統合版 C1: 字幕の二重縁（用途は 2.2）
 
 
 class SafeArea(BaseModel):

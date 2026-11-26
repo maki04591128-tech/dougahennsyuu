@@ -85,6 +85,10 @@ class SubtitleStyle(BaseModel):
     # 表示の種類: subtitle=発話の字幕 / lyric=歌詞（MV・リリック動画。帯・話者名なし、
     # 大きめの文字にゆっくりのフェードと光のにじみ）
     mode: Literal["subtitle", "lyric"] = "subtitle"
+    # 統合版 C1: 二重縁（下の層に暗い縁、上の層に文字の色の明るい縁）。outer は外側の縁の色の
+    # 上書き（子ども向けは背景が明るいので型の base）
+    double_outline: bool = False
+    double_outline_outer: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     glow_color: str = "#C9B6FF"  # 歌詞の光のにじみの色
     glow: float = Field(default=6.0, ge=0, le=30)  # にじみの強さ（0 で無し）
 

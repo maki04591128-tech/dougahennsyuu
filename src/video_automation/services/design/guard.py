@@ -7,12 +7,14 @@
 import colorsys
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from video_automation.schemas.design import (
     ANY,
     Component,
     DesignCheck,
     DesignProfile,
+    Purpose,
     Violation,
 )
 
@@ -66,6 +68,17 @@ class SubtitleUse:
 
 
 @dataclass
+class ClipMotion:
+    """映像のクリップ 1 つの時間と動き（キーフレームは (秒, キーフレームの dict)）。"""
+
+    track: str
+    start: float
+    end: float
+    keys: list[tuple[float, dict[str, Any]]] = field(default_factory=list)
+    preset: str | None = None
+
+
+@dataclass
 class DesignManifest:
     used: dict[Component, int] = field(default_factory=dict)
     colors: list[str] = field(default_factory=list)  # 使った色（#RRGGBB）
@@ -76,6 +89,8 @@ class DesignManifest:
     empty_spans: list[tuple[float, float]] = field(default_factory=list)  # 背景だけの区間（秒）
     transitions: list[tuple[float, str]] = field(default_factory=list)  # (秒, 切り替えの種類)
     duration_sec: float = 0.0
+    size: tuple[int, int] = (1920, 1080)
+    clips: list[ClipMotion] = field(default_factory=list)  # 映像のクリップ（動きの検査）
 
     def add(self, c: Component, n: int = 1) -> None:
         self.used[c] = self.used.get(c, 0) + n
@@ -196,6 +211,17 @@ def cvd_delta_e(a: str, b: str, kind: str) -> float:
     return sum((p - q) ** 2 for p, q in zip(la, lb, strict=True)) ** 0.5
 
 
+def delta_e(a: str, b: str) -> float:
+    """2 色の ΔE76（ふつうの色覚）。"""
+    la, lb = _lab(_lin(a)), _lab(_lin(b))
+    return sum((p - q) ** 2 for p, q in zip(la, lb, strict=True)) ** 0.5
+
+
+def confusable(a: str, b: str, limit: float = CVD_MIN_DELTA_E) -> bool:
+    """ふつうの色覚・P型・D型のどれかで ΔE76 が limit 未満か（統合版 3節の衝突の決まり）。"""
+    return delta_e(a, b) < limit or any(cvd_delta_e(a, b, k) < limit for k in _MACHADO)
+
+
 def color_vision(profile: DesignProfile) -> list[Violation]:
     """図表・話者の色の組が、P型・D型の色覚で見分けられるか（統合版 S8。ΔE76 15 未満は注意）。"""
     pal = profile.palette
@@ -303,6 +329,140 @@ def transition_rate(profile: DesignProfile, m: DesignManifest) -> list[Violation
     return out
 
 
+# 統合版 2.1: 動きの量（G2）を検査する用途（1 要素の移動量が短辺の 10% を超えたら注意）
+CALM_MOVE = frozenset(
+    {
+        Purpose.SUBTITLE,
+        Purpose.INTERVIEW,
+        Purpose.DOCUMENTARY,
+        Purpose.STORY,
+        Purpose.PODCAST,
+        Purpose.EXPLAINER,
+        Purpose.LECTURE,
+        Purpose.TUTORIAL,
+        Purpose.RECIPE,
+        Purpose.NEWS,
+        Purpose.CORPORATE,
+    }
+)
+MOVE_MAX = 0.10  # 短辺に対する比
+MAX_MOVING = 2  # 同時に動いている要素の上限（M4）
+EXPRESSIVE_MOVING = frozenset({Purpose.MV, Purpose.LYRIC, Purpose.TRAILER})  # 超えても注意だけ
+ELEMENT_KEYS = ("scale", "x", "y", "rotation", "opacity")
+KEN_BURNS = frozenset(
+    {"ken_burns_in", "ken_burns_out", "pan_left", "pan_right", "pan_up", "pan_down"}
+)
+
+
+def _moving_spans(c: ClipMotion) -> list[tuple[float, float]]:
+    """要素のプロパティが変わっている区間（秒。タイムライン上）。カメラ（ズーム・パン）は数えない。"""
+    out: list[tuple[float, float]] = []
+    for prop in ELEMENT_KEYS:
+        pts = [(t, k[prop]) for t, k in c.keys if k.get(prop) is not None]
+        for (t0, v0), (t1, v1) in zip(pts, pts[1:], strict=False):
+            if abs(v1 - v0) > 1e-6 and t1 > t0:
+                out.append((c.start + t0, c.start + t1))
+    return out
+
+
+def motion_checks(profile: DesignProfile, m: DesignManifest) -> list[Violation]:
+    """動きの量（G2）・同じ動きの連続（G3）・同時に動く要素（M4）・変化の間隔（Q2）。"""
+    out: list[Violation] = []
+    label = profile.label
+    w, h = m.size
+    short = max(1, min(w, h))
+    # G2: 1 要素の移動量（x・y は画面の幅・高さに対する比）
+    if profile.purpose in CALM_MOVE:
+        worst = 0.0
+        for c in m.clips:
+            for ax, dim in (("x", w), ("y", h)):
+                vals = [k[ax] for _, k in c.keys if k.get(ax) is not None]
+                if len(vals) >= 2:
+                    worst = max(worst, (max(vals) - min(vals)) * dim / short)
+        if worst > MOVE_MAX + 1e-9:
+            out.append(
+                Violation(
+                    code="motion_amount",
+                    severity="warning",
+                    message=(
+                        f"「{label}」で、画面の短辺の {worst:.0%} 動く要素があります"
+                        f"（{MOVE_MAX:.0%} までにすると落ち着いて見られます）"
+                    ),
+                )
+            )
+    # G3: 同じトラックで同じ向きのケン・バーンズが 2 回続く
+    by_track: dict[str, list[ClipMotion]] = {}
+    for c in m.clips:
+        by_track.setdefault(c.track, []).append(c)
+    for clips in by_track.values():
+        kb = [c for c in sorted(clips, key=lambda c: c.start) if c.preset in KEN_BURNS]
+        for a, b in zip(kb, kb[1:], strict=False):
+            if a.preset == b.preset:
+                out.append(
+                    Violation(
+                        code="repeated_motion",
+                        severity="warning",
+                        message=f"同じ向きのケン・バーンズ（{a.preset}）が 2 回続いています",
+                    )
+                )
+                break
+    # M4: 同時に動いている要素の数
+    events: list[tuple[float, int]] = []
+    for c in m.clips:
+        for a, b in _merge(_moving_spans(c)):
+            events += [(a, 1), (b, -1)]
+    cur = peak = 0
+    at = 0.0
+    for t, d in sorted(events, key=lambda e: (e[0], e[1])):
+        cur += d
+        if cur > peak:
+            peak, at = cur, t
+    if peak > MAX_MOVING:
+        out.append(
+            Violation(
+                code="concurrent_motion",
+                severity="warning" if profile.purpose in EXPRESSIVE_MOVING else "error",
+                message=(
+                    f"{at:.1f} 秒で {peak} つの要素が同時に動いています"
+                    f"（{MAX_MOVING} つまでにすると目が追えます）"
+                ),
+            )
+        )
+    # Q2: 新しい要素の登場・動き・切り替えの間隔の最大
+    limit = profile.motion.change_interval_sec
+    if limit is not None and m.duration_sec > 0:
+        times = sorted(
+            {round(c.start, 3) for c in m.clips}
+            | {round(a, 3) for c in m.clips for a, _ in _moving_spans(c)}
+            | {round(t, 3) for t, _ in m.transitions}
+        )
+        times = [t for t in times if 0 <= t <= m.duration_sec] + [m.duration_sec]
+        gaps = [(b - a, a) for a, b in zip([0.0, *times], times, strict=False)]
+        gap, start = max(gaps) if gaps else (0.0, 0.0)
+        if gap > limit + 1e-6:
+            out.append(
+                Violation(
+                    code="change_interval",
+                    severity="warning",
+                    message=(
+                        f"{start:.1f} 秒から {gap:.1f} 秒間、画面が変わりません"
+                        f"（「{label}」は {limit:g} 秒ごとに何かを変えると飽きにくい）"
+                    ),
+                )
+            )
+    return out
+
+
+def _merge(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
 def check(
     profile: DesignProfile, m: DesignManifest, extras: list[Component] | None = None
 ) -> DesignCheck:
@@ -344,6 +504,7 @@ def check(
     out += palette_contrast(profile)
     out += color_vision(profile)
     out += transition_rate(profile, m)
+    out += motion_checks(profile, m)
     hues = hue_groups(m.colors)
     if len(hues) > profile.max_hues:
         out.append(

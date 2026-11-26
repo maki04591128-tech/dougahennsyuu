@@ -87,7 +87,7 @@ def sec_to_frame(sec: float, fps: Fraction) -> int:
 
 def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
     """用途の型から字幕の見た目を作る（書体・大きさ・帯の形・帯の色）。"""
-    from video_automation.schemas.design import Component
+    from video_automation.schemas.design import Component, Purpose
     from video_automation.services.design.guard import is_dark
 
     spec = prof.subtitle
@@ -131,6 +131,9 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
         # 話者が 2 人以上なら、どの型でも書体と色で区別する（名前は出さないので型の部品ではない）
         speaker_fonts=True,
         speaker_fill=not dark_text,
+        double_outline=spec.double_outline,
+        # 子ども向けは背景が明るいので、外側の縁を型の base にする（統合版 2.2）
+        double_outline_outer=prof.palette.base if prof.purpose == Purpose.KIDS else None,
     )
 
 

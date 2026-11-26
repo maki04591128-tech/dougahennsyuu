@@ -18,7 +18,19 @@ _SPEAKER_LINE = re.compile(r"^\s*([^\s：:「」]{1,20})\s*[：:]\s*(.+)$")
 _SENTENCE_END = "。！？!?"
 SHORT_SENTENCE = 6  # これより短い文（「えっ！」）は次の文と 1 枚にまとめる
 _STRONG_AFTER = set("、。，．！？!?」』）)】〕…")
-_NO_LINE_START = set("、。，．！？!?」』）)】〕ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ・…")
+# 統合版 T12（jlreq の厳しい方式）: 行頭に置かない文字（終わり括弧類・ハイフン類・区切り約物・
+# 中点類・句点類・読点類・繰返し記号・長音記号・小書きの仮名）
+_NO_LINE_START = set(
+    "、。，．,.！？!?‼⁇⁈⁉」』）)】〕〉》］]｝}”’"
+    "‐゠–〜～・：；:;"
+    "々〻ゝゞヽヾー"
+    "ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ…‥"
+)
+# 行末に置かない文字（始め括弧類）
+_NO_LINE_END = set("「『（(【〔〈《［[｛{“‘")
+_DASHES = set("…‥―")  # 「……」「――」は分けない
+# 数字の直後の単位（万・km・％…）
+_UNIT_AFTER_DIGIT = re.compile(r"[^\sぁ-ゟ、。，．！？!?」』）)]")
 
 
 @dataclass
@@ -127,11 +139,28 @@ def _is_word(ch: str) -> bool:
     return ch.isascii() and (ch.isalnum() or ch in "_.-'")
 
 
+_NUMBER_UNIT = re.compile(
+    r"[0-9０-９][0-9０-９.,/．，／]*(?:[万億兆千百十]|[A-Za-zＡ-Ｚａ-ｚ%％℃°]+|倍|円|年|人|個|回)*"
+)
+
+
+@lru_cache(maxsize=2048)
+def _number_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """数と、それに続く単位のまとまり（統合版 T12: 数字と直後の単位は分けない）。"""
+    return tuple(m.span() for m in _NUMBER_UNIT.finditer(text))
+
+
 def _break_score(text: str, i: int) -> int:
     """text[:i] と text[i:] の間で改行する適切さ。0=不可。"""
     if i <= 0 or i >= len(text) or text[i] in _NO_LINE_START:
         return 0
     prev, nxt = text[i - 1], text[i]
+    if prev in _NO_LINE_END or (prev in _DASHES and nxt in _DASHES):
+        return 0
+    if (prev.isdigit() or prev in "０１２３４５６７８９") and _UNIT_AFTER_DIGIT.match(nxt):
+        return 0  # 数字と直後の単位（「12 / 万」「4 / ％」）は分けない
+    if any(a < i < b for a, b in _number_spans(text)):
+        return 0  # 「12万km」「3.5倍」の途中
     if _is_word(prev) and _is_word(nxt):  # 英単語・数字の途中では切らない
         return 0
     if prev in "」』）)" and _is_hira(nxt):  # 「名前」の … の助詞を切り離さない
@@ -208,6 +237,22 @@ def _fits(text: str, max_chars: int, max_lines: int) -> bool:
 _CUE_BREAK_COST = {3: 0.0, 2: 4.0, 1: 12.0}
 
 
+_FW_DIGITS = str.maketrans("0123456789", "０１２３４５６７８９")
+_HW_NUM = str.maketrans("０１２３４５６７８９．，／", "0123456789.,/")
+_NUMBER = re.compile(r"[0-9０-９]+(?:[.,．，/／][0-9０-９]+)*")
+
+
+def japanese_digits(text: str) -> str:
+    """統合版 T13: 横書きの字幕・テロップの数字は、1 桁は全角、2 桁以上は半角
+    （Netflix 日本語字幕ガイド II.14）。小数・桁区切り・分数を含む数は半角。"""
+
+    def fix(m: re.Match[str]) -> str:
+        n = m.group(0)
+        return n.translate(_FW_DIGITS) if len(n) == 1 else n.translate(_HW_NUM)
+
+    return _NUMBER.sub(fix, text)
+
+
 def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> list[str]:
     """1セグメントの字幕キュー（各要素は改行 \\n を含む表示テキスト）。
 
@@ -215,7 +260,7 @@ def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> 
     分け、短すぎる切れ端（「見つかるわ」だけの 1 枚など）や、語と助詞の間で切らないよう
     動的計画法で切れ目を選ぶ。
     """
-    t = text.strip()
+    t = japanese_digits(text.strip())
     if not t:
         return []
     sents = _sentences(t)
