@@ -147,6 +147,79 @@ def palette_contrast(profile: DesignProfile) -> list[Violation]:
     return out
 
 
+# 統合版 S8: 色覚の検査。Machado 2009（強さ 1.0）の行列で、線形 RGB を P型・D型の見え方に変える
+_MACHADO = {
+    "P型": (
+        (0.152286, 1.052583, -0.204868),
+        (0.114503, 0.786281, 0.099216),
+        (-0.003882, -0.048116, 1.051998),
+    ),
+    "D型": (
+        (0.367322, 0.860646, -0.227968),
+        (0.280085, 0.672501, 0.047413),
+        (-0.011820, 0.042940, 0.968881),
+    ),
+}
+CVD_MIN_DELTA_E = 15.0
+
+
+def _lin(color: str) -> tuple[float, float, float]:
+    h = color.lstrip("#")[-6:]
+    c = [int(h[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    r, g, b = (x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c)
+    return r, g, b
+
+
+def _lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
+    """線形 sRGB → CIELAB（D65）。"""
+    r, g, b = (min(max(v, 0.0), 1.0) for v in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 216 / 24389 else (24389 / 27 * t + 16) / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def cvd_delta_e(a: str, b: str, kind: str) -> float:
+    """2 色を P型・D型の見え方にしたときの ΔE76。"""
+    m = _MACHADO[kind]
+
+    def sim(c: str) -> tuple[float, float, float]:
+        v = _lin(c)
+        return tuple(sum(m[i][j] * v[j] for j in range(3)) for i in range(3))  # type: ignore[return-value]
+
+    la, lb = _lab(sim(a)), _lab(sim(b))
+    return sum((p - q) ** 2 for p, q in zip(la, lb, strict=True)) ** 0.5
+
+
+def color_vision(profile: DesignProfile) -> list[Violation]:
+    """図表・話者の色の組が、P型・D型の色覚で見分けられるか（統合版 S8。ΔE76 15 未満は注意）。"""
+    pal = profile.palette
+    out: list[Violation] = []
+    for role, colors in (("図表", pal.chart), ("話者", pal.speakers)):
+        uniq = list(dict.fromkeys(c.upper() for c in colors))
+        for i, a in enumerate(uniq):
+            for b in uniq[i + 1 :]:
+                for kind in _MACHADO:
+                    d = cvd_delta_e(a, b, kind)
+                    if d < CVD_MIN_DELTA_E:
+                        out.append(
+                            Violation(
+                                code="color_vision",
+                                severity="warning",
+                                message=(
+                                    f"「{profile.label}」の{role}の色 {a} と {b} は、{kind}の色覚で"
+                                    f"見分けにくい（ΔE {d:.1f}。{CVD_MIN_DELTA_E:g} 以上にする）"
+                                ),
+                            )
+                        )
+    return out
+
+
 def font_key(name: str) -> str:
     """書体名・ファイル名を同じ書体の比較用に揃える（meiryob / Meiryo → meiryo）。"""
     k = re.sub(r"[\s\-_]", "", name.lower()).replace("udp", "ud")
@@ -269,6 +342,7 @@ def check(
             )
         )
     out += palette_contrast(profile)
+    out += color_vision(profile)
     out += transition_rate(profile, m)
     hues = hue_groups(m.colors)
     if len(hues) > profile.max_hues:

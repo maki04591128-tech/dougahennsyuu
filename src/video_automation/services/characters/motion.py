@@ -348,3 +348,53 @@ def mouth_levels(samples: Any, rate: int, fps: float, frames: int) -> list[int]:
     ref = max(ref, 1e-6)
     lv = rms / ref
     return [0 if v < 0.16 else 1 if v < 0.55 else 2 for v in lv]
+
+
+# 統合版 S2: 口の形を音素から決める。あ → 大、お → 丸、う → すぼめ、い・え → 中、
+# ん・ま行／ば行／ぱ行の子音・無音 → 閉じる。口の形の部品が無い立ち絵では、
+# 開きの段（あ・お → 2、い・う・え → 1、閉じる → 0）に置き換える
+VOWEL_LEVEL = {"a": 2, "o": 2, "i": 1, "u": 1, "e": 1}
+CLOSED_CONSONANTS = ("m", "b", "p")
+VISEME_LEAD_FRAMES = 1  # 口を音より 1f 早く動かす
+VISEME_MIN_FRAMES = 2  # これより短い形は前の形を続ける
+
+
+def viseme_levels(query: Any, fps: float, frames: int) -> list[int]:
+    """VOICEVOX のクエリ（AudioQuery）から、フレームごとの口の開き（0/1/2）。"""
+    speed = query.speedScale if query.speedScale > 0 else 1.0
+    out = [0] * frames
+    t = (query.prePhonemeLength or 0.0) / speed
+
+    def paint(t0: float, t1: float, lv: int) -> None:
+        a = max(0, round(t0 * fps) - VISEME_LEAD_FRAMES)
+        b = min(frames, round(t1 * fps) - VISEME_LEAD_FRAMES)
+        for f in range(a, b):
+            out[f] = lv
+
+    for ap in query.accent_phrases:
+        for m in ap.moras:
+            cl = (m.consonant_length or 0.0) / speed
+            vl = (m.vowel_length or 0.0) / speed
+            v = (m.vowel or "").lower()
+            if m.consonant and cl > 0:
+                closed = m.consonant.lower().startswith(CLOSED_CONSONANTS)
+                # 閉じない子音の間は、次の母音の形で口を作り始める
+                paint(t, t + cl, 0 if closed else VOWEL_LEVEL.get(v, 0))
+            paint(t + cl, t + cl + vl, VOWEL_LEVEL.get(v, 0))  # ん（N）・っ（cl）は閉じる
+            t += cl + vl
+        if ap.pause_mora is not None:
+            pause = (
+                query.pauseLength if query.pauseLength is not None else ap.pause_mora.vowel_length
+            )
+            t += (pause or 0.0) * query.pauseLengthScale / speed
+    # 2f 未満の形は前の形を続ける（ぱくぱくとちらつかない）
+    i = 0
+    while i < frames:
+        j = i
+        while j < frames and out[j] == out[i]:
+            j += 1
+        if j - i < VISEME_MIN_FRAMES and i > 0:
+            for k in range(i, j):
+                out[k] = out[i - 1]
+        i = j
+    return out

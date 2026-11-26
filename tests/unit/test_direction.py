@@ -239,3 +239,16 @@ def test_card_items_packed_into_one_are_split():
     )
     out = normalize(plan, lines)
     assert out.shots[0].body == ["コンセントを抜く", "LED 照明", "温度上げ"]
+
+
+def test_card_items_echoing_the_prompt_are_dropped():
+    """実機: 解説のカードに、指示文の 1 文目を写した項目が出た。"""
+    from video_automation.services.direction.plan import _echoes_prompt, _norm
+
+    script = _norm("太陽系の惑星を比べるのだ。木星が最大で、土星はリングが特徴なのよ。")
+    assert _echoes_prompt("解説動画の演出を担当します", script)
+    assert _echoes_prompt("画面に出す演出を決定します", script)
+    assert _echoes_prompt("満充電のまま放置", script)  # 指示の例の写し
+    assert not _echoes_prompt("木星は太陽系の最大", script)
+    assert not _echoes_prompt("土星はリングが特徴", script)
+    assert not _echoes_prompt("高温", script)

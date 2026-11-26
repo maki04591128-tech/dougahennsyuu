@@ -20,7 +20,48 @@ _CHORDS = [
     (196.00, 246.94, 293.66),
 ]
 CHORD_SEC = 4.0
-BGM_VOLUME = 0.7  # 素の音量は平均 −29 dB。声（平均 −20 dB 前後）より 12 dB 以上小さくなる
+# 統合版 S3: BGM のダッキング。声の区間は声のピーク（timing.SPEECH_PEAK_DB = −3 dBFS）より
+# 20 dB 下、1 秒以上の台詞の間・冒頭・最後は 7 dB 上げる。上げ下げは 0.4 秒で滑らかに。
+# BGM には highpass 100 Hz と 2 kHz の −3 dB（声の帯域を空ける）を掛ける
+BGM_PEAK_DB = -15.1  # make_bgm の和音に下の EQ を掛けたときのピーク（実測）
+BGM_DUCK_PEAK_DB = -23.0  # 声の区間の BGM のピーク
+BGM_RAISE_DB = 7.0
+BGM_FADE_SEC = 0.4
+BGM_GAP_SEC = 1.0  # これ以上の台詞の間で BGM を上げる
+BGM_EQ = "highpass=f=100,equalizer=f=2000:t=q:w=1:g=-3"
+
+
+def raise_spans(
+    speech: list[tuple[float, float]], total_sec: float, gap: float = BGM_GAP_SEC
+) -> list[tuple[float, float]]:
+    """BGM を上げる区間（冒頭・gap 秒以上の台詞の間・最後）。speech は声の区間（秒）。"""
+    spans: list[tuple[float, float]] = []
+    t = 0.0
+    for a, b in sorted(speech):
+        if a - t >= gap or (t == 0.0 and a > 0):
+            spans.append((t, a))
+        t = max(t, b)
+    if total_sec - t >= gap:
+        spans.append((t, total_sec))
+    return [(a, b) for a, b in spans if b - a > 0]
+
+
+def duck_expr(spans: list[tuple[float, float]]) -> str:
+    """BGM の音量の式（時刻 t）。声の区間は低く、spans の区間は上げる。"""
+    low = 10 ** ((BGM_DUCK_PEAK_DB - BGM_PEAK_DB) / 20)
+    high = 10 ** ((BGM_DUCK_PEAK_DB + BGM_RAISE_DB - BGM_PEAK_DB) / 20)
+    if not spans:
+        return f"{low:.4f}"
+    f = BGM_FADE_SEC
+    # 区間ごとの台形（端で 0.4 秒かけて上げ下げ。冒頭・最後は端を上げたまま）
+    terms = []
+    for a, b in spans:
+        up = "1" if a <= 0 else f"(t-{a:.3f})/{f}"
+        down = f"({b:.3f}-t)/{f}"
+        terms.append(f"min(1,max(0,min({up},{down})))")
+    return f"{low:.4f}+{high - low:.4f}*min(1,{'+'.join(terms)})"
+
+
 WHOOSH_VOLUME = 2.0  # ピーク −15 dB 前後（声のピークより 8 dB ほど小さく）
 POP_VOLUME = 0.4  # 同じくピーク −14 dB 前後
 # 統合版 E3: 入りの種類ごとの「シュッ」の立ち上がり（30fps のフレーム数）。
@@ -69,8 +110,15 @@ def _chord_expr(freqs: tuple[float, ...]) -> str:
     return f"0.11*{env}*({tones}+{bass})"
 
 
-async def make_bgm(ffmpeg: FFmpeg, out: Path, duration_sec: float) -> Path:
-    """長さ duration_sec の BGM（WAV）。和音を繰り返し、最後は 2 秒で消す。"""
+async def make_bgm(
+    ffmpeg: FFmpeg,
+    out: Path,
+    duration_sec: float,
+    speech: list[tuple[float, float]] | None = None,
+) -> Path:
+    """長さ duration_sec の BGM（WAV）。和音を繰り返し、最後は 2 秒で消す。
+
+    speech（声の区間・秒）を渡すと、声の間は下げて台詞の間は上げる（統合版 S3）。"""
     out.parent.mkdir(parents=True, exist_ok=True)
     inputs: list[str] = []
     for f in _CHORDS:
@@ -82,9 +130,19 @@ async def make_bgm(ffmpeg: FFmpeg, out: Path, duration_sec: float) -> Path:
         f"{concat};[c]aloop=loop=-1:size={int(48000 * CHORD_SEC * loop)},"
         f"atrim=0:{duration_sec:.3f},lowpass=f=2400,"
         f"aecho=0.8:0.7:60|120:0.25|0.15,afade=t=in:d=1.5,afade=t=out:st={fade:.3f}:d=2,"
+        f"{BGM_EQ},"
+        f"volume=eval=frame:volume='{duck_expr(raise_spans(speech or [], duration_sec))}',"
         "aformat=channel_layouts=stereo[o]"
     )
-    await ffmpeg.run([*inputs, "-filter_complex", filt, "-map", "[o]", str(out)], timeout=600)
+    script = out.with_suffix(".filter.txt")
+    script.write_text(filt, encoding="utf-8")  # 区間が多いと引数が長くなるのでファイルで渡す
+    try:
+        await ffmpeg.run(
+            [*inputs, "-filter_complex_script", str(script), "-map", "[o]", str(out)],
+            timeout=600,
+        )
+    finally:
+        script.unlink(missing_ok=True)
     return out
 
 

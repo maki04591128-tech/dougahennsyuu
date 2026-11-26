@@ -911,7 +911,13 @@ class BuildService:
             return []
         tl = await c.timeline.get_timeline(project_id)
         fps = tl.fps_num / tl.fps_den
-        ends = [x.end_frame for x in (await c.studio.detail(sid)).segments if x.end_frame]
+        segs = (await c.studio.detail(sid)).segments
+        ends = [x.end_frame for x in segs if x.end_frame]
+        speech = [
+            (x.start_frame / fps, x.end_frame / fps)
+            for x in segs
+            if x.start_frame is not None and x.end_frame
+        ]
         total = max([*ends, tl.duration_frames])
         if total <= 0:
             return []
@@ -937,7 +943,7 @@ class BuildService:
 
         bgm = await register(
             await audio_bed.make_bgm(
-                c.ffmpeg, work / f"bgm_{uuid4().hex[:8]}.wav", total / fps + 0.5
+                c.ffmpeg, work / f"bgm_{uuid4().hex[:8]}.wav", total / fps + 0.5, speech
             ),
             "BGM（自動で作った和音）",
         )
@@ -947,10 +953,10 @@ class BuildService:
                 asset_id=bgm.id,
                 start_frame=0,
                 duration_frames=total,
-                volume=audio_bed.BGM_VOLUME,
+                volume=1.0,  # 音量は BGM のファイルに焼いてある（声の区間で下げる）
             )
         )
-        notes = ["BGM を付けました（声より小さく）"]
+        notes = ["BGM を付けました（声の間は小さく、台詞の間は少し上げる）"]
         # 効果音の時刻: カード（場面の切り替え）の出始め・「ポン」と出る数値のテロップ
         # (置く始まりのフレーム, 種類, 「シュッ」の立ち上がりのフレーム数)
         cue: list[tuple[int, str, int]] = []

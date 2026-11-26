@@ -304,6 +304,13 @@ class CharacterService:
     def _levels(self, af: AudioFile | None, fps: float, frames: int) -> list[int] | None:
         if af is None:
             return None
+        if af.query:  # 統合版 S2: 音素（モーラ）から口の形を決める
+            try:
+                from video_automation.schemas.voice import AudioQuery
+
+                return motion.viseme_levels(AudioQuery.model_validate(af.query), fps, frames)
+            except ValueError:
+                pass  # クエリが読めないときは音量から決める
         path = self.settings.data_dir / af.path
         try:
             import numpy as np
