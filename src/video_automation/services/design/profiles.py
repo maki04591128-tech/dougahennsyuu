@@ -129,6 +129,10 @@ _SUB = {
     ),
 }
 _LANDSCAPE = SafeArea(top=0.05, bottom=0.05, left=0.05, right=0.05)
+# 統合版 P1: 名前帯を出す用途（2.3 の固有の部品）
+LOWER_THIRD_PURPOSES = frozenset(
+    {Purpose.INTERVIEW, Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.CORPORATE}
+)
 # 統合版 S9: 最後の 15 秒を終了画面にする用途（2.3 の「最後の15秒」）。横長の動画だけ
 END_SCREEN = frozenset(
     {
@@ -594,7 +598,12 @@ PROFILES: dict[Purpose, DesignProfile] = {
             "期待を高める。間と強い一言",
             P_TRAILER,
             ["予告", "トレーラー", "ティザー", "teaser", "trailer"],
-            allow={C.LYRIC_TEXT: DENY, C.SFX: ANY, C.SUBTITLE: 3},
+            allow={
+                C.LYRIC_TEXT: DENY,
+                C.SFX: ANY,
+                C.SUBTITLE: 3,
+                C.CARD: 3,
+            },  # P8: 文字のカードは最大 3 枚
         ),
     ]
 }

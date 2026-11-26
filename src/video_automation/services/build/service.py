@@ -62,6 +62,7 @@ from video_automation.schemas.timeline import (
 from video_automation.schemas.voice import ReadingCheckRequest
 from video_automation.services.build import audio_bed, recording_reader
 from video_automation.services.design.profiles import PROFILES
+from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction.service import native_transform
 from video_automation.services.transcribe.service import TranscribeRequest
 
@@ -166,6 +167,19 @@ VERTICAL_STRUCTURE = (
     "1 文目でいちばん伝えたい結論を言う（理由や前置きは 2 文目から）。"
     "冒頭は 1 文を短く、2 行に収まる長さにする"
 )
+
+
+AUTO_STRUCTURES = (VERTICAL_STRUCTURE, pp.RANKING_STRUCTURE, pp.TRAILER_STRUCTURE)
+
+
+def purpose_structure(purpose: Purpose, portrait: bool) -> str:
+    """台本の構成の指示（自動で付けるもの）。縦型（S5）・ランキング（P5）・予告編（P8）。"""
+    parts = [VERTICAL_STRUCTURE] if portrait else []
+    if purpose == Purpose.RANKING:
+        parts.append(pp.RANKING_STRUCTURE)
+    elif purpose == Purpose.TRAILER:
+        parts.append(pp.TRAILER_STRUCTURE)
+    return "\n".join(parts)
 
 
 def skipped_notes(skipped: list[str]) -> list[str]:
@@ -364,7 +378,9 @@ class BuildService:
                     purpose=prof.label,
                     target_duration_sec=dur,
                     # 統合版 S5: 縦型は最初の 1 文で結論（いちばん伝えたいこと）を言う
-                    structure=VERTICAL_STRUCTURE if portrait and music_path is None else "",
+                    structure=purpose_structure(prof.purpose, portrait)
+                    if music_path is None
+                    else "",
                     # 曲から作るときは、貼られた歌詞を台本の参考に置いて書き出しまで使う
                     reference=req.lyrics if music_path is not None else req.reference,
                 ),
@@ -491,10 +507,8 @@ class BuildService:
                 portrait = p.height > p.width
                 await s.commit()
             # 統合版 S5: 縦型は最初の 1 文で結論を言う（向きが変わったら付け外しする）
-            if portrait and not settings.structure:
-                settings.structure = VERTICAL_STRUCTURE
-            elif not portrait and settings.structure == VERTICAL_STRUCTURE:
-                settings.structure = ""
+            if all(x in AUTO_STRUCTURES for x in settings.structure.split("\n") if x):
+                settings.structure = purpose_structure(prof.purpose, portrait)
             notes.append(f"用途を「{prof.label}」にしました")
         if req.duration_sec is not None:
             settings.target_duration_sec = req.duration_sec
@@ -995,12 +1009,32 @@ class BuildService:
 
         learned = c.design.edits.overrides(purpose.value) if c.design.edits else {}
         bgm_ratio = learned.get("bgm", {}).get("volume", 1.0)
-        bgm = await register(
-            await audio_bed.make_bgm(
-                c.ffmpeg, work / f"bgm_{uuid4().hex[:8]}.wav", total / fps + 0.5, speech
-            ),
-            "BGM（自動で作った和音）",
-        )
+        series = await c.design.series_for(project_id)
+        bgm: AssetRead | None = None
+        if series is not None and series.bgm_path:  # 統合版 Q4: シリーズの BGM
+            try:
+                src = await c.timeline.import_asset(
+                    AssetImportRequest(project_id=project_id, path=series.bgm_path)
+                )
+                bgm = await register(
+                    await audio_bed.make_bgm_from(
+                        c.ffmpeg,
+                        c.settings.data_dir / src.path,
+                        work / f"bgm_{uuid4().hex[:8]}.wav",
+                        total / fps + 0.5,
+                        speech,
+                    ),
+                    f"BGM（シリーズ「{series.name[:20]}」）",
+                )
+            except Exception as exc:  # noqa: BLE001 - 使えないときは自動の BGM にする
+                log.warning("series_bgm_failed", error=type(exc).__name__)
+        if bgm is None:
+            bgm = await register(
+                await audio_bed.make_bgm(
+                    c.ffmpeg, work / f"bgm_{uuid4().hex[:8]}.wav", total / fps + 0.5, speech
+                ),
+                "BGM（自動で作った和音）",
+            )
         cmds.append(
             AddClip(
                 track_id=tid[BGM_TRACK],
@@ -1041,6 +1075,10 @@ class BuildService:
                         st = audio_bed.whoosh_start(x.start_frame, n_in, kind, fps)
                         cue.append((st, "whoosh", lead))
                 prev_end = x.end_frame
+        roles_all = await c.design.clip_roles(project_id)
+        for x in tl.clips:  # 統合版 P5: 順位の数字の着地で「ポン」
+            if roles_all.get(x.id) == "rank_number":
+                cue.append((x.start_frame + round(fps * 0.25), "pop", 0))
         txt = tracks.get("演出・文字")
         if txt is not None:
             for x in tl.clips:

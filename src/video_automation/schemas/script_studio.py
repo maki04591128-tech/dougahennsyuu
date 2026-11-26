@@ -36,6 +36,8 @@ class VoiceSettings(BaseModel):
 class CharacterIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     role: str = Field(default="", max_length=200)
+    # 統合版 P1: 名前帯の 2 行目に出す肩書き（話者の設定から取り、LLM には作らせない）
+    job_title: str = Field(default="", max_length=100)
     personality: str = Field(default="", max_length=500)
     speaking_style: str = Field(default="", max_length=500)
     is_user: bool = False  # USER_ONE_SIDE でユーザーが担当するキャラクター

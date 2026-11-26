@@ -58,7 +58,7 @@ async def _job(c, r):
     return job.result
 
 
-async def _ready_script(c):
+async def _ready_script(c, lines=None):
     await c.post("/providers/discover")
     pid = (await c.post("/projects", json={"name": "D", "width": 640, "height": 360})).json()["id"]
     sc = (
@@ -76,7 +76,7 @@ async def _ready_script(c):
         )
     ).json()
     sid = sc["id"]
-    await c.post(f"/scripts/{sid}/dialogue", json={"lines": LINES})
+    await c.post(f"/scripts/{sid}/dialogue", json={"lines": lines or LINES})
     await _job(c, await c.post(f"/scripts/{sid}/voice"))
     await c.post("/subtitles/generate", json={"script_id": sid})
     await c.post("/subtitles/synchronize", json={"script_id": sid})
@@ -155,7 +155,13 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     assert any("diamond crystal" in x for x in out["skipped"])  # 画像は素材を選ぶまで外す
     tl = (await c.get(f"/projects/{pid}/timeline")).json()
     names = {t["id"]: t["name"] for t in tl["tracks"]}
-    assert set(names.values()) == {"ナレーション", "演出・背景", "演出・図", "演出・文字"}
+    assert set(names.values()) == {
+        "ナレーション",
+        "演出・背景",
+        "演出・図",
+        "演出・文字",
+        "演出・項目",
+    }
     by_track: dict[str, list] = {}
     for cl in tl["clips"]:
         by_track.setdefault(names[cl["track_id"]], []).append(cl)
@@ -173,9 +179,9 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     assert all(-0.1 < x["transform"]["y"] < 0 for x in fig[1:])  # 字幕の上の領域
     txt = by_track["演出・文字"]
     roles = await c.app.state.container.design.clip_roles(pid)
-    # タイトル + テロップ 1 つ + まとめの 2 項目目（統合版 D1: 新しい項目は別の絵で重ねて出す）
-    assert sorted(roles[x["id"]] for x in txt) == ["card", "keyword", "title_card"]
-    item = next(x for x in txt if roles[x["id"]] == "card")
+    assert sorted(roles[x["id"]] for x in txt) == ["keyword", "title_card"]  # タイトル + テロップ
+    # 統合版 D1: まとめの 2 項目目は、別の絵で重ねて出す（重ねる用のトラック）
+    (item,) = by_track["演出・項目"]
     assert (item["start_frame"], item["end_frame"]) == (fig[3]["start_frame"], fig[3]["end_frame"])
     keys = item["animation"]["keyframes"]
     assert keys[0]["opacity"] == 0 and abs(keys[0]["y"] - 16 / 1080) < 1e-6 and keys[1]["y"] == 0
@@ -202,7 +208,7 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     # もう一度適用すると以前の演出を置き換える（トラックは増えない）
     out2 = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
     tl2 = (await c.get(f"/projects/{pid}/timeline")).json()
-    assert len(tl2["tracks"]) == 4 and len(tl2["clips"]) == len(tl["clips"])
+    assert len(tl2["tracks"]) == 5 and len(tl2["clips"]) == len(tl["clips"])
     assert out2["clips"] == out["clips"]
     # 元に戻すと 1 回分（演出全体）が戻る
     assert (await c.post(f"/projects/{pid}/undo")).status_code == 200
@@ -253,7 +259,11 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
     assert len(profiles) >= 20 and {p["purpose"] for p in profiles} >= {"subtitle", "mv"}
     r = (await c.post("/design/classify", json={"text": "解説動画だけどMVっぽく"})).json()
     assert r["purpose"] == "explainer" and r["mixed_from"] == ["mv"]
-    assert (await c.get(f"/projects/{pid}/design")).json() == {"purpose": None, "extras": []}
+    assert (await c.get(f"/projects/{pid}/design")).json() == {
+        "purpose": None,
+        "extras": [],
+        "series_id": None,
+    }
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
     ]
@@ -574,3 +584,208 @@ async def test_end_screen_fills_the_last_15_seconds(dclient):
     await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
     roles = await c.app.state.container.design.clip_roles(pid)
     assert "end_screen" not in roles.values()
+
+
+async def test_lower_thirds_show_name_and_job_title(dclient):
+    """統合版 P1: インタビューでは、各話者の最初の発話の 0.5 秒後に名前帯（肩書きは話者の設定）。"""
+    from PIL import Image
+
+    from video_automation.schemas.script_studio import CharacterIn, ScriptUpdate
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    container = c.app.state.container
+    detail = await container.studio.detail(sid)
+    chars = [CharacterIn.model_validate(x.model_dump()) for x in detail.characters]
+    chars[1].job_title = "物質・材料研究所 主任研究員"
+    await container.studio.update(sid, ScriptUpdate(characters=chars))
+    await c.put(f"/projects/{pid}/design", json={"purpose": "interview"})
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    roles = await container.design.clip_roles(pid)
+    lts = sorted(
+        (x for x in tl["clips"] if roles.get(x["id"]) == "lower_third"),
+        key=lambda x: x["start_frame"],
+    )
+    segs = (await container.studio.detail(sid)).segments
+    first = {}
+    for x in segs:
+        first.setdefault(x.speaker, x.start_frame)
+    assert [x["start_frame"] for x in lts] == [first["A"] + 15, first["B"] + 15]
+    assert all(x["end_frame"] - x["start_frame"] <= 5 * 30 for x in lts)
+    assert lts[0]["end_frame"] <= lts[1]["start_frame"]  # 次の話者の帯が出たら前は消す
+    assets = {a["id"]: a for a in tl["assets"]}
+    a_img = Image.open(container.settings.data_dir / assets[lts[0]["asset_id"]]["path"])
+    b_img = Image.open(container.settings.data_dir / assets[lts[1]["asset_id"]]["path"])
+    assert b_img.height > a_img.height  # 肩書きの 2 行目がある
+    assert lts[0]["animation"]["preset"].startswith("slide_in_left")
+    assert lts[0]["transform"]["x"] < -0.3  # 左寄せ
+
+
+async def _apply(c, pid, sid, purpose, **design):
+    await c.put(f"/projects/{pid}/design", json={"purpose": purpose, **design})
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    roles = await c.app.state.container.design.clip_roles(pid)
+    by: dict[str, list] = {}
+    for x in sorted(tl["clips"], key=lambda x: x["start_frame"]):
+        by.setdefault(roles.get(x["id"], ""), []).append(x)
+    return tl, by
+
+
+RECIPE = [
+    {"speaker": "A", "text": "今日は2人分の野菜炒めを作ります。"},
+    {"speaker": "A", "text": "まずキャベツを2枚と、にんじん1本を切ります。"},
+    {"speaker": "A", "text": "次に塩少々を振って炒めます。"},
+    {
+        "speaker": "A",
+        "text": "最後にお皿に盛り付けて、熱いうちにどうぞ召し上がってください。できあがりです。",
+    },
+]
+
+
+async def test_recipe_ingredients_steps_and_list(dclient):
+    """統合版 P4: 材料の発話の頭に「材料名 分量」2 秒、左上に STEP n、最後に材料の一覧のカード。"""
+    c = dclient
+    pid, sid = await _ready_script(c, RECIPE)
+    tl, by = await _apply(c, pid, sid, "recipe")
+    segs = (await c.app.state.container.studio.detail(sid)).segments
+    ing = by["recipe_ingredient"]
+    assert [x["start_frame"] for x in ing] == [segs[1].start_frame, segs[2].start_frame]
+    assert all(x["end_frame"] - x["start_frame"] <= 60 for x in ing)
+    steps = by["recipe_step"]
+    assert [x["start_frame"] for x in steps] == [s.start_frame for s in segs[1:]]
+    assert steps[0]["transform"]["x"] < -0.3 and steps[0]["transform"]["y"] < -0.3  # 左上
+    (card,) = by["recipe_list"]
+    assert card["end_frame"] == segs[-1].end_frame or card["end_frame"] >= segs[-1].end_frame - 1
+    names = {t["name"] for t in tl["tracks"]}
+    assert {"演出・部品", "演出・手順"} <= names
+    # 作り直しても部品は重ならない（前の部品は消してから置く）
+    _, by2 = await _apply(c, pid, sid, "recipe")
+    assert len(by2["recipe_ingredient"]) == 2 and len(by2["recipe_list"]) == 1
+
+
+RANKING = [
+    {"speaker": "A", "text": "人気の街ランキングです。"},
+    {"speaker": "A", "text": "第3位は京都です。古い町並みが人気です。"},
+    {"speaker": "A", "text": "第2位は大阪です。食べ物がおいしいです。"},
+    {"speaker": "A", "text": "第1位は東京です。何でもそろいます。"},
+]
+
+
+async def test_ranking_numbers_board_and_first_place_silence(dclient):
+    """統合版 P5: 順位の大きな数字（ポン）→ ボード。1 位の前に 0.8 秒の無音。"""
+    c = dclient
+    pid, sid = await _ready_script(c, RANKING)
+    container = c.app.state.container
+    before = (await container.studio.detail(sid)).segments
+    await c.put(f"/projects/{pid}/design", json={"purpose": "ranking"})
+    await c.post("/subtitles/synchronize", json={"script_id": sid})
+    after = (await container.studio.detail(sid)).segments
+    gap_before = before[3].start_frame - before[2].end_frame
+    gap_after = after[3].start_frame - after[2].end_frame
+    assert gap_after - gap_before == 24  # 0.8 秒（30fps）
+    assert after[2].start_frame - after[1].end_frame == before[2].start_frame - before[1].end_frame
+    await c.post(f"/projects/{pid}/timeline/from_script", json={"script_id": sid})
+    tl, by = await _apply(c, pid, sid, "ranking")
+    nums = by["rank_number"]
+    assert [x["start_frame"] for x in nums] == [s.start_frame for s in after[1:]]
+    assert all(x["animation"]["preset"] for x in nums)
+    boards = by.get("rank_board", [])
+    for b in boards:
+        assert not any(
+            n["start_frame"] < b["end_frame"] and b["start_frame"] < n["end_frame"] for n in nums
+        )
+
+
+TRAILER = [
+    {"speaker": "A", "text": "静かな町に、ある日。"},
+    {"speaker": "A", "text": "一通の手紙が届いた。"},
+    {"speaker": "A", "text": "それは、すべての始まりだった。"},
+    {"speaker": "A", "text": "逃げろ。"},
+    {"speaker": "A", "text": "2027年3月14日、公開。"},
+]
+
+
+async def test_trailer_title_after_act3_and_date_card(dclient):
+    """統合版 P8: 予告編の題名は台詞の後、最後に台本の日付のカード。"""
+    c = dclient
+    pid, sid = await _ready_script(c, TRAILER)
+    tl, by = await _apply(c, pid, sid, "trailer")
+    segs = (await c.app.state.container.studio.detail(sid)).segments
+    last = segs[-1].end_frame
+    (title,) = [x for x in by["title_card"] if x["track_id"] != by["background"][0]["track_id"]][:1]
+    assert title["start_frame"] >= last
+    (date,) = by["trailer_date"]
+    assert date["start_frame"] == title["start_frame"] + 90
+    assert by["background"][-1]["end_frame"] >= date["end_frame"]
+
+
+async def test_series_logo_op_and_check(dclient, media_dir):
+    """統合版 Q4: シリーズのロゴ・OP（1 文目の直後に 3 秒）・色と書体の外れの warning。"""
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    logo = media_dir / "logo.png"
+    Image.new("RGBA", (200, 100), (255, 0, 0, 255)).save(logo)
+    op = media_dir / "op.png"
+    Image.new("RGB", (640, 360), (0, 0, 255)).save(op)
+    r = await c.post(
+        "/design/series",
+        json={
+            "name": "週刊の解説",
+            "colors": {"main": "#123456"},
+            "logo_path": str(logo),
+            "op_path": str(op),
+            "end_screen": False,
+        },
+    )
+    assert r.status_code == 201, r.text
+    s = r.json()
+    assert (await c.get("/design/series")).json()[0]["id"] == s["id"]
+    bad = await c.put(
+        f"/projects/{pid}/design", json={"purpose": "explainer", "series_id": "f" * 8}
+    )
+    assert bad.status_code == 404
+    tl, by = await _apply(c, pid, sid, "explainer", series_id=s["id"])
+    segs = (await c.app.state.container.studio.detail(sid)).segments
+    (opc,) = by["series_op"]
+    assert opc["start_frame"] == segs[0].end_frame and opc["end_frame"] - opc["start_frame"] == 90
+    (lg,) = by["series_logo"]
+    assert lg["transform"]["x"] > 0.3 and lg["transform"]["y"] < -0.3  # 右上
+    assert "end_screen" not in by  # シリーズで終了画面を外した
+    prof = await c.app.state.container.design.profile_for(pid)
+    assert prof.palette.main == "#123456"
+    d = (await c.get(f"/projects/{pid}/design")).json()
+    assert d["series_id"] == s["id"]
+    # 外す
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer", "series_id": ""})
+    assert (await c.get(f"/projects/{pid}/design")).json()["series_id"] is None
+    assert (await c.delete(f"/design/series/{s['id']}")).status_code == 204
+    assert (await c.get(f"/design/series/{s['id']}")).status_code == 404
+
+
+KIDS = [
+    {"speaker": "A", "text": "今日は冒険のお話です。"},
+    {"speaker": "A", "text": "山へ行きます。"},
+]
+
+
+async def test_kids_furigana_in_ass(dclient):
+    """統合版 P7: 子ども向けは、3 年生までに習わない漢字にふりがな（読みは声のモーラ）。"""
+    c = dclient
+    pid, sid = await _ready_script(c, KIDS)
+    await c.put(f"/projects/{pid}/design", json={"purpose": "kids"})
+    ass = (await c.post("/subtitles/export", json={"script_id": sid, "format": "ass"})).json()
+    rub = [x for x in ass["content"].split("\r\n") if x.startswith("Dialogue: 3,")]
+    assert len(rub) == 1 and "\\pos(" in rub[0]  # 「冒険」だけ（今日・山・行は習う漢字）
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    ass2 = (await c.post("/subtitles/export", json={"script_id": sid, "format": "ass"})).json()
+    assert "Dialogue: 3," not in ass2["content"]

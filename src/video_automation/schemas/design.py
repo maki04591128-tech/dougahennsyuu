@@ -216,6 +216,41 @@ class ProjectDesign(BaseModel):
     purpose: Purpose | None = None  # None は未設定（書き出し前に決める）
     # 混ぜる指示が明示されたときだけ使う、用途の型では使わない部品の例外
     extras: list[Component] = Field(default_factory=list, max_length=12)
+    series_id: str | None = Field(default=None, max_length=36)  # 統合版 Q4: シリーズの設定
+
+
+SERIES_COLOR_KEYS = ("base", "base2", "surface", "main", "accent", "text", "text_muted")
+
+
+class SeriesSettings(BaseModel):
+    """統合版 Q4: シリーズの設定（色・書体・ロゴ・BGM・OP・ED・終了画面・サムネイルの型）。
+
+    ファイルは利用者の PC の取り込みを許したフォルダの絶対パス（取り込みと同じ確認をする）。"""
+
+    id: str = Field(default="", max_length=36)
+    name: str = Field(min_length=1, max_length=60)
+    colors: dict[str, str] = Field(default_factory=dict)  # 配色の役割（SERIES_COLOR_KEYS）→ 色
+    heading_font: str = Field(default="", max_length=100)
+    body_font: str = Field(default="", max_length=100)
+    logo_path: str = Field(default="", max_length=1000)
+    bgm_path: str = Field(default="", max_length=1000)
+    op_path: str = Field(default="", max_length=1000)  # 3 秒。台本の 1 文目の発話の直後に置く
+    ed_path: str = Field(default="", max_length=1000)  # 10 秒。最後の台詞の後に置く
+    end_screen: bool = True  # 終了画面（S9）を使う用途で、終了画面を付けるか
+    thumbnail_layout: str = Field(default="", max_length=20)  # S4 の型の名前（空はおすすめ順）
+
+    @field_validator("colors")
+    @classmethod
+    def _colors(cls, v: dict[str, str]) -> dict[str, str]:
+        out = {}
+        for k, c in v.items():
+            if k not in SERIES_COLOR_KEYS:
+                raise ValueError(f"unknown color role {k}")
+            h = c.lstrip("#")
+            if len(h) != 6 or any(x not in "0123456789abcdefABCDEF" for x in h):
+                raise ValueError(f"bad color {c}")
+            out[k] = "#" + h.upper()
+        return out
 
 
 class Violation(BaseModel):

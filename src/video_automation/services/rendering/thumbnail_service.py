@@ -13,7 +13,6 @@ from typing import Any
 from video_automation.app.logging import get_logger
 from video_automation.schemas.provider import TaskType
 from video_automation.schemas.timeline import PreviewRequest
-from video_automation.services.design.profiles import PROFILES
 from video_automation.services.rendering import thumbnail as T
 
 log = get_logger(__name__)
@@ -71,7 +70,11 @@ class ThumbnailService:
         """3 案を作り、おすすめ順のファイルの一覧を返す。"""
         notes = notes if notes is not None else []
         d = await self.design.get(project_id)
-        prof = PROFILES[d.purpose] if d.purpose else None
+        prof = await self.design.profile_for(project_id) if d.purpose else None
+        series = await self.design.series_for(project_id)
+        layouts = list(T.LAYOUTS)
+        if series and series.thumbnail_layout:  # 統合版 Q4: シリーズのサムネイルの型を 1 案目に
+            layouts.sort(key=lambda x: x.name != series.thumbnail_layout)
         tl = await self.timeline.get_timeline(project_id)
         vertical = tl.height > tl.width
         outline = await self.design.outline(project_id)
@@ -84,7 +87,7 @@ class ThumbnailService:
         out_dir = Path(self.settings.data_dir) / "projects" / project_id / "thumbnails"
         results = []
         for i, (frame, text, layout) in enumerate(
-            zip(await self._frames(project_id), texts, T.LAYOUTS, strict=True)
+            zip(await self._frames(project_id), texts, layouts, strict=True)
         ):
             bg = await self.render.preview_frame(
                 project_id, PreviewRequest(frame=frame, width=1920)

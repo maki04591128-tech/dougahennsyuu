@@ -20,6 +20,7 @@ from video_automation.schemas.design import (
     DesignProfile,
     ProjectDesign,
     Purpose,
+    SeriesSettings,
     Violation,
 )
 from video_automation.schemas.subtitle import SubtitleStyle
@@ -34,6 +35,12 @@ from video_automation.services.design.guard import (
     check,
 )
 from video_automation.services.design.profiles import PROFILES
+from video_automation.services.design.series import (
+    SeriesNotFoundError,
+    SeriesStore,
+    apply_series,
+    series_violations,
+)
 
 
 class DesignError(Exception):
@@ -91,9 +98,15 @@ def manifest_record(
 
 
 class DesignService:
-    def __init__(self, db: Database, edits: DesignEditLog | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        edits: DesignEditLog | None = None,
+        series: SeriesStore | None = None,
+    ) -> None:
         self.db = db
         self.edits = edits  # 利用者の直しの記録（統合版 W2）
+        self.series = series  # シリーズの設定（統合版 Q4）
 
     # ---------- 用途 ----------
     @staticmethod
@@ -112,6 +125,7 @@ class DesignService:
             return ProjectDesign(
                 purpose=Purpose(p.purpose) if p.purpose else None,
                 extras=[Component(x) for x in p.design_extras or []],
+                series_id=p.series_id,
             )
 
     async def set(self, project_id: str, design: ProjectDesign) -> ProjectDesign:
@@ -119,8 +133,12 @@ class DesignService:
             p = await self._project(s, project_id)
             p.purpose = design.purpose.value if design.purpose else None
             p.design_extras = [c.value for c in dict.fromkeys(design.extras)]
+            if design.series_id is not None:
+                if design.series_id and self.series is not None:
+                    self.series.get(design.series_id)  # 無いシリーズは付けない
+                p.series_id = design.series_id or None
             await s.commit()
-        return design
+        return await self.get(project_id)
 
     async def direction_record(self, project_id: str) -> dict[str, Any]:
         """演出を適用したときの記録（部品・背景だけの区間・題名・章の区切りなど）。"""
@@ -142,9 +160,22 @@ class DesignService:
             rec = (p.design_manifest or {}).get("direction") or {}
         return dict(rec.get("outline") or {})
 
+    async def series_for(self, project_id: str) -> SeriesSettings | None:
+        """プロジェクトに付けたシリーズの設定（無い・消えたときは None）。"""
+        d = await self.get(project_id)
+        if not d.series_id or self.series is None:
+            return None
+        try:
+            return self.series.get(d.series_id)
+        except SeriesNotFoundError:
+            return None
+
     async def profile_for(self, project_id: str) -> DesignProfile | None:
         d = await self.get(project_id)
-        return PROFILES[d.purpose] if d.purpose else None
+        if not d.purpose:
+            return None
+        s = await self.series_for(project_id)
+        return apply_series(PROFILES[d.purpose], s) if s else PROFILES[d.purpose]
 
     # ---------- 記録 ----------
     async def record(self, project_id: str, source: str, data: dict[str, Any] | None) -> None:
@@ -306,4 +337,10 @@ class DesignService:
                 ],
                 used={c: n for c, n in m.used.items() if n > 0},
             )
-        return check(PROFILES[d.purpose], m, d.extras)
+        s = await self.series_for(project_id)
+        if s is None:
+            return check(PROFILES[d.purpose], m, d.extras)
+        prof = apply_series(PROFILES[d.purpose], s)
+        res = check(prof, m, d.extras)
+        extra = series_violations(prof, s, list(m.colors), set(m.fonts))
+        return res.model_copy(update={"violations": [*res.violations, *extra]})

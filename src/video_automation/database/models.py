@@ -32,6 +32,7 @@ class Project(Base):
     purpose: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 混ぜる指示が明示されたときだけ使う、型の外の部品（Component の値の一覧）
     design_extras: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    series_id: Mapped[str | None] = mapped_column(String(36), nullable=True)  # 統合版 Q4
     # 演出で作った要素の記録（作った処理ごと。書き出し前の検査に使う）
     design_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -476,6 +477,8 @@ class ScriptCharacter(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     role: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # 名前帯の肩書き（統合版 P1）。既存の DB に足せるよう NULL を許す
+    job_title: Mapped[str | None] = mapped_column(String(100), nullable=True, default="")
     personality: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     speaking_style: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     is_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

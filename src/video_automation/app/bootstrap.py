@@ -20,6 +20,7 @@ from video_automation.services.assets.asset_source_service import AssetSourceSer
 from video_automation.services.assets.downloader import Resolver
 from video_automation.services.characters.service import CharacterService
 from video_automation.services.design.edits import DesignEditLog
+from video_automation.services.design.series import SeriesStore
 from video_automation.services.design.service import DesignService
 from video_automation.services.direction.service import DirectionService
 from video_automation.services.llm_tasks.gateway import LLMGateway
@@ -162,6 +163,7 @@ async def build_container(
             Path(settings.data_dir) / "training" / "design_edits.jsonl",
             Path(settings.data_dir) / "design_defaults.json",
         ),
+        SeriesStore(Path(settings.data_dir) / "series"),  # 統合版 Q4
     )
     subtitles = SubtitleService(settings, db, voice, readings, design)
     jobs = JobManager(bus)
