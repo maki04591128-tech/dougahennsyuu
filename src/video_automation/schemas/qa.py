@@ -19,6 +19,7 @@ class QASectionName(StrEnum):
     SUBTITLE = "subtitle"  # P9-03 字幕同期
     VIDEO = "video"  # P9-04 映像品質（書き出し結果）
     LICENSE = "license"  # P9-05 ライセンス
+    VISION = "vision"  # 統合版 Q1 画像を読める LLM での確認（頼んだときだけ。時間がかかる）
 
 
 SECTION_LABEL = {
@@ -27,7 +28,10 @@ SECTION_LABEL = {
     QASectionName.SUBTITLE: "字幕同期",
     QASectionName.VIDEO: "映像品質",
     QASectionName.LICENSE: "ライセンス",
+    QASectionName.VISION: "画像での確認",
 }
+# sections を省いたときに行う検査（画像での確認は LLM を場面の数だけ呼ぶので、頼んだときだけ）
+DEFAULT_SECTIONS = [x for x in QASectionName if x != QASectionName.VISION]
 
 
 class QACheck(BaseModel):
@@ -49,7 +53,8 @@ class QASection(BaseModel):
 class QARequest(BaseModel):
     render_id: str | None = None  # 省略時は最新の成功した書き出し
     script_id: str | None = None  # 省略時は書き出しに使った台本、無ければ最新の台本
-    sections: list[QASectionName] | None = None  # 省略時はすべて
+    sections: list[QASectionName] | None = None  # 省略時は画像での確認以外のすべて
+    vision_model_key: str | None = None  # 画像での確認に使うモデル（省略時は割り当て）
 
 
 class QAReportRead(BaseModel):

@@ -28,7 +28,9 @@ from video_automation.database.models import (
     ScriptSegment,
 )
 from video_automation.integrations.ffmpeg.runner import FFmpeg, FFmpegError
+from video_automation.schemas.provider import TaskType
 from video_automation.schemas.qa import (
+    DEFAULT_SECTIONS,
     SECTION_LABEL,
     QACheck,
     QALevel,
@@ -39,6 +41,8 @@ from video_automation.schemas.qa import (
     QASectionName,
 )
 from video_automation.schemas.timeline import RENDER_PROFILES, RenderProfileName, RenderStatus
+from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
+from video_automation.services.qa import vision
 from video_automation.services.qa.measure import Measurement, measure
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.subtitle.text import default_max_chars
@@ -96,7 +100,9 @@ class QAService:
         timeline: TimelineService,
         subtitles: SubtitleService,
         jobs: JobManager,
+        llm: LLMGateway | None = None,
     ) -> None:
+        self.llm = llm  # 画像を読める LLM での確認（統合版 Q1）
         self.settings = settings
         self.db = db
         self.ffmpeg = ffmpeg
@@ -183,7 +189,7 @@ class QAService:
                 script_id = latest.id if latest else None
             fps = p.fps_num / p.fps_den
             width, height = p.width, p.height
-        wanted = req.sections or list(QASectionName)
+        wanted = req.sections or DEFAULT_SECTIONS
         steps: list[tuple[QASectionName, Callable[[], Awaitable[QASection]]]] = [
             (QASectionName.PROJECT, lambda: self._project(project_id, script_id)),
             (QASectionName.AUDIO, lambda: self._audio(script_id)),
@@ -193,6 +199,10 @@ class QAService:
             ),
             (QASectionName.VIDEO, lambda: self._video(project_id, render, fps)),
             (QASectionName.LICENSE, lambda: self._license(project_id)),
+            (
+                QASectionName.VISION,
+                lambda: self._vision(project_id, render, script_id, req.vision_model_key),
+            ),
         ]
         sections: list[QASection] = []
         todo = [(n, f) for n, f in steps if n in wanted]
@@ -844,6 +854,118 @@ class QAService:
         )
 
     # ---------- P9-05 ライセンス ----------
+    async def _vision_context(
+        self, project_id: str, script_id: str | None
+    ) -> tuple[dict[str, str], list[tuple[int, int, str]]]:
+        """演出が作ったクリップの部品と、台本の発話（開始・終わりのフレームと文）。"""
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            rec = ((p.design_manifest or {}).get("direction") or {}) if p else {}
+            rows = (
+                list(
+                    (
+                        await s.execute(
+                            select(ScriptSegment)
+                            .where(ScriptSegment.script_id == script_id)
+                            .order_by(ScriptSegment.sequence)
+                        )
+                    ).scalars()
+                )
+                if script_id
+                else []
+            )
+        segs = [
+            (x.start_frame, x.end_frame, x.text)
+            for x in rows
+            if x.start_frame is not None and x.end_frame is not None
+        ]
+        return dict(rec.get("clips") or {}), segs
+
+    async def _vision(
+        self,
+        project_id: str,
+        render: RenderJob | None,
+        script_id: str | None,
+        model_key: str | None,
+    ) -> QASection:
+        """書き出した動画の場面ごとに 1 枚、画像を読める LLM に 4 つの質問をする（統合版 Q1）。
+        LLM の答えは確かではないので、はいの答えは warning にする。"""
+        name = QASectionName.VISION
+
+        def skip(code: str, msg: str) -> QASection:
+            return self._section(
+                name, [QACheck(level=QALevel.INFO, code=code, message=msg)], skipped=True
+            )
+
+        if render is None or not render.output_path:
+            return skip("no_render", "書き出した動画がありません")
+        path = self.settings.data_dir / render.output_path
+        if not path.is_file():
+            return skip("no_file", f"書き出したファイルがありません: {render.output_path}")
+        if self.llm is None:
+            return skip("no_llm", "画像を読めるモデルを使えません")
+        try:
+            await self.llm.resolve(TaskType.IMAGE_UNDERSTANDING, model_key)
+        except LLMError:
+            return skip(
+                "no_model", "画像を読めるモデルが割り当てられていません（モデルの設定で選べます）"
+            )
+        tl = await self.timeline.get_timeline(project_id)
+        fps = tl.fps_num / tl.fps_den
+        roles, segs = await self._vision_context(project_id, script_id)
+        found = vision.scenes(tl.clips, roles)
+        if not found:
+            return skip("no_scenes", "演出の場面（題名・カード・図表・画像）がありません")
+        checks: list[QACheck] = []
+        asked = 0
+        for sc in found:
+            t = sc.at / fps
+            said = " ".join(x for a, b, x in segs if a < sc.end and b > sc.start)[:600]
+            png = await self.ffmpeg.run_capture(
+                [
+                    "-ss",
+                    f"{t:.3f}",
+                    "-i",
+                    str(path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=1024:-2",
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "png",
+                    "-",
+                ],
+                timeout=60,
+            )
+            try:
+                ans = await vision.ask(self.llm, png, said, model_key)
+            except LLMError as exc:
+                checks.append(
+                    QACheck(
+                        level=QALevel.INFO,
+                        code="vision_failed",
+                        message=f"答えを読めませんでした: {type(exc).__name__}",
+                        at_sec=round(t, 2),
+                    )
+                )
+                continue
+            asked += 1
+            for key, (yes, where) in ans.items():
+                if key == "chart_mismatch" and sc.role != "chart":
+                    continue  # 図表の無い場面の答えは使わない
+                if yes:
+                    checks.append(
+                        QACheck(
+                            level=QALevel.WARNING,
+                            code=key,
+                            message=f"{vision.LABEL[key]}" + (f"（{where}）" if where else ""),
+                            at_sec=round(t, 2),
+                        )
+                    )
+        return self._section(name, checks, metrics={"scenes": len(found), "asked": asked})
+
     async def _license(self, project_id: str) -> QASection:
         tl = await self.timeline.get_timeline(project_id)
         used = {c.asset_id for c in tl.clips}
