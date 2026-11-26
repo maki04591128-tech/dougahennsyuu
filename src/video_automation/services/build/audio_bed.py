@@ -23,7 +23,42 @@ CHORD_SEC = 4.0
 BGM_VOLUME = 0.7  # 素の音量は平均 −29 dB。声（平均 −20 dB 前後）より 12 dB 以上小さくなる
 WHOOSH_VOLUME = 2.0  # ピーク −15 dB 前後（声のピークより 8 dB ほど小さく）
 POP_VOLUME = 0.4  # 同じくピーク −14 dB 前後
-WHOOSH_LEAD_SEC = 0.1  # 切り替えより少し前に鳴らす（音が先に聞こえると切り替えが自然）
+# 統合版 E3: 入りの種類ごとの「シュッ」の立ち上がり（30fps のフレーム数）。
+# 音の山は入りの動きの真ん中 +1f に合わせる。dissolve・dip には付けない
+WHOOSH_LEAD_FRAMES = {"zoom": 15, "slide": 8, "swipe": 5, "whip": 4, "wipe": 8, "panel": 8}
+POP_PRESETS = frozenset({"pop_in_soft", "pop_in", "pop_express"})
+# 入りのプリセットの長さ（30fps。motion.py の値）
+ENTRANCE_FRAMES = {"pop_in_soft": 14, "pop_in": 16, "pop_express": 12}
+
+
+def entrance_frames(preset: str | None, default: int) -> int:
+    """入りの長さ（30fps）。スライドは 16f、分からないときは用途の入りの長さ。"""
+    if preset in ENTRANCE_FRAMES:
+        return ENTRANCE_FRAMES[preset]
+    if preset and preset.startswith("slide_in"):
+        return 16
+    return default
+
+
+def whoosh_kind(preset: str | None) -> str | None:
+    """プリセット名 → 効果音の種類（E3）。音を付けない入りは None。"""
+    if not preset:
+        return "panel"
+    if preset in POP_PRESETS or preset.startswith("zoom"):
+        return "zoom"
+    for k in ("slide", "swipe", "whip", "wipe"):
+        if preset.startswith(k):
+            return k
+    if preset in ("dissolve", "dip_to_black", "fade"):
+        return None
+    return "panel"
+
+
+def whoosh_start(entrance_start: int, entrance_frames: int, kind: str, fps: float) -> int:
+    """「シュッ」を置く始まりのフレーム。山（立ち上がりの終わり）を入りの真ん中 +1f に置く。"""
+    lead = round(WHOOSH_LEAD_FRAMES[kind] * fps / 30)
+    peak = entrance_start + entrance_frames // 2 + round(fps / 30)
+    return max(0, peak - lead)
 
 
 def _chord_expr(freqs: tuple[float, ...]) -> str:
@@ -53,17 +88,19 @@ async def make_bgm(ffmpeg: FFmpeg, out: Path, duration_sec: float) -> Path:
     return out
 
 
-async def make_whoosh(ffmpeg: FFmpeg, out: Path) -> Path:
-    """場面の切り替えの「シュッ」（0.45 秒）。"""
+async def make_whoosh(ffmpeg: FFmpeg, out: Path, lead_sec: float = 0.18) -> Path:
+    """場面の切り替えの「シュッ」。立ち上がり lead_sec のあと 0.25 秒で消える（E3）。"""
     out.parent.mkdir(parents=True, exist_ok=True)
+    lead = min(max(lead_sec, 0.05), 1.0)
     await ffmpeg.run(
         [
             "-f",
             "lavfi",
             "-i",
-            "anoisesrc=color=pink:d=0.45:a=0.6:r=48000",
+            f"anoisesrc=color=pink:d={lead + 0.27:.3f}:a=0.6:r=48000",
             "-af",
-            "bandpass=f=1800:w=1.2,afade=t=in:d=0.18,afade=t=out:st=0.2:d=0.25,"
+            f"bandpass=f=1800:w=1.2,afade=t=in:d={lead:.3f},"
+            f"afade=t=out:st={lead + 0.02:.3f}:d=0.25,"
             "aformat=channel_layouts=stereo",
             str(out),
         ]

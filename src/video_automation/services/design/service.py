@@ -4,7 +4,7 @@ from fractions import Fraction
 from typing import Any
 
 from video_automation.database.database import Database
-from video_automation.database.models import AudioFile, Project, ScriptSegment, Subtitle
+from video_automation.database.models import AudioFile, Clip, Project, ScriptSegment, Subtitle
 from video_automation.schemas.design import (
     ClassifyRequest,
     ClassifyResult,
@@ -161,7 +161,23 @@ class DesignService:
                     .where(ScriptSegment.id.in_(seg_ids))
                 )
                 audio_sec = {sid: float(d) for sid, d in (await s.execute(q)).all() if d}
+            # 切り替え（入りのトランジション）の時刻と種類、動画の長さ（統合版 E1）
+            clip_rows = (
+                await s.execute(
+                    select(Clip.start_frame, Clip.end_frame, Clip.animation).where(
+                        Clip.project_id == project_id
+                    )
+                )
+            ).all()
         m = DesignManifest(vertical=h > w)
+        for st, en, anim in clip_rows:
+            m.duration_sec = max(m.duration_sec, float(Fraction(en) / fps))
+            tran = (anim or {}).get("transition_in")
+            if tran:
+                m.transitions.append(
+                    (float(Fraction(st) / fps), str(tran.get("type") or "dissolve"))
+                )
+        m.transitions.sort()
         for rec in records.values():
             for c, n in (rec.get("used") or {}).items():
                 m.add(Component(c), int(n))

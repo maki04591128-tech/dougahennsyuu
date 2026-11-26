@@ -137,7 +137,8 @@ def clip_filters(
     wins: list[tuple[float, float]] = []
     op = tr("opacity")
     if not is_static(op, 1.0):
-        alpha_terms.append(f"({track_expr(op, fps, gt, 1.0)})")
+        # 弾む緩急（easeOutBack）で 1 を超えると透明度が回り込むので 0..1 に収める
+        alpha_terms.append(f"min(max({track_expr(op, fps, gt, 1.0)},0),1)")
         wins += windows(op, fps, lambda v: v < 1.0, clip_sec)
     if tran and d > 0:
         half = d / 2 if tran.type == TransitionType.DIP_TO_BLACK else d

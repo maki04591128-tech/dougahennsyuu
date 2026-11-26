@@ -74,6 +74,8 @@ class DesignManifest:
     placements: list[Placement] = field(default_factory=list)
     vertical: bool = False
     empty_spans: list[tuple[float, float]] = field(default_factory=list)  # 背景だけの区間（秒）
+    transitions: list[tuple[float, str]] = field(default_factory=list)  # (秒, 切り替えの種類)
+    duration_sec: float = 0.0
 
     def add(self, c: Component, n: int = 1) -> None:
         self.used[c] = self.used.get(c, 0) + n
@@ -167,6 +169,67 @@ def hue_groups(colors: list[str], step: float = 30.0) -> list[float]:
     return groups
 
 
+# 穏やかな切り替え（統合版 E1 の「強い切り替え」に数えない）
+SOFT_TRANSITIONS = frozenset({"dissolve", "dip_to_black"})
+
+
+def _max_per_minute(times: list[float]) -> int:
+    """どの 60 秒の区間にも入る数の最大。"""
+    best, j = 0, 0
+    for i, t in enumerate(times):
+        while times[j] <= t - 60.0:
+            j += 1
+        best = max(best, i - j + 1)
+    return best
+
+
+def transition_rate(profile: DesignProfile, m: DesignManifest) -> list[Violation]:
+    """切り替えの数の上限（統合版 E1）。1 分あたりの数と、強い切り替えの 1 本あたりの数。"""
+    spec = profile.motion
+    out: list[Violation] = []
+    times = [t for t, _ in m.transitions]
+    strong = [t for t, k in m.transitions if k not in SOFT_TRANSITIONS]
+    label = profile.label
+    if spec.transitions_per_min is not None:
+        n = _max_per_minute(times)
+        if n > spec.transitions_per_min:
+            out.append(
+                Violation(
+                    code="transition_rate",
+                    severity="warning",
+                    message=(
+                        f"切り替えが多すぎます（1 分に {n} 回）。「{label}」は 1 分に "
+                        f"{spec.transitions_per_min} 回までにすると落ち着いて見られます"
+                    ),
+                )
+            )
+    if spec.strong_per_min is not None:
+        n = _max_per_minute(strong)
+        if n > spec.strong_per_min:
+            out.append(
+                Violation(
+                    code="strong_transition",
+                    severity="warning",
+                    message=(
+                        f"強い切り替え（スライド・ワイプ・ズーム）が 1 分に {n} 回あります。"
+                        f"「{label}」は {spec.strong_per_min} 回までです"
+                    ),
+                )
+            )
+    if spec.strong_total is not None and len(strong) > spec.strong_total:
+        out.append(
+            Violation(
+                code="strong_transition",
+                severity="warning",
+                message=(
+                    f"強い切り替えが {len(strong)} 回あります。「{label}」は 1 本で "
+                    f"{spec.strong_total} 回まで（それ以外はディゾルブかカット）にします"
+                ),
+            )
+        )
+    return out
+
+
 def check(
     profile: DesignProfile, m: DesignManifest, extras: list[Component] | None = None
 ) -> DesignCheck:
@@ -206,6 +269,7 @@ def check(
             )
         )
     out += palette_contrast(profile)
+    out += transition_rate(profile, m)
     hues = hue_groups(m.colors)
     if len(hues) > profile.max_hues:
         out.append(

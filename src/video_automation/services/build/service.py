@@ -952,7 +952,8 @@ class BuildService:
         )
         notes = ["BGM を付けました（声より小さく）"]
         # 効果音の時刻: カード（場面の切り替え）の出始め・「ポン」と出る数値のテロップ
-        cue: list[tuple[int, str]] = []
+        # (置く始まりのフレーム, 種類, 「シュッ」の立ち上がりのフレーム数)
+        cue: list[tuple[int, str, int]] = []
         fig = tracks.get("演出・図")
         if fig is not None:
             clips = sorted(
@@ -961,14 +962,22 @@ class BuildService:
             prev_end = -1
             for x in clips:
                 if x.start_frame != prev_end:  # 同じカードの項目の切り替えは数えない
-                    cue.append((x.start_frame, "whoosh"))
+                    pre = x.animation.preset if x.animation else None
+                    kind = audio_bed.whoosh_kind(pre)
+                    if kind is not None:
+                        lead = round(audio_bed.WHOOSH_LEAD_FRAMES[kind] * fps / 30)
+                        n_in = round(
+                            audio_bed.entrance_frames(pre, prof.motion.in_frames) * fps / 30
+                        )
+                        st = audio_bed.whoosh_start(x.start_frame, n_in, kind, fps)
+                        cue.append((st, "whoosh", lead))
                 prev_end = x.end_frame
         txt = tracks.get("演出・文字")
         if txt is not None:
             for x in tl.clips:
                 anim = x.animation.preset if x.animation is not None else None
-                if x.track_id == txt.id and anim == "pop_in":
-                    cue.append((x.start_frame + round(fps * 0.25), "pop"))  # 止まる瞬間
+                if x.track_id == txt.id and anim in audio_bed.POP_PRESETS:
+                    cue.append((x.start_frame + round(fps * 0.25), "pop", 0))  # 止まる瞬間
         limit = prof.allowance(Component.SFX)
         cue.sort()
         if limit == 0:
@@ -976,22 +985,21 @@ class BuildService:
         elif limit > 0:
             cue = cue[:limit]
         if cue:
-            wh = await register(
-                await audio_bed.make_whoosh(c.ffmpeg, work / f"sfx_whoosh_{uuid4().hex[:6]}.wav"),
-                "効果音（切り替え）",
-            )
+            whooshes: dict[int, AssetRead] = {}  # 立ち上がりの長さごとに 1 つ
+            for lead in sorted({ld for _, k, ld in cue if k == "whoosh"}):
+                whooshes[lead] = await register(
+                    await audio_bed.make_whoosh(
+                        c.ffmpeg, work / f"sfx_whoosh_{uuid4().hex[:6]}.wav", lead / fps
+                    ),
+                    "効果音（切り替え）",
+                )
             pop = await register(
                 await audio_bed.make_pop(c.ffmpeg, work / f"sfx_pop_{uuid4().hex[:6]}.wav"),
                 "効果音（強調）",
             )
             last = -(10**9)
-            for frame, kind in cue:
-                a = wh if kind == "whoosh" else pop
-                start = (
-                    max(0, frame - round(fps * audio_bed.WHOOSH_LEAD_SEC))
-                    if kind == "whoosh"
-                    else frame
-                )
+            for start, kind, lead in cue:
+                a = whooshes[lead] if kind == "whoosh" else pop
                 length = max(1, int((a.duration_sec or 0.3) * fps))  # 素材の長さを超えない
                 if start < last or start + length > total:  # 重なる・最後をはみ出す音は置かない
                     continue

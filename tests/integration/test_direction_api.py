@@ -291,7 +291,7 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
     presets = [
         (x.get("animation") or {}).get("preset") for x in tl["clips"] if x["track_id"] == txt
     ]
-    assert presets.count("pop_in") == 2, presets
+    assert presets.count("pop_in_soft") == 2, presets  # 解説の pop は控えめ（統合版 B2）
     rec = (await c.app.state.container.design.manifest(pid)).colors
     assert "#4CB3E6" in rec and "#F2B544" in rec
 
@@ -331,7 +331,9 @@ async def test_long_chart_is_extended_by_repeating_its_still_part(dclient, monke
         assert a["end_frame"] == b["start_frame"]  # 隙間なくつながる
     assert fig[0]["source_in_frame"] == 0 and all(x["source_in_frame"] > 0 for x in fig[1:])
     assert fig[-1]["end_frame"] == tl["duration_frames"]
-    assert fig[0]["fade_out_frames"] == 0 and fig[-1]["fade_out_frames"] > 0
+    # 出（不透明度 1→0）は最後の 1 つだけ（統合版 A2）
+    assert fig[0]["animation"] is None or fig[0]["animation"]["keyframes"][-1]["opacity"] != 0
+    assert fig[-1]["animation"]["keyframes"][-1]["opacity"] == 0.0
     rec = (await c.get(f"/projects/{pid}/design")).json()
     chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
     assert not any(v["code"] == "empty_screen" for v in chk["violations"]), (rec, chk)

@@ -11,6 +11,7 @@ from video_automation.schemas.design import (
     Component,
     DesignProfile,
     Family,
+    MotionSpec,
     Palette,
     ProfileSummary,
     Purpose,
@@ -138,6 +139,60 @@ _UD = Typography(body_font="BIZ UDPGothic", heading_font="BIZ UDPGothic", max_fo
 _GOTHIC = Typography(body_font="Meiryo", heading_font="Meiryo", max_fonts=2)
 
 
+# ------------------------------------------------ 動き（統合版 2.1。用途ごとに 1 つ）
+def _mv(
+    io: tuple[int, int],
+    pop: str,
+    far: bool,
+    tran: int | None,
+    strong: tuple[int | None, int | None],
+    interval: float | None,
+    stepped: int = 0,
+    blur: bool = False,
+) -> MotionSpec:
+    return MotionSpec(
+        in_frames=io[0],
+        out_frames=io[1],
+        pop=pop,
+        far_slide=far,
+        transitions_per_min=tran,
+        strong_per_min=strong[0],
+        strong_total=strong[1],
+        change_interval_sec=interval,
+        stepped=stepped,
+        motion_blur=blur,
+    )
+
+
+_SOFT, _POPN, _EXPR = "pop_in_soft", "pop_in", "pop_express"
+_CALM_MV = _mv((12, 6), _SOFT, False, 1, (0, 0), None)
+_INFO_MV = _mv((10, 6), _SOFT, False, 1, (1, 6), 8.0)
+MOTION: dict[Purpose, MotionSpec] = {
+    Purpose.SUBTITLE: _CALM_MV,
+    Purpose.INTERVIEW: _CALM_MV,
+    Purpose.DOCUMENTARY: _CALM_MV,
+    Purpose.STORY: _CALM_MV,
+    Purpose.PODCAST: _CALM_MV,
+    Purpose.EXPLAINER: _INFO_MV,
+    Purpose.LECTURE: _INFO_MV,
+    Purpose.TUTORIAL: _INFO_MV,
+    Purpose.RECIPE: _INFO_MV,
+    Purpose.NEWS: _mv((10, 6), _SOFT, False, 1, (0, 0), 8.0),
+    Purpose.CORPORATE: _INFO_MV,
+    Purpose.SHORT: _mv((8, 5), _POPN, True, 0, (3, None), 3.0, blur=True),
+    Purpose.GAME: _mv((8, 5), _POPN, True, 1, (3, None), 5.0, blur=True),
+    Purpose.VLOG: _mv((8, 5), _POPN, True, 1, (3, None), 5.0),
+    Purpose.RANKING: _mv((8, 5), _POPN, True, 1, (3, None), 5.0, blur=True),
+    Purpose.PRODUCT: _mv((8, 5), _POPN, True, 1, (3, None), 5.0, blur=True),
+    Purpose.PROMO: _mv((8, 5), _POPN, True, 1, (3, None), 5.0, blur=True),
+    Purpose.EVENT: _mv((8, 5), _POPN, True, 1, (3, None), 5.0, blur=True),
+    Purpose.KIDS: _mv((8, 5), _POPN, True, 1, (2, None), 5.0, stepped=2),
+    Purpose.MV: _mv((10, 6), _EXPR, True, None, (None, None), None, stepped=2, blur=True),
+    Purpose.LYRIC: _mv((10, 6), _EXPR, True, None, (None, None), None, stepped=2, blur=True),
+    Purpose.TRAILER: _mv((10, 6), _EXPR, True, None, (None, None), None, blur=True),
+}
+
+
 def _pal(
     base: str,
     base2: str,
@@ -235,6 +290,7 @@ def _make(
         subtitle=subtitle or _SUB[family],
         safe_area=_VERTICAL if orientation == "vertical" else _LANDSCAPE,
         components=comps,
+        motion=MOTION[purpose],
         keywords=keywords,
         max_empty_sec=_EMPTY[family],
     )
