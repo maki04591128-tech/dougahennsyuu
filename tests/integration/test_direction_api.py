@@ -172,8 +172,14 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     assert fig[-1]["end_frame"] == tl["duration_frames"]
     assert all(-0.1 < x["transform"]["y"] < 0 for x in fig[1:])  # 字幕の上の領域
     txt = by_track["演出・文字"]
-    assert len(txt) == 2  # タイトル + テロップ 1 つ
-    kw = max(txt, key=lambda x: x["start_frame"])
+    roles = await c.app.state.container.design.clip_roles(pid)
+    # タイトル + テロップ 1 つ + まとめの 2 項目目（統合版 D1: 新しい項目は別の絵で重ねて出す）
+    assert sorted(roles[x["id"]] for x in txt) == ["card", "keyword", "title_card"]
+    item = next(x for x in txt if roles[x["id"]] == "card")
+    assert (item["start_frame"], item["end_frame"]) == (fig[3]["start_frame"], fig[3]["end_frame"])
+    keys = item["animation"]["keyframes"]
+    assert keys[0]["opacity"] == 0 and abs(keys[0]["y"] - 16 / 1080) < 1e-6 and keys[1]["y"] == 0
+    kw = next(x for x in txt if roles[x["id"]] == "keyword")
     # 右上（左上は書き出し時の章の見出しの場所なので重ねない）
     assert kw["transform"]["y"] < -0.3 and kw["transform"]["x"] > 0.2
     # 背景は Blender の動く背景（8 秒で継ぎ目なく繰り返す）を並べて全体を覆う

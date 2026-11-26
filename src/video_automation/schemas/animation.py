@@ -215,7 +215,7 @@ class InfographicRequest(BaseModel):
     """Blender で簡単な図表アニメーション（横棒グラフ・数値のカウントアップ）を作る。"""
 
     project_id: str
-    kind: Literal["bar", "counter"] = "bar"
+    kind: Literal["bar", "line", "donut", "dots", "counter"] = "bar"
     title: str = Field(default="", max_length=60)
     labels: list[str] = Field(default_factory=list, max_length=8)
     values: list[float] = Field(min_length=1, max_length=8)
@@ -278,6 +278,10 @@ class CardRequest(BaseModel):
     scale: float = Field(default=1.0, ge=0.5, le=2.0)  # 文字の大きさの倍率
     # 本文を先頭から何項目まで描くか（順に出す演出用）。None は全部。大きさは全部のときと同じ
     reveal: int | None = Field(default=None, ge=0, le=6)
+    # 統合版 D1: 新しい項目を別の透過 PNG で重ねて動かす。only_item はその項目（0 始まり）だけを
+    # 描き（パネル・見出しなし）、hide_item はその項目だけ描かない。大きさはどちらも同じ
+    only_item: int | None = Field(default=None, ge=0, le=5)
+    hide_item: int | None = Field(default=None, ge=0, le=5)
     # 見出しの左に添える絵記号（pictogram.ICONS の名前）。None は付けない
     icon: str | None = Field(default=None, max_length=20)
     # 書体（ファミリー名。用途の型の見出し書体）。None は既定の書体

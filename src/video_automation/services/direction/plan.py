@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from video_automation.schemas.direction import MAIN_KINDS, DirectionPlan, Shot, ShotKind
+from video_automation.services.direction.charts import is_per_hundred
 from video_automation.services.script.persona import fix_simplified
 from video_automation.services.voice.reading import UNITS, emphasis_terms
 
@@ -264,7 +265,10 @@ def normalize(
                 continue
         elif s.kind == ShotKind.CHART:
             k = len(s.values)
-            if k < 2 or len(s.labels) != k:
+            said = "".join(lines[s.from_line - 1 : s.to_line or s.from_line])
+            if k == 1 and is_per_hundred(s.values, s.unit, said):  # 100 点の図（S10）
+                s.labels = s.labels[:1] or ["100人中"]
+            elif k < 2 or len(s.labels) != k:
                 notes.append(f"{s.from_line}: 項目と数値の数が合わない図表を外しました")
                 continue
             missing = [_num_str(v) for v in s.values if _num_str(v) not in all_text]
