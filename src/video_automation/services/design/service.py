@@ -29,6 +29,7 @@ from video_automation.services.design.guard import (
     DesignManifest,
     Placement,
     SubtitleUse,
+    TextUse,
     check,
 )
 from video_automation.services.design.profiles import PROFILES
@@ -60,8 +61,11 @@ def manifest_record(
     placements: list[Placement] | None = None,
     empty_spans: list[tuple[float, float]] | None = None,
     outline: dict[str, Any] | None = None,
+    texts: list[TextUse] | None = None,
 ) -> dict[str, Any]:
-    """演出の処理が保存する記録（JSON）。outline は題名・章の区切り（検査には使わない）。"""
+    """演出の処理が保存する記録（JSON）。outline は題名・章の区切り（検査には使わない）。
+
+    texts は画面に出した文字（カード・テロップ）の大きさと表示の時間（統合版 T39・T40・T52）。"""
     rec: dict[str, Any] = {
         "used": {c.value: n for c, n in used.items() if n},
         "colors": sorted(set(c.upper() for c in colors)),
@@ -74,6 +78,11 @@ def manifest_record(
     }
     if outline is not None:
         rec["outline"] = outline
+    if texts:
+        rec["texts"] = [
+            [t.kind, [round(x, 4) for x in t.sizes], t.chars, round(t.start, 3), round(t.end, 3)]
+            for t in texts
+        ]
     return rec
 
 
@@ -209,6 +218,8 @@ class DesignService:
             for comp, x0, y0, x1, y1 in rec.get("placements") or []:
                 m.placements.append(Placement(Component(comp), x0, y0, x1, y1))
             m.empty_spans.extend((a, b) for a, b in rec.get("empty_spans") or [])
+            for kind, sizes, chars, a, b in rec.get("texts") or []:
+                m.texts.append(TextUse(kind, list(sizes), int(chars), float(a), float(b)))
         if rows and subtitle_style is not None and subtitle_style.mode == "lyric":
             # 歌詞として出す（字幕の大きさ・行の長さ・速さの決まりは当てない）
             m.add(Component.LYRIC_TEXT, len(rows))

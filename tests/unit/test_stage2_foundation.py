@@ -277,3 +277,33 @@ def test_line_break_rules_and_digits():
         not (a.endswith("…") and b.startswith("…")) for a, b in zip(lines, lines[1:], strict=False)
     )
     assert all(not ln.endswith("「") for ln in wrap_lines("彼は「すごい」と言ったのだよ本当に", 4))
+
+
+# ---------------------------------------------------------------- T39・T40・T52 文字の検査
+
+
+def _text_codes(purpose, texts, sub_ratio=0.054):
+    from video_automation.services.design.guard import DesignManifest, SubtitleUse, text_checks
+
+    m = DesignManifest(texts=texts, subtitle=SubtitleUse(sub_ratio, "fitted", "Meiryo"))
+    return {v.code for v in text_checks(PROFILES[purpose], m)}
+
+
+def test_text_checks():
+    from video_automation.services.design.guard import TextUse
+
+    ok = TextUse("card", [0.06, 0.045], 20, 0.0, 6.0)  # 20 字を 6 秒（解説は 1 秒 7 字）
+    assert _text_codes(Purpose.EXPLAINER, [ok]) == set()
+    small = TextUse("keyword", [0.02], 4, 0.0, 3.0)
+    assert "text_too_small" in _text_codes(Purpose.EXPLAINER, [small])
+    assert "text_too_small" in _text_codes(Purpose.EXPLAINER, [], sub_ratio=0.03)
+    quick = TextUse("card", [0.06], 40, 0.0, 2.0)  # 40 字を 2 秒
+    assert "text_too_short" in _text_codes(Purpose.EXPLAINER, [quick])
+    assert "text_too_short" not in _text_codes(Purpose.MV, [quick])  # 歌詞の用途は除く
+    many = [
+        TextUse("card", [0.09, 0.06], 10, 0.0, 9.0),
+        TextUse("keyword", [0.045], 4, 1.0, 9.0),
+        TextUse("subtitle_card", [0.038], 6, 1.0, 9.0),
+    ]
+    assert "text_sizes" in _text_codes(Purpose.EXPLAINER, many)  # 字幕と合わせて 5 種類
+    assert "text_sizes" not in _text_codes(Purpose.EXPLAINER, many[:2])

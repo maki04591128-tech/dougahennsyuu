@@ -55,7 +55,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.services.animation.entrance import element_animation, slide_preset
-from video_automation.services.design.guard import Placement, is_dark
+from video_automation.services.design.guard import Placement, TextUse, is_dark
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction.plan import (
@@ -67,6 +67,7 @@ from video_automation.services.direction.plan import (
     rule_plan,
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
+from video_automation.services.rendering.card import card_layout
 from video_automation.services.rendering.pictogram import pick_icon
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.skills.library import SkillLibrary
@@ -75,6 +76,7 @@ from video_automation.services.timeline.timeline_service import (
     TimelineNotFoundError,
     TimelineService,
 )
+from video_automation.services.voice.reading import emphasis_terms
 
 log = get_logger("direction")
 
@@ -86,6 +88,40 @@ STRIP_TOP = 0.025  # テロップの上端
 SIDE = 0.035  # テロップの左右の余白（幅比）
 # 立ち絵があるとき、図・カードを置ける横の範囲（幅比）。左右の端は立ち絵の列（layout-no-overlap）
 TACHIE_MAIN_W = 0.56
+_GAP_WORD = re.compile(r"[一-龥々ァ-ヴーA-Za-z0-9０-９]{2,10}")
+_GAP_NUMBER = re.compile(
+    r"約?[0-9０-９][0-9０-９.,/]*(?:[万億兆千]|[A-Za-z%％℃]+|倍|円|人|個|回|秒|分|時間|日|年)+"
+)
+_PARTICLES = set("がをにはのでともへやか")
+_GAP_STOP = {"それ", "これ", "あれ", "ここ", "そこ", "本当", "今日", "大丈夫", "一緒", "次回"}
+
+
+def gap_keyword(text: str, names: tuple[str, ...] = ()) -> str:
+    """空いた時間に出すテロップの語。その発話の中の語だけを使う（統合版 Q2 の補い）。
+
+    数値と単位（「約12万km」）、かぎかっこの語、無ければ漢字・カタカナの最も長い語
+    （送り仮名が続く語「色合（わせ）」は語の途中なので使わない）。"""
+    m = _GAP_NUMBER.search(text)
+    if m:
+        return m.group(0)[:12]
+    terms = [t for t in emphasis_terms(text) if not re.search(r"\d", t)]
+    if terms:
+        return terms[0][:12]
+    words = []
+    for m in _GAP_WORD.finditer(text):
+        w, nxt = m.group(0), text[m.end() : m.end() + 1]
+        if w in _GAP_STOP or any(w in n or n in w for n in names):
+            continue
+        if nxt and "ぁ" <= nxt <= "ゟ" and nxt not in _PARTICLES:
+            continue
+        words.append(w)
+    return max(words, key=len) if words else ""
+
+
+def names_of(lines: list[Any]) -> tuple[str, ...]:
+    return tuple({x.speaker for x in lines if getattr(x, "speaker", "")})
+
+
 TRACKS = ("演出・背景", "演出・図", "演出・文字")
 TACHIE_TRACK = "立ち絵"  # characters.service.TRACK
 RECORDING_TRACK = "画面録画"  # 画面録画を中央の枠に置くトラック（build.service）
@@ -223,6 +259,26 @@ def native_transform(
     s = max(aw / cw, ah / ch)
     k = native_scale(aw, ah, cw, ch, max_h, max_w)
     return ClipTransform(fit=FitMode.FIT, scale=round(s * k, 4), x=cx - 0.5, y=cy - 0.5)
+
+
+def text_use(
+    kind: str,
+    req: CardRequest,
+    a: AssetRead,
+    cw: int,
+    ch: int,
+    start: float,
+    end: float,
+    max_h: float = 1.0,
+    max_w: float = 0.92,
+) -> TextUse:
+    """カード・テロップの文字の、画面での大きさ（短辺比）と表示の秒（統合版 T39・T40・T52）。"""
+    layout = card_layout(req, cw, ch)
+    k = native_scale(a.width or layout.width, a.height or layout.height, cw, ch, max_h, max_w)
+    unit = min(cw, ch)
+    sizes = sorted({round(ln.size * k / unit, 4) for ln in layout.lines})
+    chars = sum(len(ln.text) for ln in layout.lines)
+    return TextUse(kind, sizes, chars, start, end)
 
 
 def native_scale(
@@ -427,6 +483,45 @@ class DirectionService:
         )
 
     # ---------- 適用 ----------
+    @staticmethod
+    def _fill_gaps(
+        cmds: list[Any],
+        kws: list[Shot],
+        lines: list[_Line],
+        prof: DesignProfile | None,
+        fps: float,
+        title_end: int,
+        names: tuple[str, ...],
+    ) -> list[Shot]:
+        """画面が変わらない時間が用途の「変化の間隔の最大」（統合版 Q2）を超える所に、
+        その発話の語のテロップを足す（実機: 縦型ショートで 8 秒間、画面が変わらなかった）。
+
+        語はその発話から取る（数値と単位・かぎかっこの語、無ければ漢字・カタカナの最も長い語）。
+        台本に無い語は作らない。"""
+        if prof is None or prof.motion.change_interval_sec is None:
+            return []
+        if not prof.allows(Component.KEYWORD):
+            return []
+        limit = round(prof.motion.change_interval_sec * fps)
+        times = {c.start_frame for c in cmds if isinstance(c, AddClip)} | {
+            lines[k.from_line - 1].start for k in kws
+        }
+        times.add(title_end)
+        out: list[Shot] = []
+        last = title_end
+        taken = {k.from_line for k in kws}
+        for i, ln in enumerate(lines, 1):
+            nearby = [t for t in times if last < t <= ln.start]
+            if nearby:
+                last = max(nearby)
+            if ln.start - last < limit * 0.6 or i in taken:
+                continue
+            word = gap_keyword(ln.text, names)
+            if word:
+                out.append(Shot(kind=ShotKind.KEYWORD, from_line=i, text=word))
+                last = ln.start
+        return out
+
     async def _background(
         self, project_id: str, style: str, w: int, h: int, prof: DesignProfile | None = None
     ) -> AssetRead:
@@ -495,6 +590,7 @@ class DirectionService:
         main_w = TACHIE_MAIN_W if tachie else 0.92
         used: dict[Component, int] = {}
         boxes: list[Placement] = []
+        texts: list[TextUse] = []
 
         def use(c: Component, n: int = 1) -> None:
             used[c] = used.get(c, 0) + n
@@ -651,19 +747,21 @@ class DirectionService:
             t_cid = add(txt_t, t_asset.id, 0, t_len)
             animate(t_cid, t_len, None, title_exit=True)
             if plan.subtitle:
-                sub = await self.titles.card(
-                    CardRequest(
-                        project_id=p.id,
-                        heading=plan.subtitle,
-                        style="keyword",
-                        accent_color=emphasis,
-                        panel_color=panel,
-                        text_color=ink,
-                        font=heading_font,
-                        scale=round(0.62 * ts, 3),
-                    )
+                sreq = CardRequest(
+                    project_id=p.id,
+                    heading=plan.subtitle,
+                    style="keyword",
+                    accent_color=emphasis,
+                    panel_color=panel,
+                    text_color=ink,
+                    font=heading_font,
+                    scale=round(0.62 * ts, 3),
                 )
+                sub = await self.titles.card(sreq)
                 st = min(frames(0.6), max(0, title_end - 15))
+                texts.append(
+                    text_use("subtitle_card", sreq, sub, w, h, sec(st), sec(title_end), 1.0, main_w)
+                )
                 cid = add(
                     fig_t,
                     sub.id,
@@ -725,23 +823,31 @@ class DirectionService:
                 icon = pick_icon(s.heading, s.body)
                 last = len(steps) - 1
                 for k, (t0, t1, reveal) in enumerate(steps):
-                    a = await self.titles.card(
-                        CardRequest(
-                            project_id=p.id,
-                            heading=s.heading,
-                            body=s.body,
-                            style=s.style,
-                            accent_color=accent,
-                            panel_color=panel,
-                            text_color=ink,
-                            font=heading_font,
-                            scale=round(min(2.0, CARD_SCALE * ts), 3),
-                            reveal=reveal,
-                            # 録画の上に出す章カードは、後ろの細かい画面が透けないよう濃く
-                            panel_opacity=0.96 if recording else 0.88,
-                            icon=icon,
-                        )
+                    creq = CardRequest(
+                        project_id=p.id,
+                        heading=s.heading,
+                        body=s.body,
+                        style=s.style,
+                        accent_color=accent,
+                        panel_color=panel,
+                        text_color=ink,
+                        font=heading_font,
+                        scale=round(min(2.0, CARD_SCALE * ts), 3),
+                        reveal=reveal,
+                        # 録画の上に出す章カードは、後ろの細かい画面が透けないよう濃く
+                        panel_opacity=0.96 if recording else 0.88,
+                        icon=icon,
+                        # 縦長では横幅いっぱいに使う（実機: 既定の 62% では「パズルゲー／
+                        # ムのコツ」「先に置／く」と語の途中で折り返した）
+                        width_ratio=main_w if h > w else 0.62,
                     )
+                    a = await self.titles.card(creq)
+                    if k == last:  # 文字の大きさと表示の長さ（統合版 T39・T40・T52）
+                        texts.append(
+                            text_use(
+                                "card", creq, a, w, h, sec(steps[0][0]), sec(t1), zone_h, main_w
+                            )
+                        )
                     # 順に出すときは同じ大きさの絵を切り替えるだけ。出入りの動きは最初と最後のみ
                     cid = add(
                         fig_t,
@@ -825,6 +931,8 @@ class DirectionService:
 
         # テロップ（その発話の間。重なる分は前を短くする）
         kws = [s for s in plan.shots if s.kind == ShotKind.KEYWORD]
+        kws += self._fill_gaps(cmds, kws, lines, prof, fps, title_end, names_of(lines))
+        kws.sort(key=lambda x: x.from_line)
         emphasis_left = _emphasis_budget(prof)
         spans: list[tuple[Shot, int, int]] = []
         for s in kws:
@@ -838,18 +946,18 @@ class DirectionService:
             if end - start < frames(0.6):
                 continue
             use(Component.KEYWORD)
-            a = await self.titles.card(
-                CardRequest(
-                    project_id=p.id,
-                    heading=s.text,
-                    style="keyword",
-                    accent_color=emphasis,
-                    panel_color=panel,
-                    text_color=ink,
-                    font=heading_font,
-                    scale=round(0.62 * ts, 3),
-                )
+            kreq = CardRequest(
+                project_id=p.id,
+                heading=s.text,
+                style="keyword",
+                accent_color=emphasis,
+                panel_color=panel,
+                text_color=ink,
+                font=heading_font,
+                scale=round(0.62 * ts, 3),
             )
+            a = await self.titles.card(kreq)
+            texts.append(text_use("keyword", kreq, a, w, h, sec(start), sec(end)))
             aw, ah = a.width or 1, a.height or 1
             # 右上に置く（左上は章の見出しの場所。layout-no-overlap の「補助」の枠）
             k = native_scale(aw, ah, w, h)
@@ -917,7 +1025,7 @@ class DirectionService:
             await self.design.record(
                 p.id,
                 "direction",
-                manifest_record(used, colors, fonts, boxes, empty, outline=outline),
+                manifest_record(used, colors, fonts, boxes, empty, outline=outline, texts=texts),
             )
         log.info("direction_applied", project_id=p.id, clips=clips, skipped=len(skipped))
         return DirectionApplyResult(
