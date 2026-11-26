@@ -1527,9 +1527,11 @@ class ScriptStudio:
                 t["text"], _ = check_line(
                     0, t["text"], p, foreign_endings(personas, t["speaker"]), personas
                 )
-        self._record_corrections("generate", res.data["scenes"], raw, personas, st, req.model_key)
+        # 記録には実際に使ったモデルを残す（自動選択のときは req.model_key が空のため）
+        used = res.model_key or req.model_key
+        self._record_corrections("generate", res.data["scenes"], raw, personas, st, used)
         if not fixed:  # 固定セリフのある台本は「AI が一から書いた答え」ではないので学習に使わない
-            self._record_script(msgs, res.data["scenes"], ai_turns, raw, personas, req.model_key)
+            self._record_script(msgs, res.data["scenes"], ai_turns, raw, personas, used)
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)
