@@ -24,7 +24,7 @@ from video_automation.database.models import Asset, Clip, Project, RenderJob, Sc
 from video_automation.integrations.blender.runner import Blender, BlenderError
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
 from video_automation.schemas.animation import ClipAnimation, TransitionType
-from video_automation.schemas.design import DesignCheck
+from video_automation.schemas.design import DesignCheck, Purpose
 from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat, SubtitleStyle
 from video_automation.schemas.timeline import (
     RENDER_PROFILES,
@@ -95,6 +95,23 @@ def _layout(t: ClipTransform, cw: int, ch: int, label_in: str, label_out: str, i
     )
 
 
+# 書き出しの色: RGB → YUV を BT.709 の式で変換し、同じ値をタグに書く（統合版 S6）。
+# 式を指定しないと FFmpeg は BT.601 で変換するが、HD の動画は BT.709 として再生されるため、
+# 赤 #FF0000 が #FF1800、緑 #00FF00 が #00D800 にずれていた
+BT709 = "scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd+full_chroma_int"
+TO_YUV = f"{BT709},format=yuv420p"
+COLOR_TAGS = [
+    "-colorspace",
+    "bt709",
+    "-color_primaries",
+    "bt709",
+    "-color_trc",
+    "bt709",
+    "-color_range",
+    "tv",
+]
+
+
 def video_codec_args(encoder: str, quality: int, fast: bool = False) -> list[str]:
     if encoder == Encoder.NVENC.value:
         return [
@@ -108,6 +125,7 @@ def video_codec_args(encoder: str, quality: int, fast: bool = False) -> list[str
             str(quality),
             "-b:v",
             "0",
+            *COLOR_TAGS,
         ]
     return [
         "-c:v",
@@ -116,6 +134,7 @@ def video_codec_args(encoder: str, quality: int, fast: bool = False) -> list[str
         "ultrafast" if fast else "medium",
         "-crf",
         str(quality if not fast else 30),
+        *COLOR_TAGS,
     ]
 
 
@@ -517,7 +536,8 @@ class RenderService:
         if ass_path is not None:
             filters.append(f"[{vout}]ass='{filter_path(ass_path)}'[vsub]")
             vout = "vsub"
-        filters.append(f"[{vout}]format=yuv420p[vout]")
+        # 静止画（プレビュー）は RGB のまま出す（YUV を通すと色が変わる）
+        filters.append(f"[{vout}]{'format=rgb24' if single_frame is not None else TO_YUV}[vout]")
         if single_frame is not None:
             pass  # 音声出力なし
         elif audio_labels:
@@ -720,18 +740,30 @@ class RenderService:
             await self._start(render_id)
         return await self.get(render_id)
 
-    async def _flash_guard(self, out: Path) -> None:
+    async def _flash_guard(self, out: Path, project_id: str) -> list[str]:
         """書き出した動画の点滅を調べ、安全基準（1 秒 3 回）を超えたら書き出しを止める。
 
-        利用者の指示や用途の型でも外さない（光過敏性発作の安全基準）。超えた動画は消す。"""
+        利用者の指示や用途の型でも外さない（光過敏性発作の安全基準）。超えた動画は消す。
+        子ども向けはしきい値を厳しくする。飽和した赤の点滅は警告として返す（統合版 S1）。"""
         info = await self.ffmpeg.probe(out)
         if not info.has_video:
-            return
-        res = await check_video(self.ffmpeg, out, info.fps or 30.0)
-        log.info("flash_check", ok=res.ok, max_per_sec=res.max_per_sec, frames=res.frames)
+            return []
+        kids = False
+        if self.design is not None:
+            prof = await self.design.profile_for(project_id)
+            kids = prof is not None and prof.purpose == Purpose.KIDS
+        res = await check_video(self.ffmpeg, out, info.fps or 30.0, kids=kids)
+        log.info(
+            "flash_check",
+            ok=res.ok,
+            max_per_sec=res.max_per_sec,
+            red=res.red_flashes,
+            frames=res.frames,
+        )
         if not res.ok:
             out.unlink(missing_ok=True)
             raise CommandError(res.message())
+        return res.warnings()
 
     async def _set(self, render_id: str, **values: Any) -> None:
         async with self.db.session_factory() as s:
@@ -824,7 +856,7 @@ class RenderService:
             loudnorm=req.loudnorm,
         )
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
-        await self._flash_guard(out)
+        warnings = await self._flash_guard(out, req.project_id)
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
@@ -844,6 +876,7 @@ class RenderService:
             "encoder": encoder,
             "subtitle_paths": subs,
             "credits_path": credits_path,
+            "warnings": warnings,
         }
 
     async def _render_rich(
@@ -991,7 +1024,7 @@ class RenderService:
         )
         for f in (clean, rich_out):
             f.unlink(missing_ok=True)
-        await self._flash_guard(out)
+        warnings = await self._flash_guard(out, req.project_id)
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
@@ -1017,6 +1050,7 @@ class RenderService:
             "encoder": encoder,
             "subtitle_paths": subs,
             "credits_path": credits_path,
+            "warnings": warnings,
             "rich_direction": {
                 "level": rich.level.value,
                 "intro_frames": intro,
@@ -1064,8 +1098,8 @@ class RenderService:
         tmp = out.with_suffix(".withcredits.mp4")
         main_a = "[0:a]" if info.has_audio else "[3:a]"
         fc = (
-            f"[0:v]setsar=1,format=yuv420p[mv];"
-            f"[1:v]ass='{filter_path(ass)}',setsar=1,format=yuv420p[cv];"
+            f"[0:v]setsar=1,{TO_YUV}[mv];"
+            f"[1:v]ass='{filter_path(ass)}',setsar=1,{TO_YUV}[cv];"
             f"[2:a]atrim=0:{d:.3f},asetpts=N/SR/TB[ca];"
             f"{main_a}aresample=48000,aformat=channel_layouts=stereo[ma];"
             f"[mv][ma][cv][ca]concat=n=2:v=1:a=1[v][a]"

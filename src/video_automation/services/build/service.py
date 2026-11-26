@@ -866,6 +866,9 @@ class BuildService:
             await asyncio.sleep(1.0)
         if r.status != RenderStatus.SUCCEEDED or not r.output_path:
             raise BuildError(f"書き出しに失敗しました: {r.error or r.status}")
+        job = c.jobs.get(r.job_id) if r.job_id else None
+        if job is not None and isinstance(job.result, dict):
+            notes += [f"検査: {w}" for w in job.result.get("warnings") or []]
         video = str((c.settings.data_dir / r.output_path).resolve())
         await progress(1.0, "できあがりました")
         return {"render_id": r.id, "video": video, "notes": notes, "script_id": sid}

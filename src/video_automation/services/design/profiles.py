@@ -163,6 +163,8 @@ def _pal(
 
 
 # ---------------------------------------------------------------- 配色（役割ごと。色相は 2〜3）
+# 文字に使う色（text・text_muted・main・accent・話者・図表）は、base と base2 の両方に対して
+# コントラスト比 4.5 以上（統合版 G1。OKLCH で色相を保ち明るさだけを変えて置き換えた）
 P_CALM = _pal("#101318", "#1C222B", "#14181F", "#8FB8DE", "#E9C46A", "#F5F7FA", "#B5BEC9")
 P_INFO = _pal(
     "#0C1A2E",
@@ -173,29 +175,29 @@ P_INFO = _pal(
     "#F4F7FB",
     "#9DB0C4",
     speakers=["#4CB3E6", "#F2B544", "#8ED1F0", "#F7D38A"],
-    chart=["#F2B544", "#4CB3E6", "#5D7590", "#8ED1F0"],
+    chart=["#F2B544", "#4CB3E6", "#869FBC", "#8ED1F0"],
 )
-P_LECTURE = _pal("#E9EDF2", "#FFFFFF", "#FFFFFF", "#1F4E79", "#D9822B", "#1D232B", "#5B6673")
+P_LECTURE = _pal("#E9EDF2", "#FFFFFF", "#FFFFFF", "#1F4E79", "#A55200", "#1D232B", "#5B6673")
 P_TUTORIAL = _pal("#15171C", "#2A2F38", "#1E2229", "#5FB3A1", "#F0B429", "#F3F5F7", "#A3ACB8")
 P_RECIPE = _pal("#2A1E17", "#4A3326", "#2F231B", "#E9A46A", "#8CC084", "#FFF8F0", "#D8C3B0")
 P_NEWS = _pal(
     "#0A1730",
     "#13284F",
     "#0E2244",
-    "#2F6FD6",
-    "#D7263D",
+    "#4F90FA",
+    "#FF535E",
     "#FFFFFF",
     "#B8C4D6",
-    speakers=["#2F6FD6", "#9DB8E8"],
+    speakers=["#4F90FA", "#9DB8E8"],
 )
-P_CORP = _pal("#0F1C2B", "#24384F", "#13243A", "#3F8CD9", "#2EC4B6", "#F4F7FA", "#A9B7C6")
-P_POP = _pal("#111111", "#2B2B2B", "#1A1A1A", "#FFD23F", "#FF4F5E", "#FFFFFF", "#CFCFCF")
-P_GAME = _pal("#0D0F1A", "#23194A", "#14172A", "#7B5CFF", "#39E5A0", "#FFFFFF", "#B9B4D9")
+P_CORP = _pal("#0F1C2B", "#24384F", "#13243A", "#59A5F4", "#2EC4B6", "#F4F7FA", "#A9B7C6")
+P_POP = _pal("#111111", "#2B2B2B", "#1A1A1A", "#FFD23F", "#FF5865", "#FFFFFF", "#CFCFCF")
+P_GAME = _pal("#0D0F1A", "#23194A", "#14172A", "#8E73FF", "#39E5A0", "#FFFFFF", "#B9B4D9")
 P_VLOG = _pal("#1E1B18", "#3A322B", "#25211D", "#F4E3C1", "#F28C6B", "#FFFDF8", "#CFC4B5")
-P_KIDS = _pal("#FFF6E5", "#FFFFFF", "#FFFFFF", "#FF8A3D", "#3DB8FF", "#2B2B2B", "#6B6B6B")
-P_PRODUCT = _pal("#0E0F12", "#262A33", "#16181D", "#2E86FF", "#FFB020", "#FFFFFF", "#B7BDC8")
+P_KIDS = _pal("#FFF6E5", "#FFFFFF", "#FFFFFF", "#BC4D00", "#0075B8", "#2B2B2B", "#6B6B6B")
+P_PRODUCT = _pal("#0E0F12", "#262A33", "#16181D", "#3B92FF", "#FFB020", "#FFFFFF", "#B7BDC8")
 P_MV = _pal("#07070C", "#1A1030", "#0F0B1A", "#C9B6FF", "#FF5DA2", "#F7F5FF", "#A99FC4")
-P_TRAILER = _pal("#050505", "#1E1A14", "#0E0C0A", "#D6C29A", "#C0392B", "#F5F1E8", "#A89F8E")
+P_TRAILER = _pal("#050505", "#1E1A14", "#0E0C0A", "#D6C29A", "#E05847", "#F5F1E8", "#A89F8E")
 
 
 def _make(

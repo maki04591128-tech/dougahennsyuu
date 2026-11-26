@@ -86,6 +86,65 @@ def is_dark(color: str) -> bool:
     return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.4
 
 
+def relative_luminance(color: str) -> float:
+    """WCAG の相対輝度（sRGB → 線形 → Rec.709 の係数）。"""
+    h = color.lstrip("#")[-6:]
+    c = [int(h[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+    lin = [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def contrast_ratio(a: str, b: str) -> float:
+    """WCAG のコントラスト比（1〜21）。"""
+    la, lb = relative_luminance(a), relative_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+TEXT_CONTRAST = 4.5  # 本文の文字（統合版 G1）
+LARGE_TEXT_CONTRAST = 3.0  # 大きな文字（画面の高さの 5.5% 以上）
+LARGE_TEXT_RATIO = 0.055
+
+
+def min_contrast(size_ratio: float) -> float:
+    """文字の大きさ（画面の高さ比）に対する最小のコントラスト比。"""
+    return LARGE_TEXT_CONTRAST if size_ratio >= LARGE_TEXT_RATIO else TEXT_CONTRAST
+
+
+def palette_contrast(profile: DesignProfile) -> list[Violation]:
+    """型の配色で、文字に使う色が背景（base・base2）に対して読めるか（統合版 G1）。
+
+    文字に使う色は text・text_muted・main・accent・話者・図表。どれも本文の大きさで
+    使い得るので、本文の基準（4.5）で調べる。"""
+    pal = profile.palette
+    roles = {
+        "文字": [pal.text],
+        "弱い文字": [pal.text_muted],
+        "メイン": [pal.main],
+        "アクセント": [pal.accent],
+        "話者": pal.speakers,
+        "図表": pal.chart,
+    }
+    out: list[Violation] = []
+    seen: set[str] = set()
+    for role, colors in roles.items():
+        for c in colors:
+            if c.upper() in seen:
+                continue
+            seen.add(c.upper())
+            worst = min(contrast_ratio(c, pal.base), contrast_ratio(c, pal.base2))
+            if worst < TEXT_CONTRAST:
+                out.append(
+                    Violation(
+                        code="contrast",
+                        message=(
+                            f"「{profile.label}」の{role}の色 {c} は背景とのコントラスト比が"
+                            f" {worst:.2f} です（{TEXT_CONTRAST:g} 以上が必要）"
+                        ),
+                    )
+                )
+    return out
+
+
 def font_key(name: str) -> str:
     """書体名・ファイル名を同じ書体の比較用に揃える（meiryob / Meiryo → meiryo）。"""
     k = re.sub(r"[\s\-_]", "", name.lower()).replace("udp", "ud")
@@ -146,6 +205,7 @@ def check(
                 message=f"「{label}」は横長が基本です。縦で作るなら用途「縦型ショート」を検討してください",
             )
         )
+    out += palette_contrast(profile)
     hues = hue_groups(m.colors)
     if len(hues) > profile.max_hues:
         out.append(

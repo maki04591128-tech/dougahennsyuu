@@ -287,3 +287,83 @@ def test_credit_card_ass_drops_urls_and_wraps():
     assert "http" not in body and "“A-(b)-c” by X, CC BY 4.0" in body
     assert body.count(r"\N") >= 5  # 長い行は幅で折り返す
     assert "0:00:05.00" in ass and "PlayResX: 1080" in ass
+
+
+async def test_render_colors_bt709(mclient, media_settings, media_dir):
+    """純色のカードを書き出し、色のずれが各チャンネル 3 以内・色のタグが BT.709（統合版 S6）。"""
+    from PIL import Image
+
+    c = mclient
+    pid = (await c.post("/projects", json={"name": "色", "width": 640, "height": 360})).json()["id"]
+    colors = ["#FF0000", "#00FF00", "#3366CC"]
+    await c.post(
+        f"/projects/{pid}/commands",
+        json={"command": {"type": "add_track", "kind": "video", "track_id": "v"}},
+    )
+    for i, col in enumerate(colors):
+        png = media_dir / f"bt709_{i}.png"
+        Image.new("RGB", (640, 360), col).save(png)
+        a = (await c.post("/assets/import", json={"project_id": pid, "path": str(png)})).json()
+        await c.post(
+            f"/projects/{pid}/commands",
+            json={
+                "command": {
+                    "type": "add_clip",
+                    "track_id": "v",
+                    "asset_id": a["id"],
+                    "start_frame": i * 10,
+                    "duration_frames": 10,
+                    "transform": {"fit": "fill"},
+                }
+            },
+        )
+    r = await c.post(
+        "/render",
+        json={"project_id": pid, "profile": "fhd_landscape", "quality": 12, "loudnorm": False},
+    )
+    job = await c.app.state.jobs.wait(r.json()["job_id"])
+    assert job.status == "SUCCEEDED", job.error
+    out = Path(media_settings.data_dir) / job.result["output_path"]
+    ff = FFmpeg()
+    tags = subprocess.run(
+        [
+            ff.ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=color_space,color_primaries,color_transfer,color_range",
+            "-of",
+            "csv=p=0",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert sorted(tags.split(",")) == ["bt709", "bt709", "bt709", "tv"]
+    for i, col in enumerate(colors):
+        raw = subprocess.run(
+            [
+                ff.ffmpeg,
+                "-v",
+                "error",
+                "-ss",
+                f"{(i * 10 + 5) / 30:.3f}",
+                "-i",
+                str(out),
+                "-frames:v",
+                "1",
+                "-vf",
+                "crop=64:64:928:508,scale=flags=accurate_rnd+full_chroma_int,format=rgb24",
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+        ).stdout
+        px = raw[(32 * 64 + 32) * 3 : (32 * 64 + 32) * 3 + 3]
+        want = bytes.fromhex(col[1:])
+        assert max(abs(a - b) for a, b in zip(px, want, strict=True)) <= 3, (col, px.hex())
