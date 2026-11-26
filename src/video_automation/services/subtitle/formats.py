@@ -48,6 +48,38 @@ def _font_size(st: SubtitleStyle, width: int, height: int) -> int:
     return st.font_size or max(16, round(min(width, height) * st.font_size_ratio))
 
 
+# 統合版 3節: キャラクターの入り 8 種（30fps）。出はすべて 3f
+ENTRANCE_OUT_MS = 100
+
+
+def entrance_tags(kind: str, st: SubtitleStyle, width: int, height: int, mv: int) -> str:
+    """キャラクターの入り（統合版 3節の 8 種）の ASS のタグ。分からない入りは今のフェード。"""
+    px = height / 1080
+    out = ENTRANCE_OUT_MS
+    bottom_center = st.alignment == 2
+    x, y = width // 2, height - mv
+    if kind == "ポップ小":  # scale 0.92→1.0、4f、back 1.2
+        return (
+            f"{{\\fad(133,{out})\\fscx92\\fscy92\\t(0,100,\\fscx102\\fscy102)"
+            f"\\t(100,133,\\fscx100\\fscy100)}}"
+        )
+    if kind == "ポップ中":  # 0.88→1.0、5f、back 1.70158
+        return (
+            f"{{\\fad(167,{out})\\fscx88\\fscy88\\t(0,117,\\fscx104\\fscy104)"
+            f"\\t(117,167,\\fscx100\\fscy100)}}"
+        )
+    if kind in ("フェード200", "フェード250", "フェード300"):
+        ms = {"フェード200": 200, "フェード250": 267, "フェード300": 300}[kind]
+        return f"{{\\fad({ms},{out})}}"
+    if kind == "上昇フェード" and bottom_center:  # y +8px→0、8f
+        return f"{{\\fad(267,{out})\\move({x},{y + round(8 * px)},{x},{y},0,267)}}"
+    if kind == "スライド" and bottom_center:  # x −16px→0、6f
+        return f"{{\\fad(200,{out})\\move({x - round(16 * px)},{y},{x},{y},0,200)}}"
+    if kind == "入りなし":
+        return f"{{\\fad(0,{out})}}"
+    return f"{{\\fad({st.fade_in_ms},{st.fade_out_ms})}}" if st.fade_in_ms or st.fade_out_ms else ""
+
+
 def tint(hex_color: str) -> str:
     """話者の色から字幕の文字の色（OKLCH で L 0.95・C 最大 0.05。統合版 K2）。"""
     return derive(hex_color, TEXT)
@@ -155,14 +187,20 @@ def build_ass(
     speaker_accents: dict[str, str] | None = None,
     multi_speaker: bool | None = None,
     speaker_fonts: dict[str, str] | None = None,
+    speaker_design: dict[str, dict[str, str]] | None = None,
+    speaker_entrance: dict[str, str] | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
+
+    speaker_design は話者ごとの字幕の色（fill・outline・alt_outline。統合版 K1 の手元の
+    データか利用者の登録）。あればそれを使い、無ければ話者の色から OKLCH で作る（K2）。
 
     speaker_colors は話者別の文字色。speaker_accents は話者の色で、名前の表示と
     縁取り（暗くした色）に使う（style.speaker_label / speaker_outline）。
     名前は話者が 2 人以上のときだけ出す。"""
     speaker_colors = dict(speaker_colors or {})
     accents = speaker_accents or {}
+    design = speaker_design or {}
     fonts = (speaker_fonts or {}) if style.speaker_fonts else {}
     multi_spk = (
         multi_speaker
@@ -172,7 +210,7 @@ def build_ass(
     if style.speaker_fill and style.speaker_outline and multi_spk:
         # 話者の色を薄めた文字色（縁取りは話者の色を暗くした色）で、名前なしでも区別できる
         for spk, col in accents.items():
-            speaker_colors.setdefault(spk, tint(col))
+            speaker_colors.setdefault(spk, design.get(spk, {}).get("fill") or tint(col))
     styles = [_style_line(style, width, height)]
     style_of: dict[str, str] = {}
     speakers = sorted(
@@ -188,9 +226,10 @@ def build_ass(
     spaced: set[str] = set()
     for k, spk in enumerate(order):
         if style.speaker_outline and spk in accents:
-            o = darken(accents[spk])
+            d = design.get(spk, {})
+            o = d.get("outline") or darken(accents[spk])
             if any(confusable(o, prev) for prev in outline_of.values()):
-                o = alt_darken(accents[spk])
+                o = d.get("alt_outline") or alt_darken(accents[spk])
             outline_of[spk] = o
         if multi_spk and fonts.get(spk) and any(fonts.get(x) == fonts[spk] for x in order[:k]):
             spaced.add(spk)
@@ -236,8 +275,13 @@ def build_ass(
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    entrances = speaker_entrance or {}
+    mv = round(height * style.margin_v_ratio)
     for start, end, spk, text in cues:
         st_name = style_of.get(spk, style.name)
+        cue_fade = fade
+        if style.character_entrance and spk in entrances:
+            cue_fade = entrance_tags(entrances[spk], style, width, height, mv)
         t0 = ass_time(frame_to_seconds(start, fps))
         t1 = ass_time(frame_to_seconds(end, fps))
         name = spk.replace(",", "，")
@@ -279,16 +323,16 @@ def build_ass(
             inner = size * DOUBLE_OUTLINE_RATIO
             outer = inner + DOUBLE_OUTLINE_EXTRA_PX * height / 1080
             lines.append(
-                f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
+                f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}"
                 f"{{\\1a&HFF&\\3c&H{light}&\\bord{outer:.1f}\\shad0}}{label}{_ass_escape(text)}"
             )
             lines.append(
-                f"Dialogue: 2,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
+                f"Dialogue: 2,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}"
                 f"{{\\3c&H{dark}&\\bord{inner:.1f}\\shad0}}{label}{_ass_escape(text)}"
             )
             continue
         lines.append(
-            f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{fade}{label}{_ass_escape(text)}"
+            f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}{label}{_ass_escape(text)}"
         )
     return "\r\n".join(lines) + "\r\n"
 

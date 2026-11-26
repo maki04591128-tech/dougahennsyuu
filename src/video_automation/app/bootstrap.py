@@ -185,6 +185,7 @@ async def build_container(
     voice_characters = VoiceCharacterService(
         db, voice, Path(settings.data_dir) / "voicevox_characters.json"
     )
+    subtitles.characters = voice_characters  # 字幕の色・書体を手元のデータから（統合版 K1）
     # AI のセリフを直した前後の組をローカルに貯める（ローカル LLM の追加学習用。Git には入れない）
     studio = ScriptStudio(
         db,

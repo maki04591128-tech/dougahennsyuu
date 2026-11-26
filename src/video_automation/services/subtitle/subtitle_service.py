@@ -7,6 +7,7 @@
 
 from collections.abc import Awaitable, Callable
 from fractions import Fraction
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -57,13 +58,49 @@ from video_automation.services.voice.voice_service import (
 
 # 話者の既定の色（明るめ。縁取りには暗くして使う）
 SPEAKER_PALETTE = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFD54F"]
+
+
 # 話者ごとの字幕の書体（Windows 11 の日本語の書体。libass で引ける名前。形の違いが分かる順）
+def _font_dirs() -> list[Path]:
+    import os
+
+    dirs = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"]
+    if local := os.environ.get("LOCALAPPDATA"):
+        dirs.append(Path(local) / "Microsoft" / "Windows" / "Fonts")
+    dirs += [Path("/usr/share/fonts"), Path.home() / ".fonts"]
+    return dirs
+
+
+@lru_cache(maxsize=1)
+def _installed_font_keys() -> frozenset[str]:
+    from video_automation.services.design.guard import font_key
+
+    keys: set[str] = set()
+    for d in _font_dirs():
+        if d.is_dir():
+            for f in d.rglob("*"):
+                if f.suffix.lower() in (".ttf", ".otf", ".ttc"):
+                    keys.add(font_key(f.stem.split("-")[0]))
+    return frozenset(keys)
+
+
+def font_installed(family: str) -> bool:
+    """書体がこの PC に入っているか（ファイル名で判断。MPLUSRounded1c-Bold.ttf など）。"""
+    from video_automation.services.design.guard import font_key
+
+    return font_key(family) in _installed_font_keys()
+
+
 SPEAKER_FONTS = ["UD Digi Kyokasho NK", "BIZ UDPMincho Medium", "BIZ UDPGothic", "Meiryo"]
 
 log = get_logger("subtitle")
 if TYPE_CHECKING:
     from video_automation.schemas.design import DesignProfile
     from video_automation.services.design.service import DesignService
+    from video_automation.services.voice.characters import (
+        VoiceCharacterService,
+        VoiceCharacterStyle,
+    )
     from video_automation.services.voice.reading_service import ReadingService
 
 ProgressFn = Callable[[float], Awaitable[None]]
@@ -89,6 +126,7 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
     """用途の型から字幕の見た目を作る（書体・大きさ・帯の形・帯の色）。"""
     from video_automation.schemas.design import Component, Purpose
     from video_automation.services.design.guard import is_dark
+    from video_automation.services.design.profiles import CHARACTER_ENTRANCE
 
     spec = prof.subtitle
     if not prof.allows(Component.SUBTITLE) and prof.allows(Component.LYRIC_TEXT):
@@ -132,6 +170,10 @@ def style_from_profile(prof: "DesignProfile") -> SubtitleStyle:
         speaker_fonts=True,
         speaker_fill=not dark_text,
         double_outline=spec.double_outline,
+        character_entrance=prof.purpose in CHARACTER_ENTRANCE,
+        # 統合版 3節: 出は全キャラクターで 3f（100ms）。入りを使わない用途は入りも 3f
+        fade_in_ms=100,
+        fade_out_ms=100,
         # 子ども向けは背景が明るいので、外側の縁を型の base にする（統合版 2.2）
         double_outline_outer=prof.palette.base if prof.purpose == Purpose.KIDS else None,
     )
@@ -151,6 +193,7 @@ class SubtitleService:
         self.voice = voice
         self.readings = readings
         self.design = design
+        self.characters: VoiceCharacterService | None = None  # 起動時に設定（統合版 K1）
 
     async def _speech(self, project_id: str | None, text: str) -> str:
         """読み上げ用の文（読みのルール・略語・単位・括弧を整えたもの）。"""
@@ -443,6 +486,10 @@ class SubtitleService:
             )
         out: dict[str, str] = {c.name: c.color for c in chars if c.color}
         order = [c.name for c in chars] + [x for x in speakers if x]
+        # 統合版 K1: 利用者の登録（台本のキャラクターの色）→ 手元のデータ・声の登録の色 → 型の配色
+        for name, d in (await self._character_data(order)).items():
+            if name not in out and d.color:
+                out[name] = d.color
         palette = SPEAKER_PALETTE
         if self.design:  # 用途の型があれば、その配色（メイン・アクセントの明暗違い）を使う
             prof = await self.design.profile_for(project_id)
@@ -481,6 +528,13 @@ class SubtitleService:
             )
         out = {c.name: c.subtitle_font for c in chars if c.subtitle_font}
         order = [c.name for c in chars] + [x for x in speakers if x]
+        # 統合版 K1: 手元のデータの書体（入っている書体だけ。無い書体を指定すると別の書体になる）
+        for name, d in (await self._character_data(order)).items():
+            if name in out or not d.subtitle_font:
+                continue
+            if font_installed(d.subtitle_font):
+                w = d.subtitle_weight
+                out[name] = f"{d.subtitle_font} {w}" if w else d.subtitle_font
         free = [f for f in SPEAKER_FONTS if f not in out.values()]
         i = 0
         for name in dict.fromkeys(order):
@@ -488,6 +542,55 @@ class SubtitleService:
                 continue
             out[name] = free[i % len(free)]
             i += 1
+        return out
+
+    async def _character_data(self, names: list[str]) -> dict[str, "VoiceCharacterStyle"]:
+        """話者名 → 声の登録・手元のデータ（統合版 K1。無いときは空）。"""
+        if self.characters is None:
+            return {}
+        out = {}
+        for name in dict.fromkeys(names):
+            if name and (st := await self.characters.get(name)) is not None:
+                out[name] = st
+        return out
+
+    async def speaker_entrance(self, script_id: str) -> dict[str, str]:
+        """話者ごとの字幕の入り（統合版 3節の 8 種。手元のデータか登録にあるものだけ）。"""
+        async with self.db.session_factory() as s:
+            speakers = list(
+                dict.fromkeys(
+                    (
+                        await s.execute(
+                            select(ScriptSegment.speaker).where(
+                                ScriptSegment.script_id == script_id
+                            )
+                        )
+                    ).scalars()
+                )
+            )
+        return {
+            n: d.entrance for n, d in (await self._character_data(speakers)).items() if d.entrance
+        }
+
+    async def speaker_design(self, script_id: str) -> dict[str, dict[str, str]]:
+        """話者ごとの字幕の色（fill・outline・alt_outline）。手元のデータか登録にあるものだけ。"""
+        async with self.db.session_factory() as s:
+            speakers = list(
+                dict.fromkeys(
+                    (
+                        await s.execute(
+                            select(ScriptSegment.speaker).where(
+                                ScriptSegment.script_id == script_id
+                            )
+                        )
+                    ).scalars()
+                )
+            )
+        out: dict[str, dict[str, str]] = {}
+        for name, d in (await self._character_data(speakers)).items():
+            v = {k: getattr(d, k) for k in ("fill", "outline", "alt_outline") if getattr(d, k)}
+            if v:
+                out[name] = v
         return out
 
     # ---------- 出力 (P4-05 / P4-06 / P4-07) ----------
@@ -512,6 +615,8 @@ class SubtitleService:
                 title=script.title or "VideoAutomation",
                 speaker_accents=await self.speaker_accents(req.script_id),
                 speaker_fonts=await self.speaker_fonts(req.script_id),
+                speaker_design=await self.speaker_design(req.script_id),
+                speaker_entrance=await self.speaker_entrance(req.script_id),
             )
         else:
             content = build_srt(rows, fps)
