@@ -1,5 +1,6 @@
 """文章の指示だけで動画を作る（/build）。LLM・音声エンジン・Blender は偽物、FFmpeg は本物。"""
 
+import json
 import shutil
 from pathlib import Path
 
@@ -93,6 +94,12 @@ async def test_build_from_one_sentence(bclient, fake, media_settings):
     voice = [x for x in tl["clips"] if x["track_id"] == tracks["ナレーション"]["id"]]
     assert tracks["ナレーション"]["kind"] == "audio"
     assert sorted(x["start_frame"] for x in voice) == sorted(s["start_frame"] for s in segs)
+    # 学習用に、台本を作る AI へ送った指示と完成版の台本（同じ JSON の形）が残る
+    rec = media_settings.data_dir / "training" / "scripts.jsonl"
+    row = json.loads(rec.read_text(encoding="utf-8").splitlines()[-1])
+    assert [m["role"] for m in row["messages"]] == ["system", "user"]
+    done = [t["text"] for sc in row["output"]["scenes"] for t in sc["turns"]]
+    assert done == [s["text"] for s in segs]
     # 声は台本から重ねるが、概要欄用のクレジットには声（VOICEVOX）が入る
     cred = video.with_suffix(".credits.txt")
     assert cred.read_text(encoding="utf-8").startswith("音声: VOICEVOX")

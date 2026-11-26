@@ -8,6 +8,10 @@
 - 保存先は data/training/corrections.jsonl（data/ は Git に入れない。PC の中だけに置く）
 - 1 行 1 件の JSON。キーの値（API キーなど）や利用者の個人情報は入れない（台本の文だけ）
 - tools/export_training_data.py で SFT / DPO の形式に書き出す
+
+台本 1 本ぶんの組（scripts.jsonl）も貯める: 台本を作る AI に実際に送った指示（system / user）と、
+規則・推敲を通った完成版の台本（同じ JSON の形）。1 行ずつ切り出した組だけで学習すると、
+短く語尾だけが目立つ書き方を覚えてしまったため（実機の 1 回目の学習）。
 """
 
 from __future__ import annotations
@@ -29,6 +33,42 @@ class CorrectionLog:
     def __init__(self, path: Path | None) -> None:
         self.path = path
         self._lock = threading.Lock()
+
+    def _append(self, path: Path, row: dict[str, Any]) -> None:
+        try:
+            with self._lock:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError as exc:  # 記録できなくても台本づくりは止めない
+            log.info("correction_log_failed", error=type(exc).__name__)
+
+    def record_script(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        output: dict[str, Any],
+        model_key: str | None = None,
+        issues: int = 0,
+        fixes: int = 0,
+        lines: int = 0,
+    ) -> None:
+        """台本 1 本ぶんの「送った指示 → 完成版の台本」を scripts.jsonl に足す。
+
+        issues は完成版にまだ残る口調の問題の数（0 の台本だけを学習に使う）、fixes は
+        AI の書いたセリフを直した数（多いほど元の出来が悪い）。"""
+        if self.path is None or not output.get("scenes"):
+            return
+        row: dict[str, Any] = {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "messages": [{"role": m["role"], "content": m["content"][:12000]} for m in messages],
+            "output": output,
+            "model": model_key or "",
+            "issues": issues,
+            "fixes": fixes,
+            "lines": lines,
+        }
+        self._append(self.path.with_name("scripts.jsonl"), row)
 
     def record(
         self,
@@ -57,10 +97,4 @@ class CorrectionLog:
             "topic": topic[:200],
             "model": model_key or "",
         }
-        try:
-            with self._lock:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                with self.path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        except OSError as exc:  # 記録できなくても台本づくりは止めない
-            log.info("correction_log_failed", error=type(exc).__name__)
+        self._append(self.path, row)

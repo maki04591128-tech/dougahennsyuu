@@ -95,3 +95,38 @@ def test_export_drops_broken_corrections(tmp_path: Path):
     spec.loader.exec_module(mod)
     res = mod.export(src, tmp_path / "out")
     assert res["total"] == 1 and res["dropped"] == 2
+
+
+def test_script_records_are_exported_only_when_clean(tmp_path: Path):
+    log = CorrectionLog(tmp_path / "corrections.jsonl")
+    msgs = [{"role": "system", "content": "台本作家"}, {"role": "user", "content": "テーマ: 節電"}]
+
+    def out(*texts):
+        return {
+            "scenes": [
+                {"purpose": "導入", "turns": [{"speaker": "ずんだもん", "text": t} for t in texts]}
+            ],
+            "notes": [],
+        }
+
+    good = out("節電の話なのだ。", "まず照明を消すのだ。", "次はエアコンなのだ。", "まとめなのだ。")
+    log.record_script(messages=msgs, output=good, model_key="ollama::swallow", lines=4)
+    log.record_script(messages=msgs, output=good, model_key="ollama::swallow", lines=4)  # 重複
+    log.record_script(messages=msgs, output=good, model_key="x", issues=1, lines=4)  # 問題が残る
+    log.record_script(
+        messages=msgs,
+        output=out("聞かせてくれのだ！", "a", "b", "c"),  # 壊れた形
+        model_key="x",
+        lines=4,
+    )
+    log.record_script(messages=msgs, output=good, model_key="ollama::swallow-tuned", lines=4)
+    path = Path(__file__).resolve().parents[2] / "tools" / "export_training_data.py"
+    spec = importlib.util.spec_from_file_location("export_training_data", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    res = mod.export_scripts(tmp_path / "scripts.jsonl", tmp_path / "out")
+    assert res == {"scripts": 1, "scripts_dropped": 4}
+    row = json.loads((tmp_path / "out" / "scripts_sft.jsonl").read_text("utf-8"))
+    assert [m["role"] for m in row["messages"]] == ["system", "user", "assistant"]
+    assert json.loads(row["messages"][-1]["content"]) == good
