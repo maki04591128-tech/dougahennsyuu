@@ -108,10 +108,13 @@ def _style_line(
     mv = round(height * st.margin_v_ratio)
     mh = round(width * st.margin_h_ratio)
     spacing = tracking(size) + round(size * spacing_extra)
+    bold = st.bold
+    if font and font.rsplit(" ", 1)[-1] in NAMED_WEIGHTS:
+        bold = False  # 太さを名前で選んだ書体に太字を重ねない（にじむ）
     return (
         f"Style: {st.name},{font or st.font_name},{size},{ass_color(primary or st.primary_color)},"
         f"&H000000FF,{ass_color(outline or st.outline_color)},{ass_color(st.back_color)},"
-        f"{-1 if st.bold else 0},0,0,0,100,100,{spacing},0,1,{st.outline:g},{st.shadow:g},"
+        f"{-1 if bold else 0},0,0,0,100,100,{spacing},0,1,{st.outline:g},{st.shadow:g},"
         f"{st.alignment},{mh},{mh},{mv},1"
     )
 
@@ -119,6 +122,7 @@ def _style_line(
 # 統合版 C1: 二重縁の幅（明るい縁 = 文字の大きさ × 0.06、暗い縁 = それ ＋ 3px（1080p））
 DOUBLE_OUTLINE_RATIO = 0.06
 DOUBLE_OUTLINE_EXTRA_PX = 3.0
+NAMED_WEIGHTS = frozenset({"Thin", "Light", "Regular", "Medium", "SemiBold", "ExtraBold", "Black"})
 SAME_FONT_SPACING = 0.04  # 統合版 3節: 書体が同じ 2 人の後の方は字間 +4%
 # 統合版 C2: 字間は文字の大きさの −2%（ASS の Spacing、Blender の space_character 0.98）
 TRACKING = -0.02

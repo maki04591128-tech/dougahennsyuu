@@ -4,6 +4,7 @@
 
 zip にはアプリ本体（src）・依存の固定版（uv.lock）・説明書（docs）と、展開したフォルダの直下に
 install.bat / uninstall.bat を入れる。テストや開発用ファイルは入れない。
+data/fonts に OFL の書体（統合版 Q6。ライセンスの文と一緒に）があれば同梱する。
 """
 
 import subprocess
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INCLUDE_DIRS = ("src", "docs")
 INCLUDE_FILES = ("pyproject.toml", "uv.lock", "README.md", ".env.example")
 PACKAGING = ROOT / "packaging" / "windows"
+FONTS = ROOT / "data" / "fonts"  # 書体はリポジトリに入れず、手元から同梱する
 
 
 def tracked_files() -> list[Path]:
@@ -53,6 +55,10 @@ def build(out_dir: Path | None = None) -> Path:
             z.write(p, f"{name}/{p.relative_to(ROOT).as_posix()}")
         for p in sorted(PACKAGING.iterdir()):
             z.write(p, f"{name}/{p.name}")
+        if FONTS.is_dir():
+            for p in sorted(FONTS.iterdir()):
+                if p.suffix.lower() in (".ttf", ".otf", ".txt"):
+                    z.write(p, f"{name}/data/fonts/{p.name}")
     return out
 
 
