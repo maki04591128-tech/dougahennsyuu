@@ -268,20 +268,23 @@ def build_ass(
             band = _band(style, width, height, text.count("\n") + 1, bool(label), text, spk)
             lines.append(f"Dialogue: 0,{t0},{t1},{style.name},{name},0,0,0,,{fade}{band}")
         if style.double_outline:
-            # 統合版 C1: 下の層は文字を透明にして暗い縁（文字の 6% ＋ 3px）、上の層は文字の色の
-            # 明るい縁（文字の 6%）
-            light = ass_color(speaker_colors.get(spk) or style.primary_color)[4:]
-            dark_src = style.double_outline_outer or outline_of.get(spk) or style.outline_color
-            dark = ass_color(dark_src)[4:]
+            # 統合版 C1（実機のプレイテストで直した）: 上の層は文字と暗い縁（文字の 6%）、下の層は
+            # 文字を透明にして明るい縁（それ ＋ 3px）。仕様どおり内側の縁を文字と同じ色にすると、
+            # 縁が文字を太らせて「連続」「補強」のような画数の多い字がつぶれた
+            dark = ass_color(outline_of.get(spk) or style.outline_color)[4:]
+            light_src = (
+                style.double_outline_outer or speaker_colors.get(spk) or (style.primary_color)
+            )
+            light = ass_color(light_src)[4:]
             inner = size * DOUBLE_OUTLINE_RATIO
             outer = inner + DOUBLE_OUTLINE_EXTRA_PX * height / 1080
             lines.append(
                 f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
-                f"{{\\1a&HFF&\\3c&H{dark}&\\bord{outer:.1f}\\shad0}}{label}{_ass_escape(text)}"
+                f"{{\\1a&HFF&\\3c&H{light}&\\bord{outer:.1f}\\shad0}}{label}{_ass_escape(text)}"
             )
             lines.append(
                 f"Dialogue: 2,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
-                f"{{\\3c&H{light}&\\bord{inner:.1f}\\shad0}}{label}{_ass_escape(text)}"
+                f"{{\\3c&H{dark}&\\bord{inner:.1f}\\shad0}}{label}{_ass_escape(text)}"
             )
             continue
         lines.append(

@@ -147,10 +147,13 @@ async def test_change_plan_and_revise_after_build(bclient, fake):
     assert r.status_code == 200, r.text
     ch = r.json()
     assert ch["purpose"] == "short" and (ch["width"], ch["height"]) == (1080, 1920)
+    # 縦長のプロジェクトは縦長の大きさで書き出す（実機: 1920×1080 で書き出されていた）
+    assert (await c.app.state.container.build._render_profile(pid)).value == "fhd_portrait"
     assert ch["duration_sec"] == 30 and any("用途を" in n for n in ch["notes"])
     # 解説に戻すと横長に戻る
     ch = (await c.put(f"/build/{pid}/plan", json={"script_id": sid, "purpose": "explainer"})).json()
     assert (ch["width"], ch["height"]) == (1920, 1080) and ch["duration_sec"] == 30
+    assert (await c.app.state.container.build._render_profile(pid)).value == "fhd_landscape"
     # 無い立ち絵・知らない用途は断る
     name = ch["characters"][0]["name"]
     r = await c.put(f"/build/{pid}/plan", json={"script_id": sid, "tachie": {name: "nope"}})
