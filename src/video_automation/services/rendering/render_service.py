@@ -305,6 +305,7 @@ class RenderService:
             assert script is not None
             p = await s.get(Project, script.project_id)
             assert p is not None
+        kept = [c for c in cues if (c.end_frame or 0) > offset_frames]
         rows = [
             (
                 max(0, (c.start_frame or 0) - offset_frames),
@@ -312,9 +313,9 @@ class RenderService:
                 c.speaker,
                 c.text,
             )
-            for c in cues
-            if (c.end_frame or 0) > offset_frames
+            for c in kept
         ]
+        rb = await self.subtitles.ruby_map(script_id)  # 統合版 P7（子ども向けだけ）
         style = await self.subtitles.project_style(p.id)
         style = await self._clear_of_tachie(p.id, width, height, style)
         if not fade:
@@ -331,6 +332,7 @@ class RenderService:
             speaker_entrance=await self.subtitles.speaker_entrance(script_id),
             # 範囲を切り出しても、話者名を出すかどうかは台本全体で決める
             multi_speaker=len({c.speaker for c in cues if c.speaker}) >= 2,
+            ruby={i: rb[c.id] for i, c in enumerate(kept) if c.id in rb},
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out

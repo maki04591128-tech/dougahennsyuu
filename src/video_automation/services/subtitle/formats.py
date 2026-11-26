@@ -193,6 +193,7 @@ def build_ass(
     speaker_fonts: dict[str, str] | None = None,
     speaker_design: dict[str, dict[str, str]] | None = None,
     speaker_entrance: dict[str, str] | None = None,
+    ruby: dict[int, list[tuple[int, int, int, str]]] | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
 
@@ -281,7 +282,8 @@ def build_ass(
     ]
     entrances = speaker_entrance or {}
     mv = round(height * style.margin_v_ratio)
-    for start, end, spk, text in cues:
+    rubies = ruby or {}
+    for k_cue, (start, end, spk, text) in enumerate(cues):
         st_name = style_of.get(spk, style.name)
         cue_fade = fade
         if style.character_entrance and spk in entrances:
@@ -297,6 +299,14 @@ def build_ass(
                 f"{{\\fs{round(size * LABEL_RATIO)}\\1c&H{color}&\\3c&H{edge}&}}"
                 f"{_ass_escape(spk)}{{\\r}}\\N"
             )
+        etext = _ass_escape(text)
+        rb = rubies.get(k_cue) if bottom and style.mode != "lyric" else None
+        if rb:
+            # 統合版 P7: 行の間（と話者名の下）に、文字の大きさ × 0.55 の空きを入れる
+            gap = f"{{\\fs{round(size * RUBY_SPACE)}}}\\h{{\\fs{size}}}\\N"
+            etext = etext.replace("\\N", "\\N" + gap)
+            if label:
+                label += gap
         if style.mode == "lyric":
             # 歌詞: 下の層に太い縁取りをぼかした光（文字本体は透明）、上の層に文字
             if style.glow > 0:
@@ -328,17 +338,60 @@ def build_ass(
             outer = inner + DOUBLE_OUTLINE_EXTRA_PX * height / 1080
             lines.append(
                 f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}"
-                f"{{\\1a&HFF&\\3c&H{light}&\\bord{outer:.1f}\\shad0}}{label}{_ass_escape(text)}"
+                f"{{\\1a&HFF&\\3c&H{light}&\\bord{outer:.1f}\\shad0}}{label}{etext}"
             )
             lines.append(
                 f"Dialogue: 2,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}"
-                f"{{\\3c&H{dark}&\\bord{inner:.1f}\\shad0}}{label}{_ass_escape(text)}"
+                f"{{\\3c&H{dark}&\\bord{inner:.1f}\\shad0}}{label}{etext}"
             )
+            if rb:
+                lines += _ruby_events(
+                    rb, text, t0, t1, st_name, name, fade, size, width, height, mv
+                )
             continue
-        lines.append(
-            f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}{label}{_ass_escape(text)}"
-        )
+        lines.append(f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}{label}{etext}")
+        if rb:
+            lines += _ruby_events(rb, text, t0, t1, st_name, name, fade, size, width, height, mv)
     return "\r\n".join(lines) + "\r\n"
+
+
+RUBY_RATIO, RUBY_SPACE = 0.48, 0.55  # 統合版 P7: ふりがなは本文の 48%・行の上に 0.55 の空き
+LINE_HEIGHT = 1.2  # 1 行の高さ（文字の大きさに対する比。_band と同じ）
+
+
+def _ruby_events(
+    rb: list[tuple[int, int, int, str]],
+    text: str,
+    t0: str,
+    t1: str,
+    st_name: str,
+    name: str,
+    fade: str,
+    size: int,
+    width: int,
+    height: int,
+    mv: int,
+) -> list[str]:
+    """ふりがなを 1 語ずつ \\pos で置く（下揃え・中央揃えの字幕）。"""
+    rows = text.split("\n")
+    n = len(rows)
+    lh, sp = size * LINE_HEIGHT, size * LINE_HEIGHT * RUBY_SPACE
+    rs = max(8, round(size * RUBY_RATIO))
+    out = []
+    for ln, a, b, reading in rb:
+        if not 0 <= ln < n or not reading:
+            continue
+        row = rows[ln]
+        bottom_k = height - mv - (n - 1 - ln) * (lh + sp)
+        y = round(bottom_k - lh + size * 0.12)
+        left = width / 2 - text_width(row, size) / 2
+        x = round(left + text_width(row[:a], size) + text_width(row[a:b], size) / 2)
+        out.append(
+            f"Dialogue: 3,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
+            f"{{\\an2\\pos({x},{y})\\fs{rs}\\bord{max(1.0, size * 0.04):.1f}\\shad0}}"
+            f"{_ass_escape(reading)}"
+        )
+    return out
 
 
 def build_srt(cues: list[tuple[int, int, str, str]], fps: Fraction) -> str:

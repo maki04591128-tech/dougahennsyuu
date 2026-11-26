@@ -42,6 +42,7 @@ from video_automation.schemas.provider import ChatMessage, TaskType
 from video_automation.schemas.timeline import (
     AddClip,
     AddTrack,
+    AssetImportRequest,
     AssetKind,
     AssetRead,
     Batch,
@@ -63,9 +64,17 @@ from video_automation.services.animation.entrance import (
 from video_automation.services.assets.look import match_file, palette_colors
 from video_automation.services.design.edits import adjust_transform
 from video_automation.services.design.guard import Placement, TextUse, is_dark
-from video_automation.services.design.profiles import END_SCREEN, PROFILES, safe_area_for
+from video_automation.services.design.profiles import (
+    END_SCREEN,
+    LOWER_THIRD_PURPOSES,
+    PROFILES,
+    safe_area_for,
+)
+from video_automation.services.design.series import ED_SEC as SERIES_ED_SEC
+from video_automation.services.design.series import OP_SEC as SERIES_OP_SEC
 from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction import prompts as plan_prompts
+from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction.charts import anim_frames, chart_kind
 from video_automation.services.direction.plan import (
     PLAN_SCHEMA,
@@ -77,7 +86,15 @@ from video_automation.services.direction.plan import (
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering.card import card_layout
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
+from video_automation.services.rendering.lower_third import draw_lower_third
+from video_automation.services.rendering.lower_third import schedule as lower_third_schedule
+from video_automation.services.rendering.lower_third import show_sec as lt_show_sec
 from video_automation.services.rendering.pictogram import pick_icon
+from video_automation.services.rendering.purpose_cards import (
+    draw_labels,
+    draw_list_card,
+    draw_rank_number,
+)
 from video_automation.services.rendering.title_card import TitleCardService
 from video_automation.services.skills.library import SkillLibrary
 from video_automation.services.timeline.timeline_service import (
@@ -134,6 +151,12 @@ def names_of(lines: list[Any]) -> tuple[str, ...]:
 
 
 TRACKS = ("演出・背景", "演出・図", "演出・文字")
+# 使うときだけ作るトラック（同じトラックのクリップは重ねられないので、カードの新しい項目（D1）と
+# 名前帯（P1）は別のトラックに置く）。いちばん上に重ねる
+ITEM_TRACK, LOWER_THIRD_TRACK = "演出・項目", "演出・名前帯"
+PART_TRACK, STEP_TRACK = "演出・部品", "演出・手順"  # 統合版 P4・P5・P8
+SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合版 Q4
+EXTRA_TRACKS = (ITEM_TRACK, LOWER_THIRD_TRACK, PART_TRACK, STEP_TRACK, SERIES_TRACK, LOGO_TRACK)
 TACHIE_TRACK = "立ち絵"  # characters.service.TRACK
 RECORDING_TRACK = "画面録画"  # 画面録画を中央の枠に置くトラック（build.service）
 CHAPTER_CARD_SEC = 2.4  # 画面録画があるときのカードの長さ（章カード: 出す・止める・消す）
@@ -354,6 +377,16 @@ class DirectionService:
         self.timeline = timeline
         self.titles = titles
         self.ffmpeg = ffmpeg
+
+    async def _characters(self, script_id: str) -> dict[str, dict[str, str]]:
+        """話者の名前 → 肩書き・色（名前帯に使う。統合版 P1）。"""
+        async with self.db.session_factory() as s:
+            rows = (
+                await s.execute(
+                    select(ScriptCharacter).where(ScriptCharacter.script_id == script_id)
+                )
+            ).scalars()
+            return {r.name: {"job_title": r.job_title or "", "color": r.color or ""} for r in rows}
 
     async def _script(self, script_id: str) -> tuple[Project, Script, list[_Line]]:
         async with self.db.session_factory() as s:
@@ -701,7 +734,11 @@ class DirectionService:
         cmds: list[Any] = []
         track: dict[str, str] = {}
         for t in tl.tracks:
-            if t.name in TRACKS and t.kind == TrackKind.VIDEO and t.name not in track:
+            if (
+                t.name in (*TRACKS, *EXTRA_TRACKS)
+                and t.kind == TrackKind.VIDEO
+                and t.name not in track
+            ):
                 track[t.name] = t.id
         # 以前の演出は外して作り直す（同じトラックを使う）
         for c in tl.clips:
@@ -712,6 +749,15 @@ class DirectionService:
                 track[name] = str(uuid4())
                 cmds.append(AddTrack(kind=TrackKind.VIDEO, name=name, track_id=track[name]))
         bg_t, fig_t, txt_t = (track[n] for n in TRACKS)
+
+        def lane(name: str) -> str:
+            """使うときだけ作るトラック（いちばん上）。"""
+            if name not in track:
+                track[name] = str(uuid4())
+                cmds.append(AddTrack(kind=TrackKind.VIDEO, name=name, track_id=track[name]))
+                cmds.append(MoveTrack(track_id=track[name], index=1000))
+            return track[name]
+
         # 重なり順: 背景 → 図・カード → 立ち絵 → 文字（立ち絵を先に置いていても背景で隠さない）
         tachie = next(
             (t for t in tl.tracks if t.name == TACHIE_TRACK and t.kind == TrackKind.VIDEO), None
@@ -727,6 +773,9 @@ class DirectionService:
             for tid in order:
                 if tid is not None:
                     cmds.append(MoveTrack(track_id=tid, index=1000))
+            for name in EXTRA_TRACKS:  # 前に作った重ねるトラックは、その上に
+                if name in track:
+                    cmds.append(MoveTrack(track_id=track[name], index=1000))
         clips = 0
 
         roles: dict[str, str] = {}  # クリップ → 部品（利用者の直しの記録に使う。統合版 W2）
@@ -761,12 +810,44 @@ class DirectionService:
             return clip_id
 
         # 統合版 S9: 最後の 15 秒を終了画面にする（横長の動画で、終了画面を使う用途だけ）
+        series = await self.design.series_for(p.id) if self.design else None
         es = (
             frames(END_SCREEN_SEC)
-            if prof is not None and prof.purpose in END_SCREEN and w >= h and not recording
+            if prof is not None
+            and prof.purpose in END_SCREEN
+            and w >= h
+            and not recording
+            and (series is None or series.end_screen)
             else 0
         )
-        bg_total = total + es
+
+        async def series_asset(path: str, label: str) -> AssetRead | None:
+            """シリーズの素材を取り込む（同じファイルは前に取り込んだものを使う）。"""
+            name = f"シリーズの{label}（{Path(path).name}）"[:200]
+            for a in assets.values():
+                if a.name == name:
+                    return a
+            try:
+                return await self.timeline.import_asset(
+                    AssetImportRequest(project_id=p.id, path=path, name=name)
+                )
+            except Exception as exc:  # noqa: BLE001 - 置けない素材は外して知らせる
+                skipped.append(f"シリーズの{label}を置けませんでした（{type(exc).__name__}）")
+                return None
+
+        # 統合版 Q4: シリーズの ED（10 秒。最後の台詞の後、終了画面の前）
+        ed_asset = await series_asset(series.ed_path, "ED") if series and series.ed_path else None
+        ed = (
+            min(frames(SERIES_ED_SEC), media_frames(ed_asset, frames(SERIES_ED_SEC)))
+            if ed_asset
+            else 0
+        )
+        trailer = prof is not None and prof.purpose == Purpose.TRAILER
+        # 統合版 P8: 予告編は題名を第 3 幕の後（台詞の後）に出し、最後に日付のカード
+        tr_date = pp.date_text([x.text for x in lines]) if trailer else ""
+        tr_title = frames(pp.TRAILER_TITLE_SEC) if trailer and plan.title else 0
+        tr_tail = tr_title + (frames(pp.TRAILER_DATE_SEC) if tr_date else 0)
+        bg_total = total + ed + es + tr_tail
         # 背景（ゆっくり寄る）
         bg = await self._background(p.id, plan.background, w, h, prof)
         if bg.kind == AssetKind.VIDEO:
@@ -785,9 +866,12 @@ class DirectionService:
 
         # タイトル（最初の発話の間。短すぎるときは 3 秒）
         title_end = 0
+        t_at = total + ed if tr_title else 0  # 題名を置く始まり（予告編は台詞の後）
         if plan.title:
             use(Component.TITLE_CARD)
             title_end = min(total, max(lines[0].end, frames(3.0)))
+            if tr_title:
+                title_end = tr_title
             if prof is not None and prof.allows(Component.LYRIC_TEXT):
                 # 歌詞が出る型（MV・リリック）は、最初の歌詞が出る前に題名を消す
                 # （前奏が長い曲で題名と歌詞が重ならないように。短くても 2 秒は出す）
@@ -825,7 +909,7 @@ class DirectionService:
             t_cid = add(
                 txt_t,
                 t_asset.id,
-                0,
+                t_at,
                 t_len,
                 role="title_card",
                 **({"transform": ClipTransform(y=title_dy)} if title_dy else {}),
@@ -850,7 +934,7 @@ class DirectionService:
                 cid = add(
                     fig_t,
                     sub.id,
-                    st,
+                    t_at + st,
                     max(1, title_end - st),
                     role="title_card",
                     transform=native_transform(
@@ -864,6 +948,8 @@ class DirectionService:
                     ),
                 )
                 animate(cid, max(1, title_end - st), slide_preset("up", mspec))
+            if tr_title:
+                title_end = 0  # 冒頭は題名で塞がない（図・カードは最初から置ける）
 
         # 図・カード・画像（次が出るまで表示し続ける）
         # 置けない画像（素材が未選択）は、表示時間を決める前に外す。後で外すと、その画像の
@@ -970,7 +1056,7 @@ class DirectionService:
                             creq.model_copy(update={"hide_item": None, "only_item": new_item})
                         )
                         iid = add(
-                            txt_t,
+                            lane(ITEM_TRACK),
                             item.id,
                             t0,
                             t1 - t0,
@@ -1122,6 +1208,260 @@ class DirectionService:
             else:
                 animate(cid, end - start, slide_preset("right", mspec))
 
+        # 統合版 P1: 名前帯（インタビュー・ドキュメンタリー・ニュース・会社紹介）
+        if (
+            prof is not None
+            and prof.purpose in LOWER_THIRD_PURPOSES
+            and (prof.allows(Component.LOWER_THIRD) or Component.LOWER_THIRD in extras)
+        ):
+            chars = await self._characters(req.script_id)
+            vertical = h > w
+            bottom = 0.60 if vertical else 0.70  # 字幕の上（縦型は下 35% の安全範囲の上）
+            left = safe_area_for(prof, w, h).left
+            names = list(dict.fromkeys(x.speaker for x in lines if x.speaker))
+            sched = lower_third_schedule([(x.speaker, x.start, x.end) for x in lines], float(fps))
+            for k_lt, (spk, at) in enumerate(sched):
+                # 次の話者の名前帯が出たら、前の帯は消す（同じ所に重ねない）
+                nxt = sched[k_lt + 1][1] if k_lt + 1 < len(sched) else total
+                lt_limit = prof.allowance(Component.LOWER_THIRD)
+                if at >= total - frames(1.0) or (
+                    0 < lt_limit <= used.get(Component.LOWER_THIRD, 0)
+                ):
+                    continue  # 終わり間際、または用途の回数の上限
+                info = chars.get(spk, {})
+                n = min(frames(lt_show_sec(spk, info.get("job_title", ""))), nxt - at)
+                color = (
+                    info.get("color")
+                    or (prof.palette.speakers[names.index(spk) % len(prof.palette.speakers)])
+                )
+                out = (
+                    Path(self.settings.data_dir)
+                    / "projects"
+                    / p.id
+                    / "assets"
+                    / f"lower_third_{uuid4().hex[:8]}.png"
+                )
+                await asyncio.to_thread(
+                    draw_lower_third,
+                    out,
+                    h,
+                    spk,
+                    info.get("job_title", ""),
+                    self.titles.font_path(heading_font),
+                    ink,
+                    color,
+                    panel,
+                )
+                row = await self.timeline.register_generated(
+                    p.id, out, AssetKind.IMAGE, "pillow", f"名前帯「{spk[:20]}」"
+                )
+                aw, ah = row.width or 1, row.height or 1
+                cid = add(
+                    lane(LOWER_THIRD_TRACK),
+                    row.id,
+                    at,
+                    n,
+                    role="lower_third",
+                    transform=native_transform(
+                        aw, ah, w, h, cx=left + aw / w / 2, cy=bottom - ah / h / 2
+                    ),
+                )
+                use(Component.LOWER_THIRD)
+                animate(cid, n, slide_preset("left", mspec))
+        texts_all = [x.text for x in lines]
+        part_dir = Path(self.settings.data_dir) / "projects" / p.id / "assets"
+        font = self.titles.font_path(heading_font)
+        line_col = prof.palette.main if prof else accent
+
+        async def png(label: str, fn: Any, *args: Any) -> Any:
+            out = part_dir / f"part_{uuid4().hex[:8]}.png"
+            await asyncio.to_thread(fn, out, *args)
+            return await self.timeline.register_generated(
+                p.id, out, AssetKind.IMAGE, "pillow", label
+            )
+
+        def place(row: Any, cx: float, cy: float, max_w: float = 0.92) -> ClipTransform:
+            return native_transform(
+                row.width or 1, row.height or 1, w, h, cx=cx, cy=cy, max_w=max_w
+            )
+
+        def corner(row: Any, left_x: float, top_y: float) -> ClipTransform:
+            """左上の角を (left_x, top_y) に合わせる（画面に対する比）。"""
+            aw, ah = row.width or 1, row.height or 1
+            return native_transform(aw, ah, w, h, cx=left_x + aw / w / 2, cy=top_y + ah / h / 2)
+
+        # 統合版 P4: 料理の材料（「材料名 分量」2 秒・STEP n・最後に材料の一覧）
+        if prof is not None and prof.purpose == Purpose.RECIPE:
+            ings = pp.ingredients(texts_all)
+            list_at = max(0, total - frames(pp.INGREDIENT_LIST_SEC)) if ings else total
+            by_line: dict[int, list[pp.Ingredient]] = {}
+            for g in ings:
+                by_line.setdefault(g.line, []).append(g)
+            starts = sorted(lines[i].start for i in by_line)
+            for i, group in sorted(by_line.items()):
+                at = lines[i].start
+                nxt = next((s for s in starts if s > at), list_at)
+                n = min(frames(pp.INGREDIENT_SEC), nxt - at, list_at - at)
+                if n < frames(0.5):
+                    continue
+                row = await png(
+                    f"材料「{group[0].name[:10]}」",
+                    draw_labels,
+                    h,
+                    [g.label for g in group[: pp.INGREDIENT_MAX]],
+                    font,
+                    ink,
+                    line_col,
+                    panel,
+                )
+                cid = add(
+                    lane(PART_TRACK),
+                    row.id,
+                    at,
+                    n,
+                    role="recipe_ingredient",
+                    transform=corner(row, sa.left, 0.70 - (row.height or 1) / h),
+                )
+                animate(cid, n, slide_preset("left", mspec))
+            stp = pp.steps(texts_all)
+            for k, (i, num) in enumerate(stp):
+                at = lines[i].start
+                end = lines[stp[k + 1][0]].start if k + 1 < len(stp) else total
+                if end - at < frames(1.0):
+                    continue
+                row = await png(
+                    f"STEP {num}", draw_labels, h, [f"STEP {num}"], font, ink, line_col, panel
+                )
+                cid = add(
+                    lane(STEP_TRACK),
+                    row.id,
+                    at,
+                    end - at,
+                    role="recipe_step",
+                    transform=corner(row, sa.left, max(sa.top, 0.05)),
+                )
+                use(Component.CHAPTER_LABEL)
+                animate(cid, end - at, slide_preset("left", mspec))
+            if ings and total - list_at >= frames(2.0):
+                row = await png(
+                    "材料の一覧",
+                    draw_list_card,
+                    w,
+                    h,
+                    pp.servings(texts_all),
+                    [g.label for g in ings],
+                    font,
+                    ink,
+                    emphasis,
+                    panel,
+                )
+                cid = add(
+                    lane(PART_TRACK),
+                    row.id,
+                    list_at,
+                    total - list_at,
+                    role="recipe_list",
+                    transform=place(row, 0.5, 0.42, main_w),
+                )
+                use(Component.CARD)
+                animate(cid, total - list_at)
+
+        # 統合版 P5: ランキング（大きな数字 → 解説のカード → ここまでの一覧のボード）
+        if prof is not None and prof.purpose == Purpose.RANKING:
+            rks = pp.ranks(texts_all)
+            for k, r in enumerate(rks):
+                at = lines[r.line].start
+                end = lines[rks[k + 1].line].start if k + 1 < len(rks) else total
+                n = min(frames(pp.RANK_NUMBER_SEC), end - at)
+                if n < frames(0.5):
+                    continue
+                row = await png(
+                    f"第{r.number}位",
+                    draw_rank_number,
+                    h,
+                    r.number,
+                    font,
+                    ink,
+                    emphasis,
+                    title_outline,
+                )
+                cid = add(
+                    lane(PART_TRACK),
+                    row.id,
+                    at,
+                    n,
+                    role="rank_number",
+                    transform=place(row, 0.5, 0.40),
+                )
+                animate(cid, n, mspec.pop)
+                b_at = max(at + n, end - frames(pp.RANK_BOARD_SEC))
+                if end - b_at < frames(1.5):
+                    continue
+                board = [f"第{x.number}位　{x.name}".rstrip() for x in rks[: k + 1]]
+                row = await png(
+                    "ここまでの順位",
+                    draw_list_card,
+                    w,
+                    h,
+                    "ここまでの順位",
+                    board,
+                    font,
+                    ink,
+                    emphasis,
+                    panel,
+                    k,
+                )
+                cid = add(
+                    lane(PART_TRACK),
+                    row.id,
+                    b_at,
+                    end - b_at,
+                    role="rank_board",
+                    transform=place(row, 0.5, 0.45, main_w),
+                )
+                use(Component.CARD)
+                animate(cid, end - b_at)
+
+        # 統合版 P8: 予告編の日付のカード（題名の後。台本に日付があるときだけ）
+        if tr_date:
+            at = total + ed + tr_title
+            n = frames(pp.TRAILER_DATE_SEC)
+            row = await png("日付", draw_labels, h, [tr_date], font, ink, line_col, panel)
+            cid = add(
+                lane(PART_TRACK), row.id, at, n, role="trailer_date", transform=place(row, 0.5, 0.5)
+            )
+            animate(cid, n)
+        # 統合版 Q4: シリーズの OP（3 秒。台本の 1 文目の発話が終わった直後）・ED・ロゴ
+        if series is not None:
+            if series.op_path and (op := await series_asset(series.op_path, "OP")):
+                at = lines[0].end
+                n = min(frames(SERIES_OP_SEC), media_frames(op, frames(SERIES_OP_SEC)))
+                if at + n <= total:
+                    cid = add(lane(SERIES_TRACK), op.id, at, n, role="series_op")
+                    animate(cid, n)
+            if ed_asset is not None and ed:
+                cid = add(lane(SERIES_TRACK), ed_asset.id, total, ed, role="series_ed")
+                animate(cid, ed)
+            if series.logo_path and (logo := await series_asset(series.logo_path, "ロゴ")):
+                lw = 0.10  # 幅は画面の 10%（右上。安全範囲の内側）
+                lh = lw * w / h * (logo.height or 1) / max(1, logo.width or 1)
+                cid = add(
+                    lane(LOGO_TRACK),
+                    logo.id,
+                    0,
+                    total,
+                    role="series_logo",
+                    transform=native_transform(
+                        logo.width or 1,
+                        logo.height or 1,
+                        w,
+                        h,
+                        cx=1 - sa.right - lw / 2,
+                        cy=sa.top + lh / 2,
+                        max_w=lw,
+                        max_h=0.12,
+                    ),
+                )
         if es:  # 終了画面（まとめの文字と、YouTube の要素を置く場所の目安の枠）
             out = (
                 Path(self.settings.data_dir)
@@ -1144,7 +1484,7 @@ class DirectionService:
             row = await self.timeline.register_generated(
                 p.id, out, AssetKind.IMAGE, "pillow", "終了画面"
             )
-            cid = add(fig_t, row.id, total, es, role="end_screen")
+            cid = add(fig_t, row.id, total + ed, es, role="end_screen")
             animate(cid, es)
         res = await self.timeline.submit(
             p.id,
@@ -1173,7 +1513,7 @@ class DirectionService:
             fonts = [Path(f).stem for f in [self.titles.font_path(heading_font)] if f]
             # 書き出し時の画面演出（rich_direction）が使う、題名と章の区切り
             outline = {
-                "end_screen": round(total / fps, 3) if es else None,
+                "end_screen": round((total + ed) / fps, 3) if es else None,
                 "title": plan.title,
                 "catch": plan.subtitle,
                 "chapters": [

@@ -183,3 +183,41 @@ async def make_pop(ffmpeg: FFmpeg, out: Path) -> Path:
         ]
     )
     return out
+
+
+async def make_bgm_from(
+    ffmpeg: FFmpeg,
+    src: Path,
+    out: Path,
+    duration_sec: float,
+    speech: list[tuple[float, float]] | None = None,
+) -> Path:
+    """利用者の BGM のファイル（統合版 Q4 のシリーズの BGM）を、長さに合わせて繰り返し・切り、
+    声の間を下げる（S3）。最初は 1.5 秒で上げ、最後は 2 秒で消す。"""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fade = max(0.0, duration_sec - 2.0)
+    filt = (
+        f"[0:a]atrim=0:{duration_sec:.3f},afade=t=in:d=1.5,afade=t=out:st={fade:.3f}:d=2,"
+        f"volume=0.5,"
+        f"volume=eval=frame:volume='{duck_expr(raise_spans(speech or [], duration_sec))}',"
+        "aformat=sample_rates=48000:channel_layouts=stereo[o]"
+    )
+    script = out.with_suffix(".filter.txt")
+    script.write_text(filt, encoding="utf-8")
+    try:
+        await ffmpeg.run(
+            [
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(src),
+                *await ffmpeg.filter_script_args(str(script)),
+                "-map",
+                "[o]",
+                str(out),
+            ],
+            timeout=600,
+        )
+    finally:
+        script.unlink(missing_ok=True)
+    return out

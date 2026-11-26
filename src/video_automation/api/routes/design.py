@@ -15,10 +15,12 @@ from video_automation.schemas.design import (
     ProfileSummary,
     ProjectDesign,
     Purpose,
+    SeriesSettings,
 )
 from video_automation.schemas.timeline import RenderRequest
 from video_automation.services.design.edits import DesignDefaults, EditProposal
 from video_automation.services.design.profiles import PROFILES, summarize
+from video_automation.services.design.series import SeriesNotFoundError
 
 router = APIRouter(prefix="/design", tags=["design"])
 projects = APIRouter(prefix="/projects/{project_id}/design", tags=["design"])
@@ -101,8 +103,12 @@ async def get_design(project_id: str, c: AppContainer = Depends(get_container)) 
 async def set_design(
     project_id: str, body: ProjectDesign, c: AppContainer = Depends(get_container)
 ) -> Any:
-    """用途と、混ぜる指示が明示されたときだけ使う例外（extras）を設定する。"""
-    return await c.design.set(project_id, body)
+    """用途と、混ぜる指示が明示されたときだけ使う例外（extras）、シリーズ（series_id。空で外す）を
+    設定する。"""
+    try:
+        return await c.design.set(project_id, body)
+    except SeriesNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="そのシリーズはありません") from exc
 
 
 @projects.get("/check", response_model=DesignCheck)
@@ -133,3 +139,50 @@ async def thumbnails(project_id: str, c: AppContainer = Depends(get_container)) 
         return {"thumbnails": paths, "notes": notes}
 
     return c.jobs.submit("thumbnails", run)
+
+
+# ---------- 統合版 Q4: シリーズの設定 ----------
+
+
+def _series(c: AppContainer):  # noqa: ANN202
+    if c.design.series is None:
+        raise HTTPException(status_code=404, detail="シリーズの設定を使っていません")
+    return c.design.series
+
+
+@router.get("/series", response_model=list[SeriesSettings])
+async def list_series(c: AppContainer = Depends(get_container)) -> Any:
+    return _series(c).list()
+
+
+@router.post("/series", response_model=SeriesSettings, status_code=201)
+async def create_series(body: SeriesSettings, c: AppContainer = Depends(get_container)) -> Any:
+    """シリーズを作る（色・書体・ロゴ・BGM・OP・ED・終了画面・サムネイルの型）。"""
+    return _series(c).save(body.model_copy(update={"id": ""}))
+
+
+@router.get("/series/{series_id}", response_model=SeriesSettings)
+async def get_series(series_id: str, c: AppContainer = Depends(get_container)) -> Any:
+    try:
+        return _series(c).get(series_id)
+    except SeriesNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="そのシリーズはありません") from exc
+
+
+@router.put("/series/{series_id}", response_model=SeriesSettings)
+async def update_series(
+    series_id: str, body: SeriesSettings, c: AppContainer = Depends(get_container)
+) -> Any:
+    try:
+        _series(c).get(series_id)
+    except SeriesNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="そのシリーズはありません") from exc
+    return _series(c).save(body.model_copy(update={"id": series_id}))
+
+
+@router.delete("/series/{series_id}", status_code=204)
+async def delete_series(series_id: str, c: AppContainer = Depends(get_container)) -> None:
+    try:
+        _series(c).delete(series_id)
+    except SeriesNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="そのシリーズはありません") from exc

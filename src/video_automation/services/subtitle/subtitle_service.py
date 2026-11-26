@@ -44,6 +44,8 @@ from video_automation.schemas.voice import (
     VoiceGenerateItem,
     VoiceGenerateRequest,
 )
+from video_automation.services.direction.purpose_parts import extra_gaps
+from video_automation.services.direction.purpose_parts import ruby as ruby_words
 from video_automation.services.subtitle.formats import build_ass, build_srt
 from video_automation.services.subtitle.pacing import line_gap
 from video_automation.services.subtitle.text import default_max_chars, make_cues, split_script
@@ -408,9 +410,18 @@ class SubtitleService:
             for c in all_cues:
                 by_seg.setdefault(c.script_segment_id, []).append(c)
 
+            # 統合版 P5・P8: 用途の決まった無音（ランキングの 1 位の前・予告編の第 2 幕の頭）
+            prof = await self.design.profile_for(project.id) if self.design else None
+            durs = []
+            for seg in segs:
+                a_row = await s.get(AudioFile, seg.audio_file_id)
+                durs.append(a_row.duration_sec if a_row is not None else 0.0)
+            extra = extra_gaps(prof.purpose.value if prof else "", [x.text for x in segs], durs)
             cursor = 0  # フレーム
             prev: Any = None
-            for seg in segs:
+            for k_seg, seg in enumerate(segs):
+                if prev is not None and extra[k_seg]:
+                    cursor += sec_to_frame(extra[k_seg], fps)
                 if prev is not None:  # 前のセリフとの間（一律にせず、会話のリズムで）
                     if req.gap_mode == "fixed":
                         cursor += sec_to_frame(req.gap_sec, fps)
@@ -623,6 +634,52 @@ class SubtitleService:
                 out[name] = v
         return out
 
+    async def ruby_map(self, script_id: str) -> dict[str, list[tuple[int, int, int, str]]]:
+        """統合版 P7: 子ども向けの字幕のふりがな {キューの id: [(行, 始まり, 終わり, 読み)]}。
+
+        読みは声を作ったときの VOICEVOX のモーラから取る。
+        読みの位置が合わない発話には付けない。"""
+        async with self.db.session_factory() as s:
+            script, project = await self._project_of(s, script_id)
+            prof = await self.design.profile_for(project.id) if self.design else None
+            if prof is None or prof.purpose.value != "kids":
+                return {}
+            segs = await self._segments(s, script.id)
+            kana: dict[str, tuple[str, str]] = {}
+            for seg in segs:
+                audio = await s.get(AudioFile, seg.audio_file_id) if seg.audio_file_id else None
+                if audio is None or not audio.query:
+                    continue
+                q = AudioQuery.model_validate(audio.query)
+                moras = "".join(m.text for ap in q.accent_phrases for m in ap.moras)
+                kana[seg.id] = (seg.text.replace("\n", ""), moras)
+        out: dict[str, list[tuple[int, int, int, str]]] = {}
+        pos: dict[str, int] = {}
+        for c in await self.cues(script_id):
+            if c.script_segment_id not in kana:
+                continue
+            flat, moras = kana[c.script_segment_id]
+            words = ruby_words(flat, moras)
+            body = c.text.replace("\n", "")
+            at = flat.find(body, pos.get(c.script_segment_id, 0))
+            if at < 0 or not words:
+                continue
+            pos[c.script_segment_id] = at + len(body)
+            # キューの中の文字の位置 → (行, 列)
+            where: list[tuple[int, int]] = []
+            for ln, row in enumerate(c.text.split("\n")):
+                where += [(ln, col) for col in range(len(row))]
+            items = []
+            for a, b, r in words:
+                if a < at or b > at + len(body):
+                    continue
+                (l0, c0), (l1, c1) = where[a - at], where[b - at - 1]
+                if l0 == l1:  # 改行をまたぐ語には付けない
+                    items.append((l0, c0, c1 + 1, r))
+            if items:
+                out[c.id] = items
+        return out
+
     # ---------- 出力 (P4-05 / P4-06 / P4-07) ----------
     async def export(self, req: SubtitleExportRequest) -> SubtitleExportResult:
         async with self.db.session_factory() as s:
@@ -635,6 +692,7 @@ class SubtitleService:
             raise SubtitleStateError("synchronize subtitles first")
         rows = [(c.start_frame or 0, c.end_frame or 0, c.speaker, c.text) for c in cues]
         if req.format == SubtitleFormat.ASS:
+            rb = await self.ruby_map(req.script_id)
             content = build_ass(
                 rows,
                 fps,
@@ -647,6 +705,7 @@ class SubtitleService:
                 speaker_fonts=await self.speaker_fonts(req.script_id),
                 speaker_design=await self.speaker_design(req.script_id),
                 speaker_entrance=await self.speaker_entrance(req.script_id),
+                ruby={i: rb[c.id] for i, c in enumerate(cues) if c.id in rb},
             )
         else:
             content = build_srt(rows, fps)
