@@ -288,3 +288,12 @@ def test_gap_keywords_fill_long_still_stretches():
     assert short[0].text == "連続ヒント"
     calm = DirectionService._fill_gaps(cmds, [], lines, PROFILES[Purpose.INTERVIEW], fps, 0, ())
     assert calm == []  # 変化の間隔を検査しない用途には足さない
+
+
+def test_keyword_card_does_not_wrap_by_rounding():
+    """実機: 「2人で掛け合い解説」が、幅の丸めで「解／説」と折れた。"""
+    from video_automation.schemas.animation import CardRequest
+    from video_automation.services.rendering.card import card_layout
+
+    r = CardRequest(project_id="x", heading="2人で掛け合い解説", style="keyword", scale=0.62)
+    assert [ln.text for ln in card_layout(r, 1080, 1920).lines] == ["2人で掛け合い解説"]

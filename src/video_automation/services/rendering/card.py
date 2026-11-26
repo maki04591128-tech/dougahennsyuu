@@ -42,7 +42,7 @@ def text_width(text: str, size: int) -> float:
 def _wrap(text: str, size: int, width: int) -> list[str]:
     """推定幅に収まるように折り返す（収まるなら折り返さない）。"""
     w = text_width(text, size)
-    if w <= width:
+    if w <= width + 1:  # 幅は丸めた整数なので 1px の誤差は収まるとみなす（「解／説」と折れた）
         return [text]
     # 半角を含む文は 1 文字あたりの幅が狭いので、平均の幅から文字数の上限を決める
     per_char = w / max(1, len(text))
