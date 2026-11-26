@@ -81,6 +81,8 @@ from video_automation.services.voice.reading import emphasis_terms
 log = get_logger("direction")
 
 ZONE_TOP, ZONE_BOTTOM = 0.13, 0.71  # 図・カードの領域（高さ比）
+# 縦長で立ち絵があるとき: 図・カードの領域の下端と、題名を上へずらす量（画面の高さ比）
+V_ZONE_BOTTOM, V_TITLE_DY = 0.53, -0.1
 # ケン・バーンズ（統合版 B3）: 拡大量 = 秒数 × 1.75%（8〜20%）。向きは順に繰り返す
 KB_PER_SEC, KB_MIN, KB_MAX = 0.0175, 0.08, 0.20
 KB_ORDER = ("ken_burns_in", "ken_burns_out", "pan_left", "pan_right")
@@ -588,6 +590,11 @@ class DirectionService:
         # 横長で立ち絵があるときは、図・カードを中央の列に収める（左右の端は立ち絵の列）
         tachie = w >= h and await self._has_tachie(req.script_id)
         main_w = TACHIE_MAIN_W if tachie else 0.92
+        # 縦長で立ち絵があるときは、字幕が立ち絵の上（画面の下から約 37〜45%）に出る。
+        # 題名・カードをその上に収める（実機: 題名の下の一言が字幕に重なった）
+        v_tachie = h > w and await self._has_tachie(req.script_id)
+        title_dy = V_TITLE_DY if v_tachie else 0.0
+        zone_bottom = V_ZONE_BOTTOM if v_tachie else ZONE_BOTTOM
         used: dict[Component, int] = {}
         boxes: list[Placement] = []
         texts: list[TextUse] = []
@@ -744,7 +751,13 @@ class DirectionService:
                 )
             )
             t_len = min(title_end, media_frames(t_asset, title_end))
-            t_cid = add(txt_t, t_asset.id, 0, t_len)
+            t_cid = add(
+                txt_t,
+                t_asset.id,
+                0,
+                t_len,
+                **({"transform": ClipTransform(y=title_dy)} if title_dy else {}),
+            )
             animate(t_cid, t_len, None, title_exit=True)
             if plan.subtitle:
                 sreq = CardRequest(
@@ -768,7 +781,13 @@ class DirectionService:
                     st,
                     max(1, title_end - st),
                     transform=native_transform(
-                        sub.width or 1, sub.height or 1, w, h, cx=0.5, cy=0.6, max_w=main_w
+                        sub.width or 1,
+                        sub.height or 1,
+                        w,
+                        h,
+                        cx=0.5,
+                        cy=0.6 + title_dy,
+                        max_w=main_w,
                     ),
                 )
                 animate(cid, max(1, title_end - st), slide_preset("up", mspec))
@@ -790,8 +809,8 @@ class DirectionService:
                     skipped.append(f"{s.from_line}: 画像の素材が未選択のため外しました{q}")
                     continue
             mains.append(s)
-        zone_cy = (ZONE_TOP + ZONE_BOTTOM) / 2
-        zone_h = ZONE_BOTTOM - ZONE_TOP
+        zone_cy = (ZONE_TOP + zone_bottom) / 2
+        zone_h = zone_bottom - ZONE_TOP
         windows: list[tuple[Shot, int, int]] = []
         for i, s in enumerate(mains):
             start = max(lines[s.from_line - 1].start, title_end)
