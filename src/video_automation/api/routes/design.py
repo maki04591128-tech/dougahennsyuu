@@ -2,7 +2,8 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from video_automation.api.dependencies import get_container
 from video_automation.app.bootstrap import AppContainer
@@ -16,6 +17,7 @@ from video_automation.schemas.design import (
     Purpose,
 )
 from video_automation.schemas.timeline import RenderRequest
+from video_automation.services.design.edits import DesignDefaults, EditProposal
 from video_automation.services.design.profiles import PROFILES, summarize
 
 router = APIRouter(prefix="/design", tags=["design"])
@@ -38,6 +40,56 @@ async def profile(purpose: Purpose) -> Any:
 async def classify(body: ClassifyRequest, c: AppContainer = Depends(get_container)) -> Any:
     """指示文から用途を判定する。needs_confirmation のときはユーザーに確認する。"""
     return c.design.classify(body)
+
+
+class EditChoice(BaseModel):
+    purpose: Purpose
+    component: str
+    item: str
+
+
+def _edits(c: AppContainer):  # noqa: ANN202
+    if c.design.edits is None:
+        raise HTTPException(status_code=404, detail="直しの記録を使っていません")
+    return c.design.edits
+
+
+@router.get("/edits/proposals", response_model=list[EditProposal])
+async def edit_proposals(c: AppContainer = Depends(get_container)) -> Any:
+    """利用者の直しから作った、既定値の変更の提案（統合版 W2）。反映は承認したものだけ。"""
+    return _edits(c).proposals()
+
+
+@router.post("/edits/accept", response_model=DesignDefaults)
+async def accept_edit(body: EditChoice, c: AppContainer = Depends(get_container)) -> Any:
+    """提案を承認して既定値に反映する（次に演出・BGM を作るときから使う）。"""
+    try:
+        return _edits(c).accept(body.purpose.value, body.component, body.item)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="その提案はありません") from exc
+
+
+@router.post("/edits/reject", response_model=DesignDefaults)
+async def reject_edit(body: EditChoice, c: AppContainer = Depends(get_container)) -> Any:
+    """提案を断る（同じ用途の動画がもう 5 本増えるまで、同じ提案を出さない）。"""
+    try:
+        return _edits(c).reject(body.purpose.value, body.component, body.item)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="その提案はありません") from exc
+
+
+@router.get("/defaults", response_model=DesignDefaults)
+async def learned_defaults(c: AppContainer = Depends(get_container)) -> Any:
+    """承認して反映した既定値の変更。"""
+    return _edits(c).defaults()
+
+
+@router.delete("/defaults", response_model=DesignDefaults)
+async def reset_defaults(
+    purpose: Purpose | None = None, c: AppContainer = Depends(get_container)
+) -> Any:
+    """反映した既定値の変更を元に戻す（purpose を省くと全部）。"""
+    return _edits(c).reset(purpose.value if purpose else None)
 
 
 @projects.get("", response_model=ProjectDesign)

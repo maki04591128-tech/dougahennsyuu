@@ -24,6 +24,7 @@ from video_automation.schemas.design import (
 )
 from video_automation.schemas.subtitle import SubtitleStyle
 from video_automation.services.design.classify import classify
+from video_automation.services.design.edits import DesignEditLog
 from video_automation.services.design.guard import (
     ClipMotion,
     DesignManifest,
@@ -62,6 +63,7 @@ def manifest_record(
     empty_spans: list[tuple[float, float]] | None = None,
     outline: dict[str, Any] | None = None,
     texts: list[TextUse] | None = None,
+    clips: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """演出の処理が保存する記録（JSON）。outline は題名・章の区切り（検査には使わない）。
 
@@ -78,6 +80,8 @@ def manifest_record(
     }
     if outline is not None:
         rec["outline"] = outline
+    if clips:  # クリップ → 部品（利用者の直しを部品ごとに記録する。統合版 W2）
+        rec["clips"] = dict(clips)
     if texts:
         rec["texts"] = [
             [t.kind, [round(x, 4) for x in t.sizes], t.chars, round(t.start, 3), round(t.end, 3)]
@@ -87,8 +91,9 @@ def manifest_record(
 
 
 class DesignService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, edits: DesignEditLog | None = None) -> None:
         self.db = db
+        self.edits = edits  # 利用者の直しの記録（統合版 W2）
 
     # ---------- 用途 ----------
     @staticmethod
@@ -116,6 +121,13 @@ class DesignService:
             p.design_extras = [c.value for c in dict.fromkeys(design.extras)]
             await s.commit()
         return design
+
+    async def clip_roles(self, project_id: str) -> dict[str, str]:
+        """演出が作ったクリップの部品（クリップ ID → 部品）。"""
+        async with self.db.session_factory() as s:
+            p = await self._project(s, project_id)
+            rec = (p.design_manifest or {}).get("direction") or {}
+        return dict(rec.get("clips") or {})
 
     async def outline(self, project_id: str) -> dict[str, Any]:
         """演出プランを適用したときに記録した題名・章の区切り（無ければ空）。"""

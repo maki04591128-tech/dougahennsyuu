@@ -428,3 +428,63 @@ async def test_tachie_placed_before_direction_stays_above_background(dclient):
         video = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
         video = [n for n in video if n != "ナレーション"]
         assert video == ["演出・背景", "演出・図", "立ち絵", "演出・文字"]
+
+
+async def test_user_edits_are_logged_and_accepted_defaults_applied(dclient, tmp_path):
+    """統合版 W2: 利用者が直接直した演出の部品を記録し、承認した既定値を次の演出に足す。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    assert (
+        await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    ).status_code == 200
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    container = c.app.state.container
+    log = container.design.edits
+    made = [r for r in log.rows() if r["kind"] == "made"]
+    assert made and made[-1]["purpose"] == "explainer" and "keyword" in made[-1]["components"]
+    roles = await container.design.clip_roles(pid)
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    kw = next(x for x in tl["clips"] if roles.get(x["id"]) == "keyword")
+    tf = {**kw["transform"], "y": kw["transform"]["y"] + 0.05}
+    r = await c.post(
+        f"/projects/{pid}/commands",
+        json={"command": {"type": "set_clip_props", "clip_id": kw["id"], "transform": tf}},
+    )
+    assert r.status_code == 201 and r.json()["status"] == "APPLIED"
+    edits = [r for r in log.rows() if r["kind"] == "edit"]
+    assert [(e["component"], e["item"], e["amount"]) for e in edits] == [("keyword", "y", 0.05)]
+    assert "w-BN" not in log.path.read_text("utf-8")  # 台本の文は記録しない
+
+    # LLM からの命令（承認待ち）は記録しない
+    r = await c.post(
+        f"/projects/{pid}/commands",
+        json={
+            "command": {
+                "type": "set_clip_props",
+                "clip_id": kw["id"],
+                "transform": kw["transform"],
+            },
+            "origin": "llm",
+        },
+    )
+    assert r.status_code == 201
+    assert len([r for r in log.rows() if r["kind"] == "edit"]) == 1
+
+    # 承認した既定（テロップを下へ 5%）は、次の演出の適用から足す
+    d = log.defaults()
+    d.accepted = {"explainer": {"keyword": {"y": 0.05}}}
+    log._save(d)
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    roles = await container.design.clip_roles(pid)
+    tl2 = (await c.get(f"/projects/{pid}/timeline")).json()
+    kw2 = next(x for x in tl2["clips"] if roles.get(x["id"]) == "keyword")
+    assert abs(kw2["transform"]["y"] - (kw["transform"]["y"] + 0.05)) < 1e-6
+    assert (await c.get("/design/defaults")).json()["accepted"] == d.accepted
+    assert (await c.get("/design/edits/proposals")).json() == []  # 5 本に足りない
+    r = await c.post(
+        "/design/edits/accept", json={"purpose": "explainer", "component": "card", "item": "x"}
+    )
+    assert r.status_code == 404

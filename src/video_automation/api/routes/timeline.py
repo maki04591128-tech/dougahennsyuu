@@ -6,12 +6,14 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from video_automation.api.dependencies import get_container
 from video_automation.app.bootstrap import AppContainer
+from video_automation.app.logging import get_logger
 from video_automation.database.models import Asset
 from video_automation.schemas.common import JobRead
 from video_automation.schemas.project import ProjectRead
 from video_automation.schemas.timeline import (
     AssetImportRequest,
     AssetRead,
+    CommandOrigin,
     CommandRead,
     CommandRequest,
     CommandStatus,
@@ -23,6 +25,7 @@ from video_automation.schemas.timeline import (
     ValidationResult,
 )
 
+log = get_logger(__name__)
 router = APIRouter(prefix="/projects/{project_id}", tags=["timeline"])
 assets = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -80,7 +83,21 @@ async def from_script(
 
 @router.post("/commands", response_model=CommandRead, status_code=201)
 async def submit(project_id: str, body: CommandRequest, c: AppContainer = Depends(get_container)):
-    return await c.timeline.submit(project_id, body)
+    """利用者が直接送った命令は、演出の部品ごとの直しとして記録する（統合版 W2）。
+    演出・ビルドが作る命令はサービスの中から送るので、ここを通らない。"""
+    edits = c.design.edits
+    learn = edits is not None and body.origin == CommandOrigin.USER
+    before = await c.timeline.get_timeline(project_id) if learn else None
+    res = await c.timeline.submit(project_id, body)
+    if learn and before is not None and res.status == CommandStatus.APPLIED:
+        try:
+            design = await c.design.get(project_id)
+            roles = await c.design.clip_roles(project_id)
+            purpose = design.purpose.value if design.purpose else None
+            edits.record(project_id, purpose, before, body.command, roles)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001  記録できなくても編集は止めない
+            log.info("design_edit_record_failed", error=type(exc).__name__)
+    return res
 
 
 @router.post("/commands/validate", response_model=ValidationResult)

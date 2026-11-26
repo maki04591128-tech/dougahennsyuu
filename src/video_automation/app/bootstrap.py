@@ -19,6 +19,7 @@ from video_automation.services.animation.scene_service import SceneService
 from video_automation.services.assets.asset_source_service import AssetSourceService
 from video_automation.services.assets.downloader import Resolver
 from video_automation.services.characters.service import CharacterService
+from video_automation.services.design.edits import DesignEditLog
 from video_automation.services.design.service import DesignService
 from video_automation.services.direction.service import DirectionService
 from video_automation.services.llm_tasks.gateway import LLMGateway
@@ -153,7 +154,14 @@ async def build_container(
     llm = LLMGateway(settings, db, providers, router)
     skills = SkillLibrary(settings.skills_path)
     readings = ReadingService(db, voice, llm)
-    design = DesignService(db)
+    # 利用者の直しの記録と、承認した既定値の変更（統合版 W2。ローカルに置き、Git には入れない）
+    design = DesignService(
+        db,
+        DesignEditLog(
+            Path(settings.data_dir) / "training" / "design_edits.jsonl",
+            Path(settings.data_dir) / "design_defaults.json",
+        ),
+    )
     subtitles = SubtitleService(settings, db, voice, readings, design)
     jobs = JobManager(bus)
     ffmpeg = FFmpeg(settings.ffmpeg_path or _tools_ffmpeg(settings))
