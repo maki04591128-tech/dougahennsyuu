@@ -274,7 +274,7 @@ async def build_container(
         approvals=approvals,
         history=HistoryService(db, timeline, approvals),
         orchestrator=orchestrator,
-        qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs),
+        qa=QAService(settings, db, ffmpeg, timeline, subtitles, jobs, llm),
         readings=readings,
         direction=DirectionService(
             settings,
