@@ -250,7 +250,11 @@ def test_card_items_echoing_the_prompt_are_dropped():
     script = _norm("太陽系の惑星を比べるのだ。木星が最大で、土星はリングが特徴なのよ。")
     assert _echoes_prompt("解説動画の演出を担当します", script)
     assert _echoes_prompt("画面に出す演出を決定します", script)
-    assert _echoes_prompt("満充電のまま放置", script)  # 指示の例の写し
+    from video_automation.services.direction import prompts
+
+    pp = prompts.build("", None)  # 例は用途ごとの例（W1）に移った
+    assert _echoes_prompt("満充電が続く状態", script, pp.rules, pp.examples)  # 例の写し
+    assert not _echoes_prompt("満充電が続く状態", script)  # 例を渡さなければ判定しない
     assert not _echoes_prompt("木星は太陽系の最大", script)
     assert not _echoes_prompt("土星はリングが特徴", script)
     assert not _echoes_prompt("高温", script)

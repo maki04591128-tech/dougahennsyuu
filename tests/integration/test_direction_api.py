@@ -135,7 +135,11 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     assert res["lines"] == 5 and res["model_key"] == QWEN
     assert "[2] B：w-BNの押し込み強度" in seen["prompt"] and "w-BNの硬さ" in seen["prompt"]
     # 演出の決まり（スキル）の関係する節がプロンプトに入り、どの節を使ったかが返る
-    assert "参考（スキル）" in seen["system"] and "【video-design-by-purpose /" in seen["system"]
+    # 統合版 W1: 台本を先頭、決まり・指示・例を後ろに置く
+    pr = seen["prompt"]
+    assert "参考（スキル）" in pr and "【video-design-by-purpose /" in pr
+    assert pr.index("[2] B：") < pr.index("参考（スキル）") < pr.index("指示:") < pr.index("例1")
+    assert "参考（スキル）" not in seen["system"]
     assert res["skills"] and all(" / " in x for x in res["skills"])
     assert seen["num_ctx"] and seen["num_ctx"] % 4096 == 0  # 長いプロンプトは num_ctx を広げる
     plan = res["plan"]
