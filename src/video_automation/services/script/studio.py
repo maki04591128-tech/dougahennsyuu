@@ -606,6 +606,44 @@ class ScriptStudio:
                 left.append(i)
         return left
 
+    def _record_script(
+        self,
+        msgs: list[ChatMessage],
+        scenes: list[dict[str, Any]],
+        ai_turns: list[dict[str, Any]],
+        raw: dict[int, str],
+        personas: dict[str, Persona],
+        model_key: str | None,
+    ) -> None:
+        """送った指示と完成版の台本（同じ JSON の形）を、台本 1 本ぶんの学習データとして残す。"""
+        issues = 0
+        for t in ai_turns:
+            p = personas.get(t["speaker"])
+            if p is None or p.empty:
+                continue
+            _, iss = check_line(0, t["text"], p, foreign_endings(personas, t["speaker"]), personas)
+            issues += sum(1 for x in iss if x.kind in ("avoid", "ending", "foreign_ending"))
+        out_scenes = []
+        for sc_ in scenes:
+            turns = [
+                {
+                    "speaker": t["speaker"],
+                    "text": t["text"],
+                    **({"emotion": t["emotion"]} if t.get("emotion") else {}),
+                }
+                for t in sc_.get("turns") or []
+            ]
+            if turns:
+                out_scenes.append({"purpose": sc_.get("purpose") or "", "turns": turns})
+        self.corrections.record_script(
+            messages=[{"role": m.role, "content": m.content} for m in msgs],
+            output={"scenes": out_scenes, "notes": []},
+            model_key=model_key,
+            issues=issues,
+            fixes=sum(1 for t in ai_turns if raw.get(id(t), t["text"]) != t["text"]),
+            lines=sum(len(x["turns"]) for x in out_scenes),
+        )
+
     def _record_corrections(
         self,
         stage: str,
@@ -1490,6 +1528,8 @@ class ScriptStudio:
                     0, t["text"], p, foreign_endings(personas, t["speaker"]), personas
                 )
         self._record_corrections("generate", res.data["scenes"], raw, personas, st, req.model_key)
+        if not fixed:  # 固定セリフのある台本は「AI が一から書いた答え」ではないので学習に使わない
+            self._record_script(msgs, res.data["scenes"], ai_turns, raw, personas, req.model_key)
         emo_sid = await self._emotion_styles(cdata, res.data["scenes"])
         async with self.db.session_factory() as s:
             sc = await self._script(s, script_id)

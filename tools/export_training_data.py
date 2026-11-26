@@ -6,6 +6,9 @@
 省略時は data/training/corrections.jsonl を読み、data/training/export/ に次を書く。
 - sft.jsonl: 会話形式（system=口調の規則 / user=テーマと直前のセリフ / assistant=直した後）
 - dpo.jsonl: 好みの組（prompt / chosen=直した後 / rejected=直す前）
+- scripts_sft.jsonl: 台本 1 本ぶんの会話形式（system / user = 台本を作る AI に実際に送った指示、
+  assistant = 規則・推敲を通った完成版の台本の JSON）。scripts.jsonl から、口調の問題が残らず
+  壊れた形も無い台本だけを使う
 - summary.txt: 件数（段階・話し手ごと）
 
 同じ組は 1 件にまとめる。データは PC の中だけで使い、公開しない。
@@ -126,6 +129,43 @@ def export(src: Path, out: Path) -> dict[str, int]:
     return {"total": len(rows), "dropped": dropped, **{f"stage_{k}": v for k, v in stages.items()}}
 
 
+def export_scripts(
+    src: Path, out: Path, skip_models: tuple[str, ...] = ("tuned",)
+) -> dict[str, int]:
+    """台本 1 本ぶんの組を書き出す。学習したモデル自身の台本（skip_models）は使わない。"""
+    kept = dropped = 0
+    seen: set[str] = set()
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / "scripts_sft.jsonl").open("w", encoding="utf-8") as f:
+        for line in src.read_text(encoding="utf-8").splitlines() if src.is_file() else []:
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            texts = [t["text"] for sc in r["output"]["scenes"] for t in sc["turns"]]
+            bad = (
+                r.get("issues", 0) > 0
+                or len(texts) < 4
+                or any(x in r.get("model", "") for x in skip_models)
+                or any(rx.search(t) for t in texts for rx in _BROKEN)
+            )
+            key = json.dumps(texts, ensure_ascii=False)
+            if bad or key in seen:
+                dropped += 1
+                continue
+            seen.add(key)
+            msgs = [
+                *r["messages"],
+                {
+                    "role": "assistant",
+                    "content": json.dumps(r["output"], ensure_ascii=False),
+                },
+            ]
+            f.write(json.dumps({"messages": msgs}, ensure_ascii=False) + "\n")
+            kept += 1
+    return {"scripts": kept, "scripts_dropped": dropped}
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent / "data" / "training"
     src = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "corrections.jsonl"
@@ -133,7 +173,11 @@ def main() -> None:
     if not src.is_file():
         print(f"記録がまだありません: {src}")
         return
-    print(json.dumps(export(src, out), ensure_ascii=False))
+    res = export(src, out)
+    res.update(export_scripts(src.with_name("scripts.jsonl"), out))
+    with (out / "summary.txt").open("a", encoding="utf-8") as f:
+        f.write(f"台本 1 本ぶん: {res['scripts']} 本（外した {res['scripts_dropped']} 本）\n")
+    print(json.dumps(res, ensure_ascii=False))
 
 
 if __name__ == "__main__":
