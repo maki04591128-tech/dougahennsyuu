@@ -340,6 +340,25 @@ def add_noda(sentence: str) -> str:
     particle = ""
     if len(core) > 1 and core[-1] in "よね":
         core, particle = core[:-1], core[-1]
+    # 頼む形（「聞かせてくれ」「守っておくれ」「飲んでください」）→「〜てほしいのだ」
+    m = re.search(r"([てで])(?:お?くれ|ください)$", core)
+    if m:
+        return core[: m.start()] + m.group(1) + "ほしいのだ" + particle + tail
+    # 「知りたくね？」（＝知りたくない？）→「知りたくないのだ？」
+    if particle == "ね" and re.search(r"[たなしよ]く$", core):
+        return core + "ないのだ" + tail
+    # 問いかけ・推量の「〜か」「〜でしょ」「〜だろう」は外してから付ける
+    # （「知ってるか？」→「知ってるのだ？」。「しようか」のような誘いは触らない）
+    m = re.search(r"(?:でしょう?|だろう?|かな|か)$", core)
+    if m and m.start() > 0 and not particle:
+        if core[m.start() - 1] in "うょ" and m.group(0).startswith("か"):
+            return sentence
+        core = core[: m.start()]
+        if core.endswith(("ます", "です")):
+            return sentence
+    if core.endswith(("っす", "ぞ", "ぜ")) or re.search(r"[たなし]く$", core):
+        # 終助詞・形容詞の連用形（「知りたく」）で終わる文は、「のだ」をつなげると壊れるので触らない
+        return sentence
     if core.endswith(("ます", "です", "ました", "でした", "わ", "の")) or (
         core[-1] in "をにがはへとで" and not core.endswith("まで")
     ):
@@ -347,6 +366,8 @@ def add_noda(sentence: str) -> str:
         return sentence
     if core.endswith("だ"):
         core = core[:-1] + "なのだ"
+    elif core.endswith("そう") and len(core) > 2:  # 「面倒くさそう」→「面倒くさそうなのだ」
+        core += "なのだ"
     elif core[-1] in _VERB_END:
         core += "のだ"
     else:
@@ -419,6 +440,8 @@ _GRAMMAR_FIXES = (
     (re.compile(r"しまっす(?!ぐ)"), "するっす"),
     (re.compile(r"んだっすか"), "んすか"),
     (re.compile(r"んだっす"), "んす"),
+    (re.compile(r"よっす"), "っす"),  # 「すっきりするよっす」→「すっきりするっす」
+    (re.compile(r"ねっす(?=[！!。？?]|$)"), "っすね"),  # 「やってみてねっす」→「やってみてっすね」
 )  # fmt: skip（「まっすぐ」は直さない）
 
 
@@ -565,6 +588,12 @@ def check_line(
             new,
         )
         new = re.sub(r"([うくすつぬむるぐぶ])[ぜわ]のだ", r"\1のだ", new)
+        # 頼む形・問いかけに「のだ」を重ねる誤り（「聞かせてくれのだ」「飲んでくださいのだ」
+        # 「面倒くさそうでしょなのだ？」「見守れているかのだ」「知りたくのだね？」）
+        new = re.sub(r"([てで])(?:お?くれ|ください)な?のだ", r"\1ほしいのだ", new)
+        new = re.sub(r"(?:でしょう?|だろう?)な?のだ", "なのだ", new)
+        new = re.sub(r"([るたい])かな?のだ(?=[？?]|$)", r"\1のだ", new)
+        new = re.sub(r"([たなし])くのだね", r"\1くないのだ", new)
         # 「聞いてなのだ」→「聞いてほしいのだ」
         new = re.sub(r"([てで])なのだ", r"\1ほしいのだ", new)
         # 「疲れたのかいなのだ？」「痛くないのかのだ」→「疲れたのだ？」「痛くないのだ？」

@@ -73,3 +73,25 @@ async def test_generation_records_persona_fixes(tmp_path: Path):
     )
     row = json.loads((tmp_path / "c.jsonl").read_text("utf-8"))
     assert row["before"] == "備えろなのだ" and row["topic"] == "防災" and "ボク" in row["rules"]
+
+
+def test_export_drops_broken_corrections(tmp_path: Path):
+    src = tmp_path / "c.jsonl"
+    log = CorrectionLog(src)
+    log.record(
+        stage="generate", speaker="ずんだもん", before="聞かせてくれ！", after="聞かせてくれのだ！"
+    )
+    log.record(
+        stage="generate",
+        speaker="ずんだもん",
+        before="一口大にしなければのだ",
+        after="一口大にしないのだ",
+    )
+    log.record(stage="generate", speaker="ずんだもん", before="完了だ！", after="完了なのだ！")
+    path = Path(__file__).resolve().parents[2] / "tools" / "export_training_data.py"
+    spec = importlib.util.spec_from_file_location("export_training_data", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    res = mod.export(src, tmp_path / "out")
+    assert res["total"] == 1 and res["dropped"] == 2

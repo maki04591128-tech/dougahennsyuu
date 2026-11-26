@@ -37,3 +37,40 @@ def test_whole_line_quote_removed():
     assert any(x.kind == "quote" for x in iss)
     fixed, _ = check_line(0, "「1234」は危ないのだ！", _zunda())
     assert fixed == "「1234」は危ないのだ！"
+
+
+def test_add_noda_requests_and_questions():
+    # 実機の学習データ: 「聞かせてくれのだ」「飲んでくださいのだ」「でしょなのだ？」「知りたくのだね？」
+    assert add_noda("カレーの作り方を聞かせてくれ！") == "カレーの作り方を聞かせてほしいのだ！"
+    assert add_noda("データを守っておくれ！") == "データを守ってほしいのだ！"
+    assert add_noda("こまめに飲んでください！") == "こまめに飲んでほしいのだ！"
+    assert add_noda("面倒くさそうでしょ？") == "面倒くさそうなのだ？"
+    assert (
+        add_noda("台風が来ると何が起こるか知ってるか？") == "台風が来ると何が起こるか知ってるのだ？"
+    )
+    assert add_noda("面接の受け方、知りたくね？") == "面接の受け方、知りたくないのだ？"
+    assert add_noda("家で筋トレしようか？") == "家で筋トレしようか？"
+    assert add_noda("今日も勝つぞ！") == "今日も勝つぞ！"
+    assert add_noda("すぐ書く！") == "すぐ書くのだ！"
+    assert add_noda("大事なのは長さ！") == "大事なのは長さなのだ！"
+
+
+def test_noda_after_request_or_question_is_fixed():
+    z = _zunda()
+    cases = {
+        "さあ、みんな、カレーの作り方を聞かせてくれのだ！": "さあ、みんな、カレーの作り方を聞かせてほしいのだ！",
+        "さあ、みんな、こまめに飲んでくださいのだ！": "さあ、みんな、こまめに飲んでほしいのだ！",
+        "冷蔵庫の整理って面倒くさそうでしょなのだ？": "冷蔵庫の整理って面倒くさそうなのだ？",
+        "子どもの勉強、うまく見守れているかのだ": "子どもの勉強、うまく見守れているのだ",
+        "ふるさと納税って聞いたことあるかのだ？": "ふるさと納税って聞いたことあるのだ？",
+        "わかったかなのだ？": "わかったのだ？",
+        "面接の受け方、知りたくのだね？": "面接の受け方、知りたくないのだ？",
+    }
+    for src, want in cases.items():
+        assert check_line(0, src, z)[0] == want, src
+
+
+def test_tsumugi_su_fixed():
+    t = parse_style("春日部つむぎ", "一人称は「あーし」。語尾は「〜っす」・「〜だよ」")
+    assert check_line(0, "背中がすっきりするよっす。", t)[0] == "背中がすっきりするっす。"
+    assert check_line(0, "みんなもやってみてねっす！", t)[0] == "みんなもやってみてっすね！"
