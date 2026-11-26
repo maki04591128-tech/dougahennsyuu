@@ -117,7 +117,10 @@ class SubtitleSyncRequest(BaseModel):
     gap_mode: Literal["auto", "fixed"] = "auto"
     gap_sec: float = Field(default=0.3, ge=0, le=10)  # fixed のときの無音
     gap_scale: float = Field(default=1.0, ge=0.3, le=3.0)  # auto の間の倍率（速く=小さく）
-    min_duration_sec: float = Field(default=0.6, ge=0, le=10)
+    # 統合版 C4: 字幕 1 枚の表示は最小 0.83 秒・最大 7 秒（Netflix の一般要件）。最大は、
+    # 声が 7 秒を超えて続くときは声の終わりまで
+    min_duration_sec: float = Field(default=0.83, ge=0, le=10)
+    max_duration_sec: float = Field(default=7.0, ge=1, le=30)
     # 行の終わりの字幕を、次の字幕が出るまで（最大この秒数）残す。読み切れる時間を確保する
     hold_sec: float = Field(default=0.5, ge=0, le=5)
 

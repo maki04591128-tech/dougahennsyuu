@@ -271,6 +271,7 @@ class TitleCardService:
                     "font_path": self.font_path(req.font),
                     "text_color": _rgba(req.text_color),
                     "accent_colors": [_rgba(c) for c in self._chart_colors(req)],
+                    "muted_color": _rgba(req.muted_color),
                     "output_dir": tmp,
                 },
             )
@@ -430,7 +431,7 @@ class TitleCardService:
                 ],
                 timeout=60,
             )
-        if layout.icon is not None and req.icon:
+        if layout.icon is not None and req.icon and req.only_item is None:
             await asyncio.to_thread(_paste_icon, out, req.icon, layout.icon, req.accent_color)
         label = req.heading or (req.body[0] if req.body else "")
         asset = await self.timeline.register_generated(

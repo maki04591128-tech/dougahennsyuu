@@ -258,6 +258,22 @@ def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=
     L.new(off.outputs[0], tri.inputs["Translation"])
     L.new(tri.outputs[0], sci.inputs["Instances"])
     L.new(scale, sci.inputs["Scale"])
+    # 統合版 C5: 各文字を、その文字の外接矩形の中心を基点に拡大する（左下を基点にすると、
+    # 拡大の途中で文字が右上へずれる）
+    try:
+        ib = N.new("GeometryNodeInputInstanceBounds")
+        mid = N.new("ShaderNodeVectorMath")
+        mid.operation = "ADD"
+        half = N.new("ShaderNodeVectorMath")
+        half.operation = "SCALE"
+        half.inputs["Scale"].default_value = 0.5
+        L.new(ib.outputs["Min"], mid.inputs[0])
+        L.new(ib.outputs["Max"], mid.inputs[1])
+        L.new(mid.outputs[0], half.inputs[0])
+        L.new(half.outputs[0], sci.inputs["Center"])
+        sci.inputs["Local Space"].default_value = True
+    except Exception:  # noqa: BLE001  Instance Bounds の無い古い Blender は今のまま
+        pass
     L.new(sci.outputs[0], rlz.inputs[0])
     L.new(rlz.outputs[0], fill.inputs["Curve"])
     L.new(fill.outputs[0], setm.inputs["Geometry"])
@@ -395,7 +411,7 @@ def main():
             sub.use_shadow = True
             sub.shadow_color = (0.0, 0.02, 0.08, 0.85)
             sub.shadow_offset = 0.04
-            sub.shadow_blur = 0.25
+            sub.shadow_blur = 0.5  # 統合版 D2
             kp_(sub, "location", 28, (0.5, 0.33))
             kp_(sub, "location", 40, (0.5, 0.37))
             kp_(sub, "blend_alpha", 28, 0.0)
@@ -490,7 +506,7 @@ def main():
             t.use_shadow = True
             t.shadow_color = (0.0, 0.03, 0.1, 0.8)
             t.shadow_offset = 0.03
-            t.shadow_blur = 0.3
+            t.shadow_blur = 0.5  # 統合版 D2
             y = 1 - my / H
             x = (mx + 18 * U) / W
             kp_(t, "location", f + 6, (x - 0.02, y))

@@ -55,13 +55,18 @@ from video_automation.schemas.timeline import (
     TitleCardRequest,
     TrackKind,
 )
-from video_automation.services.animation.entrance import element_animation, slide_preset
+from video_automation.services.animation.entrance import (
+    ITEM_IN_PX,
+    element_animation,
+    slide_preset,
+)
 from video_automation.services.assets.look import match_file, palette_colors
 from video_automation.services.design.edits import adjust_transform
 from video_automation.services.design.guard import Placement, TextUse, is_dark
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction import prompts as plan_prompts
+from video_automation.services.direction.charts import anim_frames, chart_kind
 from video_automation.services.direction.plan import (
     PLAN_SCHEMA,
     from_llm,
@@ -919,6 +924,10 @@ class DirectionService:
                         # ムのコツ」「先に置／く」と語の途中で折り返した）
                         width_ratio=main_w if h > w else 0.62,
                     )
+                    # 統合版 D1: 2 項目目からは、新しい項目を別の絵で重ねて下から出す
+                    new_item = reveal - 1 if reveal is not None and k > 0 else None
+                    if new_item is not None:
+                        creq = creq.model_copy(update={"hide_item": new_item})
                     a = await self.titles.card(creq)
                     if k == last:  # 文字の大きさと表示の長さ（統合版 T39・T40・T52）
                         texts.append(
@@ -947,24 +956,50 @@ class DirectionService:
                     # 入りは用途の pop（B2）、出は最後の項目だけ
                     if k == 0 or k == last:
                         animate(cid, t1 - t0, mspec.pop if k == 0 else None, exit_=k == last)
+                    if new_item is not None:
+                        item = await self.titles.card(
+                            creq.model_copy(update={"hide_item": None, "only_item": new_item})
+                        )
+                        iid = add(
+                            txt_t,
+                            item.id,
+                            t0,
+                            t1 - t0,
+                            role="card",
+                            transform=native_transform(
+                                item.width or 1,
+                                item.height or 1,
+                                w,
+                                h,
+                                cx=0.5,
+                                cy=zone_cy,
+                                max_h=zone_h,
+                                max_w=main_w,
+                            ),
+                        )
+                        dy = ITEM_IN_PX / 1080  # 1080p で 16px（画面の高さに対する比）
+                        animate(iid, t1 - t0, "item", exit_=k == last, item_dy=dy)
                 shown.append((start, end))
             elif s.kind == ShotKind.CHART:
                 use(Component.CHART)
+                said = "".join(x.text for x in lines[s.from_line - 1 : s.to_line or s.from_line])
+                ckind = chart_kind(s, said)  # 統合版 S10: データの形から図を選ぶ
+                anim = anim_frames(ckind, len(s.values))
                 a = await self.titles.infographic(
                     InfographicRequest(
                         project_id=p.id,
-                        kind="bar",
+                        kind=ckind,
                         title=s.heading,
                         labels=s.labels,
                         values=s.values,
                         unit=s.unit,
                         decimals=0 if all(float(v).is_integer() for v in s.values) else 1,
                         duration_sec=min(CHART_MAX_SEC, sec(length)),
-                        animation_sec=1.2,
+                        animation_sec=float(anim / ffps),
                         # 表示区間が長さの上限を超えるときは、止まった後半を繰り返して埋める
                         # ので、素材自体は消えない（最後のクリップで消す）
                         fade_out_sec=0.0 if sec(length) > CHART_MAX_SEC else 0.3,
-                        highlight=s.highlight,
+                        highlight=s.highlight if ckind == "bar" else None,
                         colors=chart_colors,
                         muted_color=muted,
                         font=heading_font,
@@ -976,7 +1011,7 @@ class DirectionService:
                 shown_len = min(length, media)
                 tf = ClipTransform(fit=FitMode.FIT, scale=min(zone_h, main_w), y=zone_cy - 0.5)
                 # 動き終わった後（止まっている部分）。区間が素材より長ければ、ここを繰り返す
-                still_from = min(media - 1, frames(1.2) + 2)
+                still_from = min(media - 1, anim + 2)
                 seg = media - still_from
                 fill = length > shown_len and seg >= frames(1.0)
                 cid = add(fig_t, a.id, start, shown_len, role="chart", transform=tf)
