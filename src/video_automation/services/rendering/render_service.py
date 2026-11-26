@@ -576,12 +576,7 @@ class RenderService:
         if len(graph) > FILTER_SCRIPT_THRESHOLD:
             gfile = output.with_suffix(".filtergraph.txt")
             gfile.write_text(graph, encoding="utf-8")
-            major = int((await self.ffmpeg.version()).split(".")[0].lstrip("n") or 0)
-            graph_args = (
-                ["-/filter_complex", str(gfile)]
-                if major >= 7
-                else ["-filter_complex_script", str(gfile)]
-            )
+            graph_args = await self.ffmpeg.filter_script_args(str(gfile))
         else:
             graph_args = ["-filter_complex", graph]
 
