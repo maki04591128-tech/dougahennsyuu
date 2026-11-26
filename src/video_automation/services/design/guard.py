@@ -68,6 +68,18 @@ class SubtitleUse:
 
 
 @dataclass
+class TextUse:
+    """画面に出した文字のまとまり（カード・テロップ）。sizes は文字の大きさ（短辺比）の一覧、
+    start・end は表示の秒。"""
+
+    kind: str
+    sizes: list[float]
+    chars: int
+    start: float
+    end: float
+
+
+@dataclass
 class ClipMotion:
     """映像のクリップ 1 つの時間と動き（キーフレームは (秒, キーフレームの dict)）。"""
 
@@ -91,6 +103,7 @@ class DesignManifest:
     duration_sec: float = 0.0
     size: tuple[int, int] = (1920, 1080)
     clips: list[ClipMotion] = field(default_factory=list)  # 映像のクリップ（動きの検査）
+    texts: list[TextUse] = field(default_factory=list)  # カード・テロップの文字（文字の検査）
 
     def add(self, c: Component, n: int = 1) -> None:
         self.used[c] = self.used.get(c, 0) + n
@@ -453,6 +466,92 @@ def motion_checks(profile: DesignProfile, m: DesignManifest) -> list[Violation]:
     return out
 
 
+# 統合版 T39・T40・T52
+MIN_TEXT = 0.035  # 読ませる文字の最小の大きさ（画面の短辺比。1080p で 38px）
+MAX_TEXT_SIZES = 4  # 同時に出ている文字の大きさの種類の上限（差が 10% 未満は同じ種類）
+NO_READ_CHECK = frozenset({Purpose.MV, Purpose.LYRIC})  # 歌詞は声と同時に読むので T39 を除く
+READ_IN_MIN_SEC = 4 / 30  # 足りないときは入りを 4f に縮めて計算し直す
+
+
+def _size_classes(sizes: list[float]) -> int:
+    """差が 10% 未満の大きさを同じ種類として数える。"""
+    n, last = 0, -1.0
+    for s in sorted(sizes):
+        if last <= 0 or s > last * 1.1:
+            n += 1
+            last = s
+    return n
+
+
+def text_checks(profile: DesignProfile, m: DesignManifest) -> list[Violation]:
+    """読める静止の長さ（T39）・読ませる文字の最小の大きさ（T40）・大きさの段数（T52）。"""
+    out: list[Violation] = []
+    label = profile.label
+    small = [t for t in m.texts if min(t.sizes, default=1.0) < MIN_TEXT - 1e-6]
+    if m.subtitle is not None and m.subtitle.size_ratio < MIN_TEXT - 1e-6:
+        out.append(
+            Violation(
+                code="text_too_small",
+                severity="warning",
+                message=f"字幕の文字が小さすぎます（画面の短辺の {m.subtitle.size_ratio:.1%}。"
+                f"{MIN_TEXT:.1%} 以上にする）",
+            )
+        )
+    if small:
+        worst = min(min(t.sizes) for t in small)
+        out.append(
+            Violation(
+                code="text_too_small",
+                severity="warning",
+                message=(
+                    f"小さすぎて読めない文字が {len(small)} か所あります（最小は画面の短辺の "
+                    f"{worst:.1%}。{MIN_TEXT:.1%} 以上にする）"
+                ),
+            )
+        )
+    if profile.purpose not in NO_READ_CHECK:
+        cps = profile.subtitle.chars_per_sec
+        in_s, out_s = profile.motion.in_frames / 30, profile.motion.out_frames / 30
+        short = []
+        for t in m.texts:
+            need = t.chars / cps
+            still = (t.end - t.start) - in_s - out_s
+            if still < need and (t.end - t.start) - READ_IN_MIN_SEC - out_s < need:
+                short.append(t)
+        if short:
+            out.append(
+                Violation(
+                    code="text_too_short",
+                    severity="warning",
+                    message=(
+                        f"読み切れないほど短く出る文字が {len(short)} か所あります"
+                        f"（「{label}」は 1 秒 {cps:g} 字で読める長さにする）"
+                    ),
+                )
+            )
+    # T52: 同時に出ている文字の大きさの種類（字幕は 1 種類として数える）
+    sub = [m.subtitle.size_ratio] if m.subtitle is not None else []
+    times = sorted({t.start for t in m.texts})
+    worst_n, at = 0, 0.0
+    for t0 in times:
+        sizes = sub + [s for t in m.texts if t.start <= t0 < t.end for s in t.sizes]
+        n = _size_classes(sizes)
+        if n > worst_n:
+            worst_n, at = n, t0
+    if worst_n > MAX_TEXT_SIZES:
+        out.append(
+            Violation(
+                code="text_sizes",
+                severity="warning",
+                message=(
+                    f"{at:.1f} 秒で、文字の大きさが {worst_n} 種類あります"
+                    f"（{MAX_TEXT_SIZES} 種類までにすると整って見えます）"
+                ),
+            )
+        )
+    return out
+
+
 def _merge(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
     out: list[tuple[float, float]] = []
     for a, b in sorted(spans):
@@ -505,6 +604,7 @@ def check(
     out += color_vision(profile)
     out += transition_rate(profile, m)
     out += motion_checks(profile, m)
+    out += text_checks(profile, m)
     hues = hue_groups(m.colors)
     if len(hues) > profile.max_hues:
         out.append(

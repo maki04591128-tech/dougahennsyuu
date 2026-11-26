@@ -261,3 +261,30 @@ def test_card_text_drops_spaces_between_japanese_and_numbers():
 
     assert _trim("土星は直径約 11 万 6,000km", 40) == "土星は直径約11万6,000km"
     assert _trim("AI と人", 40) == "AI と人"
+
+
+def test_gap_keywords_fill_long_still_stretches():
+    """統合版 Q2: 縦型ショート（3 秒）で画面が 8 秒変わらなかった所に、発話の語のテロップを足す。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import AddClip
+    from video_automation.services.design.profiles import PROFILES
+    from video_automation.services.direction.service import DirectionService, _Line, gap_keyword
+
+    assert gap_keyword("土星は直径約12万kmもある") == "約12万km"
+    assert gap_keyword("色合わせが攻略の鍵なのだ") == "攻略"
+    assert gap_keyword("ずんだもん、それはすごいのだ", ("ずんだもん",)) == ""
+    fps = 30.0
+    lines = [
+        _Line("A", "最初の説明なのだ", 0, 60),
+        _Line("B", "連続ヒントで同じエリアを補強するのよ", 60, 150),
+        _Line("A", "色合わせが攻略の鍵なのだ", 150, 240),
+        _Line("B", "端のブロックから崩すと速いのよ", 240, 330),
+    ]
+    cmds = [AddClip(track_id="t", asset_id="a", start_frame=0, duration_frames=330)]
+    short = DirectionService._fill_gaps(
+        cmds, [], lines, PROFILES[Purpose.SHORT], fps, 0, ("A", "B")
+    )
+    assert [s.from_line for s in short] == [2, 3, 4]  # 3 秒ごと
+    assert short[0].text == "連続ヒント"
+    calm = DirectionService._fill_gaps(cmds, [], lines, PROFILES[Purpose.INTERVIEW], fps, 0, ())
+    assert calm == []  # 変化の間隔を検査しない用途には足さない
