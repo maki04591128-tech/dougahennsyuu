@@ -195,3 +195,15 @@ def test_broken_japanese_asks_for_a_rewrite():
     assert [i.kind for i in check_line(0, "すぐに設定し直しますのだ！", z)[1]] == ["avoid"]
     assert [i.kind for i in check_line(0, "エアコンは 28 度に設定しなさいわ。", m)[1]] == ["avoid"]
     assert check_line(0, "28 度に設定するのだ。", z)[1] == []
+
+
+def test_doubled_noda_is_collapsed():
+    """実機: 字幕に「氷の惑星なのなのだ」と出た。重なった語尾を 1 つにする。"""
+    from video_automation.services.script.persona import add_noda
+
+    z = _p("ずんだもん")
+    for t in ("氷の惑星なのなのだ", "氷の惑星なんなのだ", "氷の惑星なのだなのだ"):
+        assert check_line(1, t, z)[0] == "氷の惑星なのだ"
+    assert add_noda("大事なんだ") == "大事なのだ"
+    assert add_noda("28度だ！") == "28度なのだ！"
+    assert check_line(1, "みんななのだ", z)[0] == "みんななのだ"

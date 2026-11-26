@@ -314,3 +314,13 @@ def test_subtitles_drop_spaces_between_japanese_and_numbers():
 
     cue = make_cues("地球の直径は約 12,742km で、惑星の中では 4 番目なのだ", 18, 2, True)[0]
     assert "約12,742kmで" in cue and "では４番目" in cue
+
+
+def test_space_before_unit_after_kanji_number_is_removed():
+    """実機: 字幕に「直径約５万７千 km」と、単位の前に空白が残った。"""
+    from video_automation.services.subtitle.text import tidy_spaces
+
+    assert tidy_spaces("直径約 5 万 7 千 km、") == "直径約5万7千km、"
+    assert tidy_spaces("重さ 3 kg です") == "重さ3kgです"
+    assert tidy_spaces("千 Blender") == "千 Blender"  # 単位でない英語は残す
+    assert tidy_spaces("Blender 5") == "Blender 5"

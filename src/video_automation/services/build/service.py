@@ -162,6 +162,21 @@ def _title(instruction: str) -> str:
     return (t.strip(" 　。") or "新しい動画")[:40]
 
 
+def skipped_notes(skipped: list[str]) -> list[str]:
+    """演出で外したものの理由を、同じ理由ごとにまとめて伝える（実機: 素材の無い画像や表示時間の
+    足りないカードまで「用途の型に合わない演出」と書いていた）。"""
+    if not skipped:
+        return []
+    reasons: dict[str, int] = {}
+    for x in skipped:
+        r = x.split(": ", 1)[-1]  # 頭の発話番号（「3: 」）を外す
+        r = re.sub(r"「[^」]*」|（[^）]*）|\d+", "…", r)  # 語・数を伏せて同じ理由をまとめる
+        reasons[r] = reasons.get(r, 0) + 1
+    top = sorted(reasons.items(), key=lambda kv: -kv[1])[:3]
+    detail = "、".join(f"{r}（{n} 件）" if n > 1 else r for r, n in top)
+    return [f"演出 {len(skipped)} 個を外しました: {detail}"]
+
+
 class BuildService:
     def __init__(self, c: AppContainer) -> None:
         self.c = c
@@ -834,9 +849,7 @@ class BuildService:
         res = await c.direction.apply(
             DirectionApplyRequest(script_id=sid, plan=plan, text_scale=text_scale)
         )
-        skipped = list(getattr(res, "skipped", []) or [])
-        if skipped:
-            notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")
+        notes += skipped_notes(list(getattr(res, "skipped", []) or []))
         await at("check")
         rreq = RenderRequest(
             project_id=project_id,
@@ -1123,9 +1136,7 @@ class BuildService:
         res = await c.direction.apply(
             DirectionApplyRequest(script_id=sid, plan=plan, text_scale=text_scale)
         )
-        skipped = list(getattr(res, "skipped", []) or [])
-        if skipped:
-            notes.append(f"用途の型に合わない演出 {len(skipped)} 個を外しました")
+        notes += skipped_notes(list(getattr(res, "skipped", []) or []))
         try:
             notes += await self._place_audio(project_id, sid)
         except Exception as exc:  # noqa: BLE001 - BGM・効果音が無くても動画は作る
