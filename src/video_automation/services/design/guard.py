@@ -104,6 +104,7 @@ class DesignManifest:
     size: tuple[int, int] = (1920, 1080)
     clips: list[ClipMotion] = field(default_factory=list)  # 映像のクリップ（動きの検査）
     texts: list[TextUse] = field(default_factory=list)  # カード・テロップの文字（文字の検査）
+    end_screen_at: float | None = None  # 終了画面の始まり（秒。統合版 S9。変化の間隔の検査の外）
 
     def add(self, c: Component, n: int = 1) -> None:
         self.used[c] = self.used.get(c, 0) + n
@@ -443,13 +444,14 @@ def motion_checks(profile: DesignProfile, m: DesignManifest) -> list[Violation]:
         )
     # Q2: 新しい要素の登場・動き・切り替えの間隔の最大
     limit = profile.motion.change_interval_sec
-    if limit is not None and m.duration_sec > 0:
+    dur = m.duration_sec if m.end_screen_at is None else min(m.duration_sec, m.end_screen_at)
+    if limit is not None and dur > 0:
         times = sorted(
             {round(c.start, 3) for c in m.clips}
             | {round(a, 3) for c in m.clips for a, _ in _moving_spans(c)}
             | {round(t, 3) for t, _ in m.transitions}
         )
-        times = [t for t in times if 0 <= t <= m.duration_sec] + [m.duration_sec]
+        times = [t for t in times if 0 <= t <= dur] + [dur]
         gaps = [(b - a, a) for a, b in zip([0.0, *times], times, strict=False)]
         gap, start = max(gaps) if gaps else (0.0, 0.0)
         if gap > limit + 1e-6:
@@ -560,6 +562,21 @@ def _merge(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
         else:
             out.append((a, b))
     return out
+
+
+OPENING_FRAMES = 15  # 統合版 S5: 縦型の最初の 15f（30fps）に入りの動き
+
+
+def opening_motion(m: DesignManifest) -> bool:
+    """最初の 15f のうちに、要素が入ってくる動き（不透明度・位置・拡大のキー）があるか。
+    ケン・バーンズ（素材の中で寄る・動く）は数えない。"""
+    limit = OPENING_FRAMES / 30
+    for c in m.clips:
+        if c.start >= limit or c.preset in KEN_BURNS:
+            continue
+        if any(lo < limit for lo, _hi in _moving_spans(c)):
+            return True
+    return False
 
 
 def check(
@@ -717,7 +734,19 @@ def check(
                     ),
                 )
             )
-    sa = profile.safe_area
+    from video_automation.services.design.profiles import safe_area_for
+
+    if m.vertical and m.clips and not opening_motion(m):
+        out.append(
+            Violation(
+                code="opening_motion",
+                severity="warning",
+                message="縦型の最初の 15 フレームに、要素が入ってくる動きがありません（統合版 S5）",
+            )
+        )
+
+    w, h = m.size
+    sa = safe_area_for(profile, w, h)
     for pl in m.placements:
         if (
             pl.x0 < sa.left - 1e-3

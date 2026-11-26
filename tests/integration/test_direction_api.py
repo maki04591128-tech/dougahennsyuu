@@ -519,7 +519,12 @@ async def test_image_look_is_matched_to_the_purpose(dclient, media_dir):
         tl = (await c.get(f"/projects/{pid}/timeline")).json()
         names = {t["id"]: t["name"] for t in tl["tracks"]}
         assets = {x["id"]: x for x in tl["assets"]}
-        return [assets[x["asset_id"]] for x in tl["clips"] if names[x["track_id"]] == "演出・図"]
+        roles = await c.app.state.container.design.clip_roles(pid)
+        return [
+            assets[x["asset_id"]]
+            for x in tl["clips"]
+            if names[x["track_id"]] == "演出・図" and roles.get(x["id"]) == "image"
+        ]
 
     await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
     (img,) = await placed()
@@ -533,3 +538,39 @@ async def test_image_look_is_matched_to_the_purpose(dclient, media_dir):
     await _job(c, await c.post("/direction/apply", json=body))
     (img3,) = await placed()
     assert img3["id"] == a["id"]  # 揃えないときは元の画像
+
+
+async def test_end_screen_fills_the_last_15_seconds(dclient):
+    """統合版 S9: 終了画面を使う用途（解説）は、最後の発話の後に 15 秒の終了画面を置く。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    before = (await c.get(f"/projects/{pid}/timeline")).json()["duration_frames"]
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    roles = await c.app.state.container.design.clip_roles(pid)
+    (es,) = [x for x in tl["clips"] if roles.get(x["id"]) == "end_screen"]
+    assert (es["start_frame"], es["end_frame"]) == (before, before + 15 * 30)
+    assert tl["duration_frames"] == before + 15 * 30
+    bg = [x for x in tl["clips"] if roles.get(x["id"]) == "background"]
+    assert max(x["end_frame"] for x in bg) == before + 15 * 30
+    chk = (await c.get(f"/projects/{pid}/design/check", params={"script_id": sid})).json()
+    assert not any(
+        v["code"] == "change_interval" and "15" in v["message"] for v in chk["violations"]
+    )
+    # 統合版 S4: サムネイルを 3 案（字幕の無いプレビューのフレームを背景に）
+    out = await _job(c, await c.post(f"/projects/{pid}/design/thumbnails"))
+    assert len(out["thumbnails"]) == 3
+    from PIL import Image
+
+    for p in out["thumbnails"]:
+        assert Image.open(p).size == (3840, 2160)
+    assert not [n for n in out["notes"] if "案目" in n]  # 決まりに合わない所が無い
+    # 終了画面を使わない用途では置かない
+    await c.put(f"/projects/{pid}/design", json={"purpose": "promo"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    roles = await c.app.state.container.design.clip_roles(pid)
+    assert "end_screen" not in roles.values()

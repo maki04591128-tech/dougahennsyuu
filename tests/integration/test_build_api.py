@@ -150,9 +150,13 @@ async def test_change_plan_and_revise_after_build(bclient, fake):
     # 縦長のプロジェクトは縦長の大きさで書き出す（実機: 1920×1080 で書き出されていた）
     assert (await c.app.state.container.build._render_profile(pid)).value == "fhd_portrait"
     assert ch["duration_sec"] == 30 and any("用途を" in n for n in ch["notes"])
+    # 統合版 S5: 縦型は最初の 1 文で結論を言うよう台本に指示する
+    st = (await c.app.state.container.studio.detail(sid)).settings
+    assert st.structure.startswith("1 文目でいちばん伝えたい結論")
     # 解説に戻すと横長に戻る
     ch = (await c.put(f"/build/{pid}/plan", json={"script_id": sid, "purpose": "explainer"})).json()
     assert (ch["width"], ch["height"]) == (1920, 1080) and ch["duration_sec"] == 30
+    assert (await c.app.state.container.studio.detail(sid)).settings.structure == ""
     assert (await c.app.state.container.build._render_profile(pid)).value == "fhd_landscape"
     # 無い立ち絵・知らない用途は断る
     name = ch["characters"][0]["name"]

@@ -162,6 +162,12 @@ def _title(instruction: str) -> str:
     return (t.strip(" 　。") or "新しい動画")[:40]
 
 
+VERTICAL_STRUCTURE = (
+    "1 文目でいちばん伝えたい結論を言う（理由や前置きは 2 文目から）。"
+    "冒頭は 1 文を短く、2 行に収まる長さにする"
+)
+
+
 def skipped_notes(skipped: list[str]) -> list[str]:
     """演出で外したものの理由を、同じ理由ごとにまとめて伝える（実機: 素材の無い画像や表示時間の
     足りないカードまで「用途の型に合わない演出」と書いていた）。"""
@@ -357,6 +363,8 @@ class BuildService:
                     topic=req.instruction[:500],
                     purpose=prof.label,
                     target_duration_sec=dur,
+                    # 統合版 S5: 縦型は最初の 1 文で結論（いちばん伝えたいこと）を言う
+                    structure=VERTICAL_STRUCTURE if portrait and music_path is None else "",
                     # 曲から作るときは、貼られた歌詞を台本の参考に置いて書き出しまで使う
                     reference=req.lyrics if music_path is not None else req.reference,
                 ),
@@ -480,7 +488,13 @@ class BuildService:
                     p.width, p.height = 1080, 1920
                 elif prof.orientation == "landscape" and portrait:
                     p.width, p.height = 1920, 1080
+                portrait = p.height > p.width
                 await s.commit()
+            # 統合版 S5: 縦型は最初の 1 文で結論を言う（向きが変わったら付け外しする）
+            if portrait and not settings.structure:
+                settings.structure = VERTICAL_STRUCTURE
+            elif not portrait and settings.structure == VERTICAL_STRUCTURE:
+                settings.structure = ""
             notes.append(f"用途を「{prof.label}」にしました")
         if req.duration_sec is not None:
             settings.target_duration_sec = req.duration_sec
@@ -895,8 +909,21 @@ class BuildService:
         if job is not None and isinstance(job.result, dict):
             notes += [f"検査: {w}" for w in job.result.get("warnings") or []]
         video = str((c.settings.data_dir / r.output_path).resolve())
+        thumbs: list[str] = []
+        if c.thumbnails is not None:  # 統合版 S4: サムネイルを 3 案（作れなくても動画は渡す）
+            try:
+                thumbs = await c.thumbnails.make(rreq.project_id, notes)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("thumbnails_failed", error=str(exc)[:300])
+                notes.append(f"サムネイルを作れませんでした（{type(exc).__name__}）")
         await progress(1.0, "できあがりました")
-        return {"render_id": r.id, "video": video, "notes": notes, "script_id": sid}
+        return {
+            "render_id": r.id,
+            "video": video,
+            "thumbnails": thumbs,
+            "notes": notes,
+            "script_id": sid,
+        }
 
     async def _lyrics_script(self, project_id: str, plan_sid: str) -> str | None:
         """前に文字起こしで作った歌詞の台本（新しいもの）。"""
@@ -995,8 +1022,11 @@ class BuildService:
         cue: list[tuple[int, str, int]] = []
         fig = tracks.get("演出・図")
         if fig is not None:
+            roles = await c.design.clip_roles(project_id)
             clips = sorted(
-                (x for x in tl.clips if x.track_id == fig.id), key=lambda x: x.start_frame
+                # 終了画面（統合版 S9）はフェードで出すので鳴らさない（E3）
+                (x for x in tl.clips if x.track_id == fig.id and roles.get(x.id) != "end_screen"),
+                key=lambda x: x.start_frame,
             )
             prev_end = -1
             for x in clips:
