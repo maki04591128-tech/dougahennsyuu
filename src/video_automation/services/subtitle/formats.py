@@ -76,14 +76,23 @@ def _style_line(
     return (
         f"Style: {st.name},{font or st.font_name},{size},{ass_color(primary or st.primary_color)},"
         f"&H000000FF,{ass_color(outline or st.outline_color)},{ass_color(st.back_color)},"
-        f"{-1 if st.bold else 0},0,0,0,100,100,0,0,1,{st.outline:g},{st.shadow:g},"
+        f"{-1 if st.bold else 0},0,0,0,100,100,{tracking(size)},0,1,{st.outline:g},{st.shadow:g},"
         f"{st.alignment},{mh},{mh},{mv},1"
     )
 
 
+# 統合版 C2: 字間は文字の大きさの −2%（ASS の Spacing、Blender の space_character 0.98）
+TRACKING = -0.02
+
+
+def tracking(size: float) -> int:
+    """ASS の Spacing（px）。字間を文字の大きさの −2% にする。"""
+    return round(size * TRACKING)
+
+
 def text_width(text: str, size: float) -> float:
-    """推定の文字幅（全角=1、半角=0.6）。字幕の帯の幅を決めるのに使う。"""
-    return sum(size * (0.6 if ord(ch) < 0x2E80 else 1.0) for ch in text)
+    """推定の文字幅（全角=1、半角=0.6、字間 −2%）。字幕の帯の幅を決めるのに使う。"""
+    return sum(size * (0.6 if ord(ch) < 0x2E80 else 1.0) for ch in text) * (1 + TRACKING)
 
 
 def _band(

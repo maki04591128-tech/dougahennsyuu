@@ -94,6 +94,7 @@ def text_object(name: str, body: str, font: Any, mat: Any, align: str = "CENTER"
     curve = bpy.data.curves.new(name, "FONT")
     curve.body = body
     curve.align_x, curve.align_y = align, "CENTER"
+    curve.space_character = 0.98  # 統合版 C2: 字間 −2%
     if font is not None:
         curve.font = font
     curve.materials.append(mat)

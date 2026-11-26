@@ -186,6 +186,22 @@ def _copied(item: str, lines: list[str]) -> bool:
     return False
 
 
+_SYSTEM_SENTENCES = [x for x in re.split(r"[。\n]", SYSTEM) if len(x) >= 6]
+
+
+def _echoes_prompt(item: str, script: str) -> bool:
+    """要点が指示文（SYSTEM）の言い換えか（実機: 解説のカードに「解説動画の演出を担当します」
+    「画面に出す演出を決定します」と、指示の 1 文目を写した項目が出た）。台本にある語は外さない。"""
+    a = _norm(item)
+    if len(a) < 4 or a in script:
+        return False
+    if a in _norm(SYSTEM):  # 指示の例（「満充電のまま放置」）をそのまま写した
+        return True
+    return len(a) >= 6 and any(
+        SequenceMatcher(None, a, _norm(x)).ratio() >= 0.5 for x in _SYSTEM_SENTENCES
+    )
+
+
 def normalize(
     plan: DirectionPlan, lines: list[str], title: str = "", names: tuple[str, ...] = ()
 ) -> DirectionPlan:
@@ -220,6 +236,7 @@ def normalize(
                 or _norm(b) in same
                 or _norm(b).endswith("解説動画")
                 or any(x in b for x in names)
+                or _echoes_prompt(b, all_text)
             ]
             if junk:  # 小さなモデルは項目名や指示の言葉を本文に入れることがある
                 notes.append(

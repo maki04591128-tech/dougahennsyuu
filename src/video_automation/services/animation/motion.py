@@ -59,6 +59,8 @@ def ease(u: str, e: Easing) -> str:
         )
     if e == Easing.SINE_IN_OUT:
         return f"(1-cos(PI*({u})))/2"
+    if e == Easing.BEZIER:  # 区間は track() で毎フレームの値に焼いてある
+        return u
     return "0"  # HOLD
 
 
@@ -104,6 +106,8 @@ def ease_value(u: float, e: Easing) -> float:
         return 2 ** (20 * u - 10) / 2 if u < 0.5 else (2 - 2 ** (-20 * u + 10)) / 2
     if e == Easing.SINE_IN_OUT:
         return (1 - math.cos(math.pi * u)) / 2
+    if e == Easing.BEZIER:  # 区間は track() で毎フレームの値に焼いてある
+        return u
     return 0.0
 
 
@@ -437,7 +441,7 @@ def resolve_preset(
             default = PROPS[prop][0]
             lo, hi = PROPS[prop][1], PROPS[prop][2]
             vals[prop] = min(max(default + (v - default) * intensity, lo), hi)
-        cur = out.setdefault(frame, {"easing": k.easing})
+        cur = out.setdefault(frame, {"easing": k.easing, "bezier": k.bezier})
         cur.update(vals)
     return [Keyframe(frame=f, **v) for f, v in sorted(out.items())]  # type: ignore[arg-type]
 
@@ -449,17 +453,21 @@ def merge_keyframes(base: list[Keyframe], add: list[Keyframe]) -> list[Keyframe]
     for k in base:
         vals = {p: v for p, v in k.values().items() if p not in add_props}
         if vals:
-            merged.setdefault(k.frame, {"easing": k.easing}).update(vals)
+            merged.setdefault(k.frame, {"easing": k.easing, "bezier": k.bezier}).update(vals)
     for k in add:
         cur = merged.setdefault(k.frame, {"easing": k.easing})
         cur.update(k.values())
         cur["easing"] = k.easing
+        cur["bezier"] = k.bezier
     return [Keyframe(frame=f, **v) for f, v in sorted(merged.items())]  # type: ignore[arg-type]
 
 
 def keyframes_to_preset(kfs: list[Keyframe], fps: Fraction) -> list[PresetKeyframe]:
     f = float(fps)
-    return [PresetKeyframe(at=round(k.frame / f, 4), easing=k.easing, **k.values()) for k in kfs]  # type: ignore[arg-type]
+    return [
+        PresetKeyframe(at=round(k.frame / f, 4), easing=k.easing, bezier=k.bezier, **k.values())
+        for k in kfs
+    ]  # type: ignore[arg-type]
 
 
 def clamp_keyframes(anim: ClipAnimation, length_frames: int) -> list[str]:
@@ -488,14 +496,15 @@ def split_animation(
     入りのトランジションは前半にだけ残す。"""
     first = [k for k in anim.keyframes if k.frame < at]
     second = [
-        Keyframe(frame=k.frame - at, easing=k.easing, **k.values())  # type: ignore[arg-type]
+        Keyframe(frame=k.frame - at, easing=k.easing, bezier=k.bezier, **k.values())  # type: ignore[arg-type]
         for k in anim.keyframes
         if k.frame > at
     ]
     prev = next((k for k in reversed(anim.keyframes) if k.frame <= at), None)
     easing = prev.easing if prev else Easing.LINEAR
+    bez = prev.bezier if prev else None
     if vals := _values_at(anim, at, fps):
-        second.insert(0, Keyframe(frame=0, easing=easing, **vals))  # type: ignore[arg-type]
+        second.insert(0, Keyframe(frame=0, easing=easing, bezier=bez, **vals))  # type: ignore[arg-type]
     if (
         at > 0
         and (vals := _values_at(anim, at - 1, fps))

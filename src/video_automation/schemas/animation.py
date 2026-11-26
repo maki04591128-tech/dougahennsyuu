@@ -32,6 +32,9 @@ class Easing(StrEnum):
     EXPO_OUT = "expo_out"
     EXPO_IN_OUT = "expo_in_out"
     SINE_IN_OUT = "sine_in_out"
+    # 統合版 A1: cubic-bezier(x1, y1, x2, y2)。値は Keyframe.bezier。FFmpeg では毎フレームの値に
+    # 焼いて linear でつなぐ（閉じた式で書けないため）
+    BEZIER = "bezier"
 
 
 # プロパティ名 → (既定値, 最小, 最大)
@@ -49,8 +52,32 @@ CAMERA_PROPS = ("zoom", "pan_x", "pan_y")
 ELEMENT_PROPS = ("scale", "x", "y", "rotation", "opacity")
 
 
+def cubic_bezier(u: float, p: tuple[float, float, float, float]) -> float:
+    """CSS の cubic-bezier(x1, y1, x2, y2) の、進み具合 u（= x）での値 y。"""
+    x1, y1, x2, y2 = p
+    if u <= 0.0:
+        return 0.0
+    if u >= 1.0:
+        return 1.0
+
+    def bx(t: float) -> float:
+        return 3 * x1 * (1 - t) ** 2 * t + 3 * x2 * (1 - t) * t * t + t**3
+
+    lo, hi = 0.0, 1.0
+    for _ in range(40):  # x は t について単調（x1・x2 が 0..1）なので二分法で解く
+        mid = (lo + hi) / 2
+        if bx(mid) < u:
+            lo = mid
+        else:
+            hi = mid
+    t = (lo + hi) / 2
+    return 3 * y1 * (1 - t) ** 2 * t + 3 * y2 * (1 - t) * t * t + t**3
+
+
 class _Values(BaseModel):
     easing: Easing = Easing.EASE_IN_OUT  # このキーフレームから次までの補間
+    # easing=bezier のときの制御点 (x1, y1, x2, y2)。x は 0..1（CSS の cubic-bezier と同じ）
+    bezier: tuple[float, float, float, float] | None = None
     scale: float | None = Field(default=None, ge=0.01, le=10)
     x: float | None = Field(default=None, ge=-3, le=3)
     y: float | None = Field(default=None, ge=-3, le=3)
@@ -59,6 +86,16 @@ class _Values(BaseModel):
     zoom: float | None = Field(default=None, ge=1, le=10)
     pan_x: float | None = Field(default=None, ge=-1, le=1)
     pan_y: float | None = Field(default=None, ge=-1, le=1)
+
+    @model_validator(mode="after")
+    def _bezier_ok(self) -> "_Values":
+        if self.bezier is not None:
+            x1, _, x2, _ = self.bezier
+            if not (0.0 <= x1 <= 1.0 and 0.0 <= x2 <= 1.0):
+                raise ValueError("bezier の x1・x2 は 0〜1 にしてください")
+        elif self.easing == Easing.BEZIER:
+            raise ValueError("easing=bezier には bezier (x1, y1, x2, y2) が要ります")
+        return self
 
     def values(self) -> dict[str, float]:
         return {k: v for k in PROPS if (v := getattr(self, k)) is not None}
@@ -98,10 +135,22 @@ class ClipAnimation(BaseModel):
         return self
 
     def track(self, prop: str) -> list[tuple[int, float, Easing]]:
-        """そのプロパティを持つキーフレームだけを (frame, value, easing) で返す。"""
-        return [
-            (k.frame, v, k.easing) for k in self.keyframes if (v := getattr(k, prop)) is not None
-        ]
+        """そのプロパティを持つキーフレームだけを (frame, value, easing) で返す。
+
+        cubic-bezier の区間は、毎フレームの値に焼いて linear でつなぐ（統合版 A1）。"""
+        keys = [(k, v) for k in self.keyframes if (v := getattr(k, prop)) is not None]
+        out: list[tuple[int, float, Easing]] = []
+        for i, (k, v) in enumerate(keys):
+            nxt = keys[i + 1] if i + 1 < len(keys) else None
+            if k.easing == Easing.BEZIER and k.bezier is not None and nxt is not None:
+                f1, v1 = nxt[0].frame, nxt[1]
+                n = f1 - k.frame
+                for j in range(n):
+                    y = cubic_bezier(j / n, k.bezier)
+                    out.append((k.frame + j, v + (v1 - v) * y, Easing.LINEAR))
+            else:
+                out.append((k.frame, v, k.easing))
+        return out
 
     def is_empty(self) -> bool:
         return not self.keyframes and self.transition_in is None
