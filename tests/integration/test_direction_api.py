@@ -488,3 +488,42 @@ async def test_user_edits_are_logged_and_accepted_defaults_applied(dclient, tmp_
         "/design/edits/accept", json={"purpose": "explainer", "component": "card", "item": "x"}
     )
     assert r.status_code == 404
+
+
+async def test_image_look_is_matched_to_the_purpose(dclient, media_dir):
+    """統合版 Q3: 置く画像は用途の配色に揃えた複製にする（同じ画像は作り直さない）。"""
+    import numpy as np
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    yy, xx = np.mgrid[0:180, 0:320]
+    dark = np.stack([0.15 + 0.1 * np.sin(xx / (8 + 3 * i) + yy / 11) for i in range(3)], -1)
+    src = media_dir / "dark_photo_q3.png"
+    Image.fromarray((np.clip(dark, 0, 1) * 255).astype(np.uint8)).save(src)
+    a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 2, "to_line": 5, "asset_id": a["id"]}],
+    }
+
+    async def placed():
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        names = {t["id"]: t["name"] for t in tl["tracks"]}
+        assets = {x["id"]: x for x in tl["assets"]}
+        return [assets[x["asset_id"]] for x in tl["clips"] if names[x["track_id"]] == "演出・図"]
+
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    (img,) = await placed()
+    assert img["source"] == "look" and img["id"] != a["id"] and "見た目を揃えた" in img["name"]
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    (img2,) = await placed()
+    assert img2["id"] == img["id"]  # 前に作った複製を使う
+    tl_assets = (await c.get(f"/projects/{pid}/timeline")).json()["assets"]
+    assert sum(1 for x in tl_assets if x["source"] == "look") == 1
+    body = {"script_id": sid, "plan": plan, "match_look": False}
+    await _job(c, await c.post("/direction/apply", json=body))
+    (img3,) = await placed()
+    assert img3["id"] == a["id"]  # 揃えないときは元の画像

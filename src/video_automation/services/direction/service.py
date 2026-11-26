@@ -9,6 +9,7 @@
 適用は 1 つの編集（Batch）としてまとめ、元に戻せる。LLM 経由（MCP）の適用は承認が必要。
 """
 
+import asyncio
 import json
 import math
 import re
@@ -55,6 +56,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.services.animation.entrance import element_animation, slide_preset
+from video_automation.services.assets.look import match_file, palette_colors
 from video_automation.services.design.edits import adjust_transform
 from video_automation.services.design.guard import Placement, TextUse, is_dark
 from video_automation.services.design.profiles import PROFILES
@@ -382,6 +384,44 @@ class DirectionService:
                 )
             ).first()
         return row is not None
+
+    async def _matched_image(
+        self,
+        project_id: str,
+        img: AssetRead,
+        prof: DesignProfile,
+        assets: dict[str, AssetRead],
+    ) -> AssetRead:
+        """画像の見た目を用途の配色に揃えた複製（統合版 Q3）。直す所が無ければ元のまま。"""
+        dst = (
+            Path(self.settings.data_dir)
+            / "projects"
+            / project_id
+            / "assets"
+            / f"look_{img.sha256[:16]}_{prof.purpose.value}.png"
+        )
+        rel = dst.resolve().relative_to(Path(self.settings.data_dir).resolve()).as_posix()
+        for a in assets.values():  # 前に作った複製を使う
+            if a.path == rel:
+                return a
+        try:
+            src = self.timeline.asset_path(img)  # type: ignore[arg-type]
+            res = await asyncio.to_thread(
+                match_file, src, dst, palette_colors(prof.palette), img.name
+            )
+        except (OSError, ValueError) as exc:  # 読めない画像は元のまま使う
+            log.info("look_match_failed", asset_id=img.id, error=type(exc).__name__)
+            return img
+        if not res.steps:
+            dst.unlink(missing_ok=True)
+            return img
+        row = await self.timeline.register_generated(
+            project_id, dst, AssetKind.IMAGE, "look", f"{img.name}（見た目を揃えた）"
+        )
+        out = AssetRead.model_validate(row)
+        assets[out.id] = out
+        log.info("look_matched", asset_id=img.id, steps=res.steps, individual=res.individual)
+        return out
 
     # ---------- プラン ----------
     async def _skill_context(self, project_id: str) -> tuple[str, list[str]]:
@@ -963,6 +1003,8 @@ class DirectionService:
                 shown.append((start, shown_end))
             else:  # IMAGE
                 img = assets[s.asset_id or ""]  # 置けるものだけ mains に残している
+                if req.match_look and prof is not None:
+                    img = await self._matched_image(p.id, img, prof, assets)
                 use(Component.IMAGE)
                 box = min(zone_h, main_w)
                 cid = add(

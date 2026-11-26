@@ -62,6 +62,8 @@ class DirectionApplyRequest(BaseModel):
     plan: DirectionPlan
     # カード・テロップ・題名の文字の大きさの倍率（手直しの「文字を大きく」等）
     text_scale: float = Field(default=1.0, ge=0.7, le=1.5)
+    # 画像の見た目を用途の配色に揃える（統合版 Q3）。画面・図・史料は 1 枚ずつの補正だけ
+    match_look: bool = True
 
 
 class DirectionApplyResult(BaseModel):
