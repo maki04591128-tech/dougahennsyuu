@@ -98,6 +98,7 @@ async def test_build_from_one_sentence(bclient, fake, media_settings):
     rec = media_settings.data_dir / "training" / "scripts.jsonl"
     row = json.loads(rec.read_text(encoding="utf-8").splitlines()[-1])
     assert [m["role"] for m in row["messages"]] == ["system", "user"]
+    assert row["model"]  # 自動で選んだモデルでも、実際に使ったモデルが残る
     done = [t["text"] for sc in row["output"]["scenes"] for t in sc["turns"]]
     assert done == [s["text"] for s in segs]
     # 声は台本から重ねるが、概要欄用のクレジットには声（VOICEVOX）が入る
