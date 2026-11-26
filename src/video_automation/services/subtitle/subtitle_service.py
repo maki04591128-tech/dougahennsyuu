@@ -576,6 +576,10 @@ class SubtitleService:
                 out[name] = st
         return out
 
+    async def character_colors(self, names: list[str]) -> dict[str, str]:
+        """話者名 → キャラクターの公式の色（声の登録・手元のデータにあるものだけ）。"""
+        return {n: d.color for n, d in (await self._character_data(names)).items() if d.color}
+
     async def speaker_entrance(self, script_id: str) -> dict[str, str]:
         """話者ごとの字幕の入り（統合版 3節の 8 種。手元のデータか登録にあるものだけ）。"""
         async with self.db.session_factory() as s:

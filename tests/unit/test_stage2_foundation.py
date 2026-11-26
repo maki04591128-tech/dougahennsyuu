@@ -307,3 +307,10 @@ def test_text_checks():
     ]
     assert "text_sizes" in _text_codes(Purpose.EXPLAINER, many)  # 字幕と合わせて 5 種類
     assert "text_sizes" not in _text_codes(Purpose.EXPLAINER, many[:2])
+
+
+def test_subtitles_drop_spaces_between_japanese_and_numbers():
+    from video_automation.services.subtitle.text import make_cues
+
+    cue = make_cues("地球の直径は約 12,742km で、惑星の中では 4 番目なのだ", 18, 2, True)[0]
+    assert "約12,742kmで" in cue and "では４番目" in cue

@@ -242,6 +242,18 @@ _HW_NUM = str.maketrans("０１２３４５６７８９．，／", "0123456789.,
 _NUMBER = re.compile(r"[0-9０-９]+(?:[.,．，/／][0-9０-９]+)*")
 
 
+_JA = r"[\u3040-\u30ff\u3400-\u9fff々〆ー、。！？「」『』（）]"
+_JA_SPACE = re.compile(
+    rf"(?<={_JA})[ 　]+(?=[0-9０-９]|{_JA})|(?<=[0-9０-９a-zA-Z%])[ 　]+(?={_JA})"
+)
+
+
+def tidy_spaces(text: str) -> str:
+    """和文と数字・和文どうしの間の空白を取る（実機:「約 12,742km」「では 4 番目」）。
+    英単語どうしの空白（「Blender 5」）は残す。"""
+    return _JA_SPACE.sub("", text)
+
+
 def japanese_digits(text: str) -> str:
     """統合版 T13: 横書きの字幕・テロップの数字は、1 桁は全角、2 桁以上は半角
     （Netflix 日本語字幕ガイド II.14）。小数・桁区切り・分数を含む数は半角。"""
@@ -260,7 +272,7 @@ def make_cues(text: str, max_chars: int, max_lines: int, strip_period: bool) -> 
     分け、短すぎる切れ端（「見つかるわ」だけの 1 枚など）や、語と助詞の間で切らないよう
     動的計画法で切れ目を選ぶ。
     """
-    t = japanese_digits(text.strip())
+    t = japanese_digits(tidy_spaces(text.strip()))
     if not t:
         return []
     sents = _sentences(t)

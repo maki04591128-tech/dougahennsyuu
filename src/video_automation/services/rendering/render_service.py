@@ -682,7 +682,11 @@ class RenderService:
         style = await self.subtitles.project_style(req.project_id)
         colors: list[str] = []
         if req.script_id and req.burn_subtitles:
-            colors = list((await self.subtitles.speaker_accents(req.script_id)).values())
+            accents = await self.subtitles.speaker_accents(req.script_id)
+            # キャラクターの公式の色（統合版 K1・3節）は、字幕で話者を見分けるための色なので、
+            # 型の色相の数（配色の検査）には数えない（実機: 2 人の色で「色相が 4 種類」と出た）
+            own = await self.subtitles.character_colors(list(accents))
+            colors = [c for name, c in accents.items() if own.get(name) != c]
         return await self.design.check(
             req.project_id,
             req.script_id,
