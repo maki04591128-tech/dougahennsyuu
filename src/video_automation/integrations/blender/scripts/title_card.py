@@ -61,6 +61,23 @@ def main() -> None:
         setattr(obj, path, value)
         obj.keyframe_insert(path, frame=frame)
 
+    def ease(obj, path, interpolation, easing, back=None):  # noqa: ANN001
+        """obj の path のキーの補間を変える（Blender 5 のスロット付きアクション）。"""
+        from bpy_extras import anim_utils
+
+        ad = obj.animation_data
+        if ad is None or ad.action is None:
+            return
+        bag = anim_utils.action_get_channelbag_for_slot(ad.action, ad.action_slot)
+        if bag is None:
+            return
+        for fc in bag.fcurves:
+            if fc.data_path == path:
+                for kp in fc.keyframe_points:
+                    kp.interpolation, kp.easing = interpolation, easing
+                    if back is not None:
+                        kp.back = back
+
     if anim in ("typewriter", "bounce") and len(text.replace("\n", "")) > 1 and "\n" not in text:
         # 1文字ずつのオブジェクト。位置は先頭からの部分文字列の幅で決める
         widths = []
@@ -109,13 +126,16 @@ def main() -> None:
         if outline:
             add_outline(o, outline_mat, ow)
         o.scale = (scale,) * 3
+        # 統合版 B4: 題名の入り。pop は 0.8→1.0（back 1.2 の easeOutBack）、
+        # slide は画面の高さの 4% 下から（easeOutExpo）
         if anim == "pop":
-            key(o, "scale", 1, (scale * 0.5,) * 3)
-            key(o, "scale", max(2, round(end * 0.7)), (scale * 1.06,) * 3)
+            key(o, "scale", 1, (scale * 0.8,) * 3)
             key(o, "scale", end, (scale,) * 3)
+            ease(o, "scale", "BACK", "EASE_OUT", back=1.2)
         elif anim == "slide":
-            key(o, "location", 1, (0, -vh * 0.15, 0))
+            key(o, "location", 1, (0, -vh * 0.04, 0))
             key(o, "location", end, (0, 0, 0))
+            ease(o, "location", "EXPO", "EASE_OUT")
         elif anim == "zoom":
             key(o, "scale", 1, (scale * 1.6,) * 3)
             key(o, "scale", end, (scale,) * 3)

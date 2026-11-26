@@ -97,8 +97,9 @@ class TitleCardService:
             return req.animation_sec
         n = len(req.text.replace("\n", ""))
         return {
-            "pop": 0.45,
-            "slide": 0.5,
+            # 統合版 B4: pop 12f、slide 16f（30fps）
+            "pop": 0.4,
+            "slide": 16 / 30,
             "zoom": 0.45,
             "typewriter": min(max(n * 0.07, 0.3), 3.0) + 0.1,
             "bounce": min(max(n * 0.05, 0.2), 2.0) + 0.45,

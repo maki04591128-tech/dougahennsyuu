@@ -132,6 +132,23 @@ class SafeArea(BaseModel):
     right: float = Field(ge=0, le=0.3)
 
 
+class MotionSpec(BaseModel):
+    """用途ごとの動きの値（統合版 2.1。30fps のフレーム数）。"""
+
+    in_frames: int = Field(ge=0, le=60)  # 入り（A2。緩急は easeOutCubic）
+    out_frames: int = Field(ge=0, le=60)  # 出（A2。緩急は easeInCubic）
+    pop: str = Field(pattern=r"^(pop_in_soft|pop_in|pop_express)$")  # B2
+    far_slide: bool  # B1: 画面の外からのスライドを使うか
+    # E1: 切り替えの上限（1 分あたり）。None は上限なし、0 はカットだけ
+    transitions_per_min: int | None
+    # G2: 強い動き（行き過ぎのある pop・揺れ・ズームパンチ・フラッシュ）の上限。None は上限なし
+    strong_per_min: int | None
+    strong_total: int | None
+    change_interval_sec: float | None  # Q2: 変化の間隔の最大。None は検査しない
+    stepped: int = Field(default=0, ge=0, le=4)  # M5: コマ打ち（0 は使わない）
+    motion_blur: bool = False  # E4
+
+
 class DesignProfile(BaseModel):
     purpose: Purpose
     family: Family
@@ -146,6 +163,7 @@ class DesignProfile(BaseModel):
     subtitle: SubtitleSpec
     safe_area: SafeArea
     components: dict[Component, int]  # 許可（DENY / ANY / 回数）
+    motion: MotionSpec
     # 背景だけ（図・カード・画像・題名が無い）時間の上限（秒）。None は映像そのものが主役で制限なし
     max_empty_sec: float | None = None
     keywords: list[str] = Field(default_factory=list)  # 指示文から用途を判定する語

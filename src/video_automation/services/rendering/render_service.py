@@ -8,7 +8,7 @@
 """
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
@@ -71,6 +71,7 @@ class RenderPlan:
     duration_sec: float
     width: int
     height: int
+    warnings: list[str] = field(default_factory=list)
 
 
 def _layout(t: ClipTransform, cw: int, ch: int, label_in: str, label_out: str, idx: int) -> str:
@@ -407,12 +408,25 @@ class RenderService:
         ext: dict[str, int] = {}
         dip_out: dict[str, int] = {}
         by_track_end = {(c.track_id, c.end_frame): c for c in visual}
+        plan_warnings: list[str] = []
         for c in visual:
             tran = anims[c.id].transition_in if c.id in anims else None
             prev = by_track_end.get((c.track_id, c.start_frame))
             if tran is None or prev is None:
                 continue
             d = min(tran.duration_frames, c.end_frame - c.start_frame)
+            # 統合版 E2: 前の動画の素材に続き（余り）が足りないときは、止めた絵で埋めずに
+            # 切り替えを外してカットにする（止まった絵が重なると不自然に見える）
+            pa = assets[prev.asset_id]
+            if pa.kind == AssetKind.VIDEO.value and tran.type in EXTENDS_PREVIOUS:
+                total_src = asset_frames(pa, float(fps))
+                if total_src is not None and total_src - prev.source_out_frame < d:
+                    anims[c.id] = anims[c.id].model_copy(update={"transition_in": None})
+                    plan_warnings.append(
+                        f"{sec(c.start_frame):.1f} 秒の切り替えは前の動画の続きが足りないので"
+                        "カットにしました"
+                    )
+                    continue
             if tran.type == TransitionType.DIP_TO_BLACK:
                 dip_out[prev.id] = max(1, d // 2)
             elif tran.type in EXTENDS_PREVIOUS:
@@ -591,7 +605,11 @@ class RenderService:
                 str(output),
             ]
         return RenderPlan(
-            args=[*inputs, *graph_args, *out_args], duration_sec=total, width=width, height=height
+            args=[*inputs, *graph_args, *out_args],
+            duration_sec=total,
+            width=width,
+            height=height,
+            warnings=plan_warnings,
         )
 
     # ---------- プレビュー ----------
@@ -856,7 +874,7 @@ class RenderService:
             loudnorm=req.loudnorm,
         )
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
-        warnings = await self._flash_guard(out, req.project_id)
+        warnings = plan.warnings + await self._flash_guard(out, req.project_id)
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
@@ -1024,7 +1042,7 @@ class RenderService:
         )
         for f in (clean, rich_out):
             f.unlink(missing_ok=True)
-        warnings = await self._flash_guard(out, req.project_id)
+        warnings = plan.warnings + await self._flash_guard(out, req.project_id)
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()

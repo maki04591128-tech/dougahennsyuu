@@ -116,7 +116,7 @@ async def test_element_presets_move_scale_fade(mclient, imgs):
     assert full[1] - full[0] == pytest.approx(159, abs=1) and full[3] - full[2] == pytest.approx(
         89, abs=1
     )
-    await anim(c, pid, clip_id=cid, preset="slide_in_left")
+    await anim(c, pid, clip_id=cid, preset="slide_in_left_far")
     early, late = bbox(await frame(c, pid, 3), RED), bbox(await frame(c, pid, 20), RED)
     assert early is not None and early[1] < 120  # 左から入ってくる途中
     assert late == full
@@ -126,7 +126,7 @@ async def test_element_presets_move_scale_fade(mclient, imgs):
     props = {p for k in tl["clips"][0]["animation"]["keyframes"] for p in k if k[p] is not None}
     assert {"x", "scale", "opacity"} <= props
     assert bbox(await frame(c, pid, 0), RED) is None  # 不透明度 0
-    mid = bbox(await frame(c, pid, 15), RED)
+    mid = bbox(await frame(c, pid, 17), RED)  # pop_in は 16f
     assert mid == full
     # フェードアウト（末尾）: 最後のフレームはほぼ消える。途中は半透明
     await anim(c, pid, clip_id=cid, clear=True)
@@ -409,3 +409,57 @@ async def test_presets_api(mclient, imgs):
     assert (await c.delete("/motion/presets/copy_drop")).status_code == 204
     assert (await c.delete("/motion/presets/pop_in")).status_code == 422
     assert (await c.delete("/motion/presets/none")).status_code == 404
+
+
+async def test_transition_becomes_cut_without_handle(mclient, imgs, media_dir):
+    """統合版 E2: 前の動画に続きが無いときは、止めた絵で埋めずにカットにする。"""
+    c = mclient
+    vid = media_dir / "red_1s.mp4"
+    if not vid.exists():
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c=red:s={W}x{H}:r=30:d=1",
+                "-pix_fmt",
+                "yuv420p",
+                str(vid),
+            ],
+            check=True,
+        )
+    pid = (await c.post("/projects", json={"name": "E2", "width": W, "height": H})).json()["id"]
+    av = (await c.post("/assets/import", json={"project_id": pid, "path": str(vid)})).json()
+    ab = (
+        await c.post("/assets/import", json={"project_id": pid, "path": str(imgs["blue"])})
+    ).json()
+    cmds = [
+        {"type": "add_track", "kind": "video", "track_id": "v"},
+        {
+            "type": "add_clip",
+            "track_id": "v",
+            "asset_id": av["id"],
+            "clip_id": "a",
+            "start_frame": 0,
+            "duration_frames": 30,
+        },
+        {
+            "type": "add_clip",
+            "track_id": "v",
+            "asset_id": ab["id"],
+            "clip_id": "b",
+            "start_frame": 30,
+            "duration_frames": 30,
+        },
+    ]
+    r = await c.post(
+        f"/projects/{pid}/commands", json={"command": {"type": "batch", "commands": cmds}}
+    )
+    assert r.status_code == 201, r.text
+    await anim(c, pid, clip_id="b", transition={"type": "dissolve", "duration_frames": 10})
+    m = mean(await frame(c, pid, 33))
+    assert m[2] > 200 and m[0] < 30, m  # 混ざらずに青（カット）

@@ -119,15 +119,19 @@ MCP対応の対話型動画編集自動化システム。仕様は [docs/VIDEO_A
 - アニメーションはクリップごとに `animation`（キーフレーム＋入りの切替）として持ち、編集命令
   `set_clip_animation` で設定する（Undo/Redo・LLM 承認・分割時の引き継ぎに対応）。
   - キーフレームの `frame` はクリップ先頭からの相対フレーム。各プロパティは指定したキーの間を
-    `easing`（linear / ease_in / ease_out / ease_in_out / back_out / hold）で補間し、範囲外は端の値を保つ。
+    `easing`（linear / ease_in / ease_out / ease_in_out / back_out / cubic_* / quart_* / expo_* /
+    sine_in_out / hold）で補間し、範囲外は端の値を保つ。
   - 要素: `scale` `x` `y` `rotation` `opacity`、カメラ（素材の中）: `zoom` `pan_x` `pan_y`
   - 入りの切替 `transition_in`: dissolve / dip_to_black / slide_* / wipe_* / zoom_in。
-    同じトラックの直前のクリップを切替の長さだけ延長して下に敷く（素材の続きが無ければ最終フレームで止める）。
+    同じトラックの直前のクリップを切替の長さだけ延長して下に敷く。前が動画で素材の続きが足りないときは
+    切替を外してカットにし、書き出しの注意に出す（統合版 E2）。
 - 描画は FFmpeg の式に変換する（カメラ = zoompan、回転 = rotate、不透明度・ワイプ = geq を変化する区間だけ、
   位置 = overlay の式、拡大縮小 = scale のフレーム単位評価）。FFmpeg 6.1 では大きさが変わるフレームの後に
   geq・fade を置くと異常終了したため、拡大縮小は必ず最後に置く。
 - プリセット（`GET /motion/presets`）: カメラ（ken_burns_in/out, pan_*, zoom_punch）、要素（fade_in/out,
-  pop_in, slide_in_*/slide_out_*, zoom_enter, spin_in, float, shake）、切替、文字。プリセットは秒単位で
+  pop_in_soft / pop_in / pop_express、slide_in_*（画面の 1.7%・3% だけ動く）/ slide_in_*_far（画面の外から）/
+  slide_out_*, zoom_enter, spin_in, float, shake）、切替（dissolve 8f・dip_to_black 36f）、文字。
+  演出の自動配置では、入り・出の長さ・pop の種類・切替の上限を用途ごとに決める（`DesignProfile.motion`、統合版 2.1）。プリセットは秒単位で
   定義し、適用時にクリップの長さに合わせる（`duration_sec`・`intensity` で調整）。独自プリセットの登録・
   クリップからの保存も可能。
 - 文字アニメーション（`POST /assets/title_card`）: pop / slide / zoom / typewriter / bounce / fade / none、

@@ -1,3 +1,4 @@
+import math
 from fractions import Fraction
 
 import pytest
@@ -20,6 +21,10 @@ def ff_eval(expr: str, t: float) -> float:
     env = {
         "if_": lambda c, a, b: a if c else b,
         "lt": lambda a, b: 1.0 if a < b else 0.0,
+        "lte": lambda a, b: 1.0 if a <= b else 0.0,
+        "gte": lambda a, b: 1.0 if a >= b else 0.0,
+        "cos": math.cos,
+        "PI": math.pi,
         "min": min,
         "max": max,
         "pow": pow,

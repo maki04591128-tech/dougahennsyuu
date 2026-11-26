@@ -19,8 +19,19 @@ class Easing(StrEnum):
     EASE_IN = "ease_in"
     EASE_OUT = "ease_out"
     EASE_IN_OUT = "ease_in_out"
-    BACK_OUT = "back_out"  # 少し行き過ぎて戻る（ポップ）
+    BACK_OUT = "back_out"  # 少し行き過ぎて戻る（ポップ。back 1.70158）
     HOLD = "hold"  # 次のキーフレームまで値を変えない
+    # 統合版 A1: 3 次・4 次・指数・正弦の緩急（入りは *_out、出は *_in が基本）
+    CUBIC_IN = "cubic_in"
+    CUBIC_OUT = "cubic_out"
+    CUBIC_IN_OUT = "cubic_in_out"
+    QUART_IN = "quart_in"
+    QUART_OUT = "quart_out"
+    QUART_IN_OUT = "quart_in_out"
+    EXPO_IN = "expo_in"
+    EXPO_OUT = "expo_out"
+    EXPO_IN_OUT = "expo_in_out"
+    SINE_IN_OUT = "sine_in_out"
 
 
 # プロパティ名 → (既定値, 最小, 最大)

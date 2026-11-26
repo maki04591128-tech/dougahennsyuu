@@ -13,6 +13,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,7 +26,7 @@ from video_automation.database.database import Database
 from video_automation.database.models import Project, Script, ScriptCharacter, ScriptSegment
 from video_automation.integrations.ffmpeg.runner import FFmpeg
 from video_automation.schemas.animation import CardRequest, InfographicRequest
-from video_automation.schemas.design import Component, DesignProfile
+from video_automation.schemas.design import Component, DesignProfile, Purpose
 from video_automation.schemas.direction import (
     MAIN_KINDS,
     DirectionApplyRequest,
@@ -53,7 +54,9 @@ from video_automation.schemas.timeline import (
     TitleCardRequest,
     TrackKind,
 )
+from video_automation.services.animation.entrance import element_animation, slide_preset
 from video_automation.services.design.guard import Placement, is_dark
+from video_automation.services.design.profiles import PROFILES
 from video_automation.services.design.service import DesignService, manifest_record
 from video_automation.services.direction.plan import (
     PLAN_SCHEMA,
@@ -76,6 +79,9 @@ from video_automation.services.timeline.timeline_service import (
 log = get_logger("direction")
 
 ZONE_TOP, ZONE_BOTTOM = 0.13, 0.71  # 図・カードの領域（高さ比）
+# ケン・バーンズ（統合版 B3）: 拡大量 = 秒数 × 1.75%（8〜20%）。向きは順に繰り返す
+KB_PER_SEC, KB_MIN, KB_MAX = 0.0175, 0.08, 0.20
+KB_ORDER = ("ken_burns_in", "ken_burns_out", "pan_left", "pan_right")
 STRIP_TOP = 0.025  # テロップの上端
 SIDE = 0.035  # テロップの左右の余白（幅比）
 # 立ち絵があるとき、図・カードを置ける横の範囲（幅比）。左右の端は立ち絵の列（layout-no-overlap）
@@ -494,6 +500,35 @@ class DirectionService:
             used[c] = used.get(c, 0) + n
 
         fps = p.fps_num / p.fps_den
+        ffps = Fraction(p.fps_num, p.fps_den)
+        # 用途ごとの動きの値（統合版 2.1）。型が無いときは解説の値
+        mspec = prof.motion if prof else PROFILES[Purpose.EXPLAINER].motion
+
+        def animate(clip_id: str, length: int, entrance: str | None = "fade", **kw: Any) -> None:
+            """入り（フェード・pop・スライド）と出（不透明度 1→0）を付ける（統合版 A2・B1・B2）。"""
+            anim = element_animation(length, mspec, ffps, entrance=entrance, **kw)
+            if anim is not None:
+                cmds.append(SetClipAnimation(clip_id=clip_id, animation=anim))
+
+        kb_index = 0  # 連続する画像のケン・バーンズの向き（B3）
+
+        def ken_burns(clip_id: str, a: AssetRead, length: int, box: float) -> None:
+            """画像のケン・バーンズ（統合版 B3）。拡大量 = 秒数 × 1.75%（最小 8%・最大 20%）。
+            元画像の幅を超えて拡大しない。向きは in → out → 左へパン → 右へパン の順に繰り返す。"""
+            nonlocal kb_index
+            amount = min(max(sec(length) * KB_PER_SEC, KB_MIN), KB_MAX)
+            if a.width and a.height:
+                disp_w = min(box * w, box * h * a.width / a.height)
+                amount = min(amount, a.width / max(disp_w, 1.0) - 1.0)
+            if amount <= 0.005:
+                return
+            name = KB_ORDER[kb_index % len(KB_ORDER)]
+            kb_index += 1
+            full = 0.2 if name.startswith("pan_") else 0.15  # プリセットの intensity 1 の拡大量
+            cmds.append(
+                SetClipAnimation(clip_id=clip_id, preset=name, intensity=round(amount / full, 4))
+            )
+
         tl = await self.timeline.get_timeline(p.id)
         total = max(tl.duration_frames, lines[-1].end)
         assets = {a.id: a for a in tl.assets}
@@ -599,6 +634,8 @@ class DirectionService:
                     text=plan.title[:100],
                     duration_sec=dur,
                     animation="bounce" if kinetic else "pop",
+                    # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
+                    fade_out_sec=0.0,
                     # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
                     # 題名の幅は画面幅の 80%×size（title_card.py）。題名は立ち絵の頭と同じ高さに
                     # 出るので、縁取りの分も含めて列の 85% に収める（実機: 18 文字の題名が
@@ -610,7 +647,9 @@ class DirectionService:
                     font=heading_font,
                 )
             )
-            add(txt_t, t_asset.id, 0, min(title_end, media_frames(t_asset, title_end)))
+            t_len = min(title_end, media_frames(t_asset, title_end))
+            t_cid = add(txt_t, t_asset.id, 0, t_len)
+            animate(t_cid, t_len, None, title_exit=True)
             if plan.subtitle:
                 sub = await self.titles.card(
                     CardRequest(
@@ -633,10 +672,8 @@ class DirectionService:
                     transform=native_transform(
                         sub.width or 1, sub.height or 1, w, h, cx=0.5, cy=0.6, max_w=main_w
                     ),
-                    fade_in_frames=8,
-                    fade_out_frames=8,
                 )
-                cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_up"))
+                animate(cid, max(1, title_end - st), slide_preset("up", mspec))
 
         # 図・カード・画像（次が出るまで表示し続ける）
         # 置けない画像（素材が未選択）は、表示時間を決める前に外す。後で外すと、その画像の
@@ -681,7 +718,6 @@ class DirectionService:
         shown: list[tuple[int, int]] = []  # 実際に図・カード・画像を出した区間
         for s, start, end in windows:
             length = end - start
-            fade = min(8, length // 4)
             if s.kind == ShotKind.CARD:
                 use(Component.CARD)
                 steps = _reveal_steps(s, lines, start, end, frames(REVEAL_MIN_SEC))
@@ -722,11 +758,10 @@ class DirectionService:
                             max_h=zone_h,
                             max_w=main_w,
                         ),
-                        fade_in_frames=min(fade, (t1 - t0) // 3) if k == 0 else 0,
-                        fade_out_frames=min(fade, (t1 - t0) // 3) if k == last else 0,
                     )
-                    if k == 0:
-                        cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
+                    # 入りは用途の pop（B2）、出は最後の項目だけ
+                    if k == 0 or k == last:
+                        animate(cid, t1 - t0, mspec.pop if k == 0 else None, exit_=k == last)
                 shown.append((start, end))
             elif s.kind == ShotKind.CHART:
                 use(Component.CHART)
@@ -759,50 +794,33 @@ class DirectionService:
                 still_from = min(media - 1, frames(1.2) + 2)
                 seg = media - still_from
                 fill = length > shown_len and seg >= frames(1.0)
-                add(
-                    fig_t,
-                    a.id,
-                    start,
-                    shown_len,
-                    transform=tf,
-                    fade_in_frames=fade,
-                    # 繰り返せないほど短いときだけ、急に消さずに消す
-                    fade_out_frames=min(8, shown_len // 4)
-                    if shown_len < length and not fill
-                    else 0,
-                )
+                cid = add(fig_t, a.id, start, shown_len, transform=tf)
+                # 繰り返せないほど短いときだけ、急に消さずに消す
+                animate(cid, shown_len, exit_=shown_len < length and not fill)
                 shown_end = start + shown_len
                 if fill:
                     pos, stop = start + shown_len, start + length
                     while pos < stop:
                         n = min(seg, stop - pos)
-                        add(
-                            fig_t,
-                            a.id,
-                            pos,
-                            n,
-                            source_in_frame=still_from,
-                            transform=tf,
-                            fade_out_frames=min(8, n // 4) if pos + n >= stop else 0,
-                        )
+                        cid = add(fig_t, a.id, pos, n, source_in_frame=still_from, transform=tf)
+                        if pos + n >= stop:
+                            animate(cid, n, None)
                         pos += n
                     shown_end = stop
                 shown.append((start, shown_end))
             else:  # IMAGE
                 img = assets[s.asset_id or ""]  # 置けるものだけ mains に残している
                 use(Component.IMAGE)
+                box = min(zone_h, main_w)
                 cid = add(
                     fig_t,
                     img.id,
                     start,
                     length,
-                    transform=ClipTransform(
-                        fit=FitMode.FIT, scale=min(zone_h, main_w), y=zone_cy - 0.5
-                    ),
-                    fade_in_frames=fade,
-                    fade_out_frames=fade,
+                    transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
-                cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.5))
+                animate(cid, length)
+                ken_burns(cid, img, length, box)
                 shown.append((start, end))
 
         # テロップ（その発話の間。重なる分は前を短くする）
@@ -851,17 +869,15 @@ class DirectionService:
                 start,
                 end - start,
                 transform=native_transform(aw, ah, w, h, cx=kx, cy=ky),
-                fade_in_frames=min(6, (end - start) // 4),
-                fade_out_frames=min(6, (end - start) // 4),
             )
             # 数値の要点は「ポンと飛び出す」動きで強調する（喋りテロップの動き。情報系は 1 本で
-            # 1〜2 回まで）。それ以外は落ち着いた横からの登場
+            # 1〜2 回まで）。それ以外は横からの登場（B1）
             if _has_number(s.text) and emphasis_left > 0:
                 emphasis_left -= 1
                 use(Component.EMPHASIS_TEXT)
-                cmds.append(SetClipAnimation(clip_id=cid, preset="pop_in"))
+                animate(cid, end - start, mspec.pop)
             else:
-                cmds.append(SetClipAnimation(clip_id=cid, preset="slide_in_right"))
+                animate(cid, end - start, slide_preset("right", mspec))
 
         res = await self.timeline.submit(
             p.id,
