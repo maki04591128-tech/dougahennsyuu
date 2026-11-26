@@ -3,6 +3,8 @@
 from fractions import Fraction
 
 from video_automation.schemas.subtitle import SubtitleStyle
+from video_automation.services.design.guard import confusable
+from video_automation.services.design.oklch import ALT_OUTLINE, OUTLINE, TEXT, derive
 
 
 def frame_to_seconds(frame: int, fps: Fraction) -> Fraction:
@@ -46,20 +48,19 @@ def _font_size(st: SubtitleStyle, width: int, height: int) -> int:
     return st.font_size or max(16, round(min(width, height) * st.font_size_ratio))
 
 
-def tint(hex_color: str, amount: float = 0.62) -> str:
-    """文字色用に白へ寄せた色（#RRGGBB）。amount=1 で白。"""
-    h = hex_color.lstrip("#")[-6:]
-    r, g, b = (
-        round(int(h[i : i + 2], 16) + (255 - int(h[i : i + 2], 16)) * amount) for i in (0, 2, 4)
-    )
-    return f"#{r:02X}{g:02X}{b:02X}"
+def tint(hex_color: str) -> str:
+    """話者の色から字幕の文字の色（OKLCH で L 0.95・C 最大 0.05。統合版 K2）。"""
+    return derive(hex_color, TEXT)
 
 
-def darken(hex_color: str, factor: float = 0.42) -> str:
-    """縁取り用に暗くした色（#RRGGBB）。"""
-    h = hex_color.lstrip("#")[-6:]
-    r, g, b = (round(int(h[i : i + 2], 16) * factor) for i in (0, 2, 4))
-    return f"#{r:02X}{g:02X}{b:02X}"
+def darken(hex_color: str) -> str:
+    """話者の色から字幕の縁の色（OKLCH で L 0.36・C 最大 0.11。統合版 K2）。"""
+    return derive(hex_color, OUTLINE)
+
+
+def alt_darken(hex_color: str) -> str:
+    """縁が同時に出る話者と近いときの代替の縁（L 0.24・C 最大 0.08）。"""
+    return derive(hex_color, ALT_OUTLINE)
 
 
 def _style_line(
@@ -69,18 +70,24 @@ def _style_line(
     primary: str | None = None,
     outline: str | None = None,
     font: str | None = None,
+    spacing_extra: float = 0.0,
 ) -> str:
     size = _font_size(st, width, height)
     mv = round(height * st.margin_v_ratio)
     mh = round(width * st.margin_h_ratio)
+    spacing = tracking(size) + round(size * spacing_extra)
     return (
         f"Style: {st.name},{font or st.font_name},{size},{ass_color(primary or st.primary_color)},"
         f"&H000000FF,{ass_color(outline or st.outline_color)},{ass_color(st.back_color)},"
-        f"{-1 if st.bold else 0},0,0,0,100,100,{tracking(size)},0,1,{st.outline:g},{st.shadow:g},"
+        f"{-1 if st.bold else 0},0,0,0,100,100,{spacing},0,1,{st.outline:g},{st.shadow:g},"
         f"{st.alignment},{mh},{mh},{mv},1"
     )
 
 
+# 統合版 C1: 二重縁の幅（明るい縁 = 文字の大きさ × 0.06、暗い縁 = それ ＋ 3px（1080p））
+DOUBLE_OUTLINE_RATIO = 0.06
+DOUBLE_OUTLINE_EXTRA_PX = 3.0
+SAME_FONT_SPACING = 0.04  # 統合版 3節: 書体が同じ 2 人の後の方は字間 +4%
 # 統合版 C2: 字間は文字の大きさの −2%（ASS の Spacing、Blender の space_character 0.98）
 TRACKING = -0.02
 
@@ -173,9 +180,23 @@ def build_ass(
         | (set(accents) if style.speaker_outline else set())
         | (set(fonts) if multi_spk else set())
     )
+    # 統合版 3節の衝突の決まり（登場の順）: 縁の色が前の話者と見分けにくければ代替の縁、
+    # 書体が前の話者と同じなら字間を +4%
+    order = list(dict.fromkeys(spk for _, _, spk, _ in cues if spk))
+    order += [x for x in speakers if x not in order]
+    outline_of: dict[str, str] = {}
+    spaced: set[str] = set()
+    for k, spk in enumerate(order):
+        if style.speaker_outline and spk in accents:
+            o = darken(accents[spk])
+            if any(confusable(o, prev) for prev in outline_of.values()):
+                o = alt_darken(accents[spk])
+            outline_of[spk] = o
+        if multi_spk and fonts.get(spk) and any(fonts.get(x) == fonts[spk] for x in order[:k]):
+            spaced.add(spk)
     for i, spk in enumerate(speakers):
         name = f"{style.name}_S{i + 1}"
-        outline = darken(accents[spk]) if style.speaker_outline and spk in accents else None
+        outline = outline_of.get(spk)
         styles.append(
             _style_line(
                 style.model_copy(update={"name": name}),
@@ -184,6 +205,7 @@ def build_ass(
                 speaker_colors.get(spk),
                 outline,
                 fonts.get(spk) if multi_spk else None,
+                SAME_FONT_SPACING if spk in spaced else 0.0,
             )
         )
         style_of[spk] = name
@@ -245,6 +267,23 @@ def build_ass(
         if style.band and bottom:
             band = _band(style, width, height, text.count("\n") + 1, bool(label), text, spk)
             lines.append(f"Dialogue: 0,{t0},{t1},{style.name},{name},0,0,0,,{fade}{band}")
+        if style.double_outline:
+            # 統合版 C1: 下の層は文字を透明にして暗い縁（文字の 6% ＋ 3px）、上の層は文字の色の
+            # 明るい縁（文字の 6%）
+            light = ass_color(speaker_colors.get(spk) or style.primary_color)[4:]
+            dark_src = style.double_outline_outer or outline_of.get(spk) or style.outline_color
+            dark = ass_color(dark_src)[4:]
+            inner = size * DOUBLE_OUTLINE_RATIO
+            outer = inner + DOUBLE_OUTLINE_EXTRA_PX * height / 1080
+            lines.append(
+                f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
+                f"{{\\1a&HFF&\\3c&H{dark}&\\bord{outer:.1f}\\shad0}}{label}{_ass_escape(text)}"
+            )
+            lines.append(
+                f"Dialogue: 2,{t0},{t1},{st_name},{name},0,0,0,,{fade}"
+                f"{{\\3c&H{light}&\\bord{inner:.1f}\\shad0}}{label}{_ass_escape(text)}"
+            )
+            continue
         lines.append(
             f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{fade}{label}{_ass_escape(text)}"
         )

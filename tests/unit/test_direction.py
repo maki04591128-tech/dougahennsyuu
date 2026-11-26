@@ -93,7 +93,9 @@ def test_infer_unit_and_whitespace():
         ]
     )
     out = normalize(plan, LINES)
-    assert out.shots[0].unit == "GPa" and out.shots[1].text == "約46 ギガパスカル"
+    assert (
+        out.shots[0].unit == "GPa" and out.shots[1].text == "約46ギガパスカル"
+    )  # 改行は空白に。数字と和文の間の空白は取る
 
 
 def test_from_llm_unwraps_nested_plan():
@@ -252,3 +254,10 @@ def test_card_items_echoing_the_prompt_are_dropped():
     assert not _echoes_prompt("木星は太陽系の最大", script)
     assert not _echoes_prompt("土星はリングが特徴", script)
     assert not _echoes_prompt("高温", script)
+
+
+def test_card_text_drops_spaces_between_japanese_and_numbers():
+    from video_automation.services.direction.plan import _trim
+
+    assert _trim("土星は直径約 11 万 6,000km", 40) == "土星は直径約11万6,000km"
+    assert _trim("AI と人", 40) == "AI と人"

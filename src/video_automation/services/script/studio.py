@@ -692,6 +692,10 @@ class ScriptStudio:
             for x in iss:
                 if x.kind in ("foreign_ending", "stray_ending") and x.fixed is not None:
                     swapped.append(f"{it['speaker']}の語尾「{x.found}」")
+                elif x.kind == "example_copy":
+                    # 手本のセリフの写しの文を外した（言い換えではないので「→」で書かない。
+                    # 実機で「…女よ。」→「」と、空に直したように見えた）
+                    swapped.append(f"{it['speaker']}の手本のセリフの写し「{x.found}」を外した")
                 elif x.kind not in ("ending", "avoid") and x.fixed is not None:
                     swapped.append(f"{it['speaker']}「{x.found}」→「{x.expected}」")
                 if x.kind in ("ending", "avoid") and i not in need:

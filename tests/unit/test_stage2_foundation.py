@@ -164,3 +164,114 @@ def test_filter_script_flag_by_ffmpeg_version():
     ]:
         f._version = v
         assert asyncio.run(f.filter_script_args("g.txt")) == [flag, "g.txt"]
+
+
+# ---------------------------------------------------------------- G2・G3・M4・Q2 動きの検査
+
+
+def _clip(track, start, end, keys=(), preset=None):
+    from video_automation.services.design.guard import ClipMotion
+
+    return ClipMotion(track=track, start=start, end=end, keys=list(keys), preset=preset)
+
+
+def _codes(purpose, clips, duration=20.0, transitions=()):
+    from video_automation.services.design.guard import DesignManifest, motion_checks
+
+    m = DesignManifest(clips=clips, duration_sec=duration, transitions=list(transitions))
+    return {v.code: v.severity for v in motion_checks(PROFILES[purpose], m)}
+
+
+def test_motion_amount_only_for_calm_purposes():
+    far = _clip("a", 1, 3, [(0.0, {"x": -1.0}), (0.5, {"x": 0.0})])  # 画面の幅 100%
+    near = _clip("a", 1, 3, [(0.0, {"y": 0.03}), (0.5, {"y": 0.0})])  # 短辺の 3%
+    assert "motion_amount" in _codes(Purpose.EXPLAINER, [far], 4)
+    assert "motion_amount" not in _codes(Purpose.EXPLAINER, [near], 4)
+    assert "motion_amount" not in _codes(Purpose.SHORT, [far], 4)
+
+
+def test_repeated_ken_burns():
+    a = _clip("img", 0, 4, preset="ken_burns_in")
+    b = _clip("img", 4, 8, preset="ken_burns_in")
+    c = _clip("img", 4, 8, preset="ken_burns_out")
+    assert "repeated_motion" in _codes(Purpose.EXPLAINER, [a, b], 8)
+    assert "repeated_motion" not in _codes(Purpose.EXPLAINER, [a, c], 8)
+
+
+def test_concurrent_motion_is_error_except_expressive():
+    fade = [(0.0, {"opacity": 0.0}), (0.5, {"opacity": 1.0})]
+    three = [_clip(t, 1, 3, fade) for t in "abc"]
+    assert _codes(Purpose.EXPLAINER, three, 4)["concurrent_motion"] == "error"
+    assert _codes(Purpose.MV, three, 4)["concurrent_motion"] == "warning"
+    assert "concurrent_motion" not in _codes(Purpose.EXPLAINER, three[:2], 4)
+
+
+def test_change_interval():
+    clips = [_clip("a", t, t + 2) for t in (0, 5, 10, 15)]
+    assert "change_interval" not in _codes(Purpose.EXPLAINER, clips, 20)  # 最大 5 秒
+    sparse = [_clip("a", 0, 2), _clip("a", 12, 14)]
+    assert "change_interval" in _codes(Purpose.EXPLAINER, sparse, 20)  # 12 秒空く
+    assert "change_interval" not in _codes(Purpose.INTERVIEW, sparse, 20)  # 検査しない用途
+
+
+# ---------------------------------------------------------------- C1・K2・T12・T13
+
+
+def test_double_outline_layers():
+    from fractions import Fraction
+
+    from video_automation.services.subtitle.formats import build_ass
+    from video_automation.services.subtitle.subtitle_service import style_from_profile
+
+    st = style_from_profile(PROFILES[Purpose.GAME])
+    assert st.double_outline
+    ass = build_ass([(0, 30, "", "テスト")], Fraction(30), 1920, 1080, st)
+    d = [x for x in ass.splitlines() if x.startswith("Dialogue")]
+    assert len(d) == 2 and "\\1a&HFF&" in d[0] and "\\bord" in d[1]
+    assert not style_from_profile(PROFILES[Purpose.EXPLAINER]).double_outline
+    assert style_from_profile(PROFILES[Purpose.KIDS]).double_outline_outer == "#FFF6E5"
+
+
+def test_character_colors_from_oklch():
+    from video_automation.services.design.oklch import ALT_OUTLINE, FRAME, OUTLINE, TEXT, derive
+
+    # 統合版 3節のずんだもん（#33A65E）: 文字 #D7F9DE・縁 #024A22・代替 #01270F・枠 #35A860
+    got = [derive("#33A65E", r) for r in (TEXT, OUTLINE, ALT_OUTLINE, FRAME)]
+    want = ["#D7F9DE", "#024A22", "#01270F", "#35A860"]
+    for g, w in zip(got, want, strict=True):
+        assert all(abs(int(g[i : i + 2], 16) - int(w[i : i + 2], 16)) <= 2 for i in (1, 3, 5))
+
+
+def test_same_color_speakers_get_alt_outline_and_spacing():
+    from fractions import Fraction
+
+    from video_automation.services.subtitle.formats import build_ass
+    from video_automation.services.subtitle.subtitle_service import style_from_profile
+
+    st = style_from_profile(PROFILES[Purpose.EXPLAINER])
+    ass = build_ass(
+        [(0, 30, "ずんだもん", "あ"), (30, 60, "東北ずん子", "い")],
+        Fraction(30),
+        1920,
+        1080,
+        st,
+        speaker_accents={"ずんだもん": "#33A65E", "東北ずん子": "#33A65E"},
+        speaker_fonts={"ずんだもん": "M PLUS Rounded 1c", "東北ずん子": "M PLUS Rounded 1c"},
+    )
+    styles = {x.split(",")[0]: x.split(",") for x in ass.splitlines() if x.startswith("Style:")}
+    s1, s2 = styles["Style: Default_S1"], styles["Style: Default_S2"]
+    assert s1[5] != s2[5]  # 後から出た話者は代替の縁
+    assert int(s2[13]) > int(s1[13])  # 同じ書体なら字間 +4%
+
+
+def test_line_break_rules_and_digits():
+    from video_automation.services.subtitle.text import japanese_digits, wrap_lines
+
+    assert japanese_digits("第1章と第12章、約1/3.7") == "第１章と第12章、約1/3.7"
+    for ln in wrap_lines("土星は直径約12万kmの巨大惑星なのよ、すごいわね", 10)[1:]:
+        assert ln[0] not in "万km、ー々"
+    lines = wrap_lines("それは……すごいことになったのだよ本当に", 6)
+    assert all(
+        not (a.endswith("…") and b.startswith("…")) for a, b in zip(lines, lines[1:], strict=False)
+    )
+    assert all(not ln.endswith("「") for ln in wrap_lines("彼は「すごい」と言ったのだよ本当に", 4))

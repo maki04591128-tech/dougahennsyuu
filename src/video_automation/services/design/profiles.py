@@ -164,6 +164,20 @@ def _mv(
     )
 
 
+# 統合版 C1・2.2: 字幕の二重縁を使う用途
+DOUBLE_OUTLINE = frozenset(
+    {
+        Purpose.SHORT,
+        Purpose.GAME,
+        Purpose.VLOG,
+        Purpose.RANKING,
+        Purpose.PRODUCT,
+        Purpose.PROMO,
+        Purpose.EVENT,
+        Purpose.KIDS,
+    }
+)
+
 _SOFT, _POPN, _EXPR = "pop_in_soft", "pop_in", "pop_express"
 _CALM_MV = _mv((12, 6), _SOFT, False, 1, (0, 0), None)
 _INFO_MV = _mv((10, 6), _SOFT, False, 1, (1, 6), 8.0)
@@ -288,7 +302,9 @@ def _make(
         max_concurrent=_CONCURRENT[family],
         palette=palette,
         typography=typo or _GOTHIC,
-        subtitle=subtitle or _SUB[family],
+        subtitle=(subtitle or _SUB[family]).model_copy(
+            update={"double_outline": purpose in DOUBLE_OUTLINE}
+        ),
         safe_area=_VERTICAL if orientation == "vertical" else _LANDSCAPE,
         components=comps,
         motion=MOTION[purpose],
