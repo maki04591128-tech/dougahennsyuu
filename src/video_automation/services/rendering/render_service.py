@@ -110,6 +110,11 @@ COLOR_TAGS = [
     "bt709",
     "-color_range",
     "tv",
+    # h264_nvenc は -color_primaries / -color_trc を SPS に書かない（実機: unknown のまま）。
+    # どの符号化器でも同じになるよう、ビットストリームに直接書く
+    "-bsf:v",
+    "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:"
+    "video_full_range_flag=0",
 ]
 
 
