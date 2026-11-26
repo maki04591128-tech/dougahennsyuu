@@ -301,3 +301,20 @@ def test_keyword_card_does_not_wrap_by_rounding():
 
     r = CardRequest(project_id="x", heading="2人で掛け合い解説", style="keyword", scale=0.62)
     assert [ln.text for ln in card_layout(r, 1080, 1920).lines] == ["2人で掛け合い解説"]
+
+
+def test_build_note_tells_why_shots_were_skipped():
+    """実機: 素材の無い画像まで「用途の型に合わない演出」と書いていた。理由ごとにまとめて伝える。"""
+    from video_automation.services.build.service import skipped_notes
+
+    got = skipped_notes(
+        [
+            "3: 画像の素材がありません（「diamond」）",
+            "5: 画像の素材がありません（「ruby」）",
+            "1: 表示時間が短すぎるので外しました",
+        ]
+    )
+    assert got == [
+        "演出 3 個を外しました: 画像の素材がありません…（2 件）、表示時間が短すぎるので外しました"
+    ]
+    assert skipped_notes([]) == []

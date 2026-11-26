@@ -364,7 +364,9 @@ def add_noda(sentence: str) -> str:
     ):
         # 丁寧語・ほかの語尾・助詞で終わる文（「習慣を！」）は、つなげると壊れるので触らない
         return sentence
-    if core.endswith("だ"):
+    if core.endswith(("なんだ", "なのだ")):  # 「なんだ」は「なのだ」の崩れ。重ねない
+        core = core[:-3] + "なのだ"
+    elif core.endswith("だ"):
         core = core[:-1] + "なのだ"
     elif core.endswith("そう") and len(core) > 2:  # 「面倒くさそう」→「面倒くさそうなのだ」
         core += "なのだ"
@@ -541,6 +543,8 @@ def check_line(
     # 「のだ」の付け方の誤り（「やるののだ」「なるほどのだ」）を直す
     if any(e.endswith("のだ") for e in p.endings):
         new = re.sub(r"のの(だ)", r"の\1", fixed)
+        # 語尾を重ねた誤り（実機:「氷の惑星なのなのだ」「なんなのだ」「なのだなのだ」）
+        new = re.sub(r"な[のん]なのだ|なのだなのだ", "なのだ", new)
         new = re.sub(
             r"(なるほど|そう|本当|ほんと|大丈夫|簡単|便利|大事|大切|おはよう|ありがとう)のだ",
             r"\1なのだ",
