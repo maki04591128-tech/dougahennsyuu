@@ -2269,6 +2269,8 @@ class DirectionService:
     ) -> list[str]:
         """統合版 E6〜E13。cmds の図のトラックのクリップの境目に切り替えを足す。"""
         kind = tz.PURPOSE_TRANSITION[prof.purpose.value]
+        if prof.look == "Y10":  # 統合版 Y10: 墨と和紙は切り替えを墨の転換に
+            kind = "Y10"
         figs = [c for c in cmds if isinstance(c, AddClip) and c.track_id == fig_t]
         ends = {c.start_frame + (c.duration_frames or 0) for c in figs}
         heads = {c.start_frame: c for c in figs if c.start_frame in ends}

@@ -256,6 +256,18 @@ async def test_page_turn_and_cube_transitions(mclient, imgs):
     assert mean(m, 0, 40, 0, 40)[0] > 200  # 左上はまだ前の画（赤）
 
 
+async def test_ink_transition_from_center(mclient, imgs):
+    """統合版 Y10: 中央から墨のしみのように次の画が現れる。"""
+    c = mclient
+    pid, (a, b) = await _setup(c, imgs, ["red", "blue"], length=30)
+    await anim(c, pid, clip_id=b, transition={"type": "ink", "duration_frames": 10})
+    m = await frame(c, pid, 35)
+    assert mean(m, 140, 180, 70, 110)[2] > 200  # 中央は次の画（青）
+    assert mean(m, 0, 30, 0, 30)[0] > 200  # 角はまだ前の画（赤）
+    after = mean(await frame(c, pid, 45))
+    assert after[2] > 200
+
+
 async def test_cube_transition_pushes_previous(mclient, imgs):
     """統合版 E12: 前の画が左へ押し出される。"""
     c = mclient
