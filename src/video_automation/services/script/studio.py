@@ -66,6 +66,7 @@ from video_automation.services.script.persona import (
     parse_style,
     set_signature,
 )
+from video_automation.services.voice.characters import EMOTIONS
 
 if TYPE_CHECKING:
     from video_automation.services.voice.characters import VoiceCharacterService
@@ -870,6 +871,7 @@ class ScriptStudio:
                     "voice_style_id": x.voice_style_id,
                     "original_text": x.original_text,
                     "anchor_sec": x.anchor_sec,
+                    "emotion": x.emotion,
                 }
                 for x in segs
             ],
@@ -1582,6 +1584,7 @@ class ScriptStudio:
                         voice_style_id=emo_sid.get(
                             (t["speaker"], t.get("emotion") or ""), voice.get(t["speaker"])
                         ),
+                        emotion=t.get("emotion") if t.get("emotion") in EMOTIONS else None,
                         generation_run_id=run.id,
                     )
                     s.add(seg)

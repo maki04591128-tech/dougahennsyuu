@@ -73,6 +73,7 @@ from video_automation.services.design.profiles import (
 from video_automation.services.design.series import ED_SEC as SERIES_ED_SEC
 from video_automation.services.design.series import OP_SEC as SERIES_OP_SEC
 from video_automation.services.design.service import DesignService, manifest_record
+from video_automation.services.direction import podcast
 from video_automation.services.direction import prompts as plan_prompts
 from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction.charts import anim_frames, chart_kind
@@ -156,7 +157,16 @@ TRACKS = ("演出・背景", "演出・図", "演出・文字")
 ITEM_TRACK, LOWER_THIRD_TRACK = "演出・項目", "演出・名前帯"
 PART_TRACK, STEP_TRACK = "演出・部品", "演出・手順"  # 統合版 P4・P5・P8
 SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合版 Q4
-EXTRA_TRACKS = (ITEM_TRACK, LOWER_THIRD_TRACK, PART_TRACK, STEP_TRACK, SERIES_TRACK, LOGO_TRACK)
+WAVE_TRACK = "演出・波形"  # 統合版 P2
+EXTRA_TRACKS = (
+    ITEM_TRACK,
+    LOWER_THIRD_TRACK,
+    PART_TRACK,
+    STEP_TRACK,
+    SERIES_TRACK,
+    LOGO_TRACK,
+    WAVE_TRACK,
+)
 TACHIE_TRACK = "立ち絵"  # characters.service.TRACK
 RECORDING_TRACK = "画面録画"  # 画面録画を中央の枠に置くトラック（build.service）
 CHAPTER_CARD_SEC = 2.4  # 画面録画があるときのカードの長さ（章カード: 出す・止める・消す）
@@ -393,6 +403,65 @@ class DirectionService:
         self.timeline = timeline
         self.titles = titles
         self.ffmpeg = ffmpeg
+
+    async def _podcast_waves(
+        self, p: Project, script_id: str, total: int, work: Path
+    ) -> AssetRead | None:
+        """統合版 P2: 話者ごとの声を色分けした波形の動画（透過）を作って素材にする。"""
+        from video_automation.database.models import AudioFile
+        from video_automation.services.design.oklch import FRAME, derive
+
+        async with self.db.session_factory() as s:
+            rows = (
+                await s.execute(
+                    select(ScriptSegment.speaker, ScriptSegment.start_frame, AudioFile.path)
+                    .join(AudioFile, AudioFile.id == ScriptSegment.audio_file_id)
+                    .where(ScriptSegment.script_id == script_id)
+                )
+            ).all()
+        chars = await self._characters(script_id)
+        fps = Fraction(p.fps_num, p.fps_den)
+        total_sec = float(total / fps)
+        data = Path(self.settings.data_dir)
+        by: dict[str, list[tuple[Path, float]]] = {}
+        for spk, start, path in rows:
+            if start is not None and (data / path).is_file():
+                by.setdefault(spk or "", []).append((data / path, float(start / fps)))
+        if not by:
+            return None
+        speakers = list(by)
+        wav = work / f"wave_{uuid4().hex[:8]}.wav"
+        peak = await asyncio.to_thread(
+            podcast.speaker_tracks, [by[x] for x in speakers], total_sec, wav
+        )
+        palette = ("#7FB7E6", "#F4A259", "#8CCB9B")
+        colors = [
+            derive(chars.get(x, {}).get("color") or palette[i % 3], FRAME)
+            for i, x in enumerate(speakers)
+        ]
+        mov = work / f"wave_{uuid4().hex[:8]}.mov"
+        try:
+            await self.ffmpeg.run(
+                [
+                    "-y",
+                    *podcast.waveform_args(
+                        wav,
+                        peak,
+                        colors,
+                        p.width,
+                        p.height,
+                        f"{fps.numerator}/{fps.denominator}",
+                        total_sec,
+                        mov,
+                    ),
+                ]
+            )
+        finally:
+            wav.unlink(missing_ok=True)
+        asset = await self.timeline.register_generated(
+            p.id, mov, AssetKind.VIDEO, "ffmpeg", "ポッドキャストの波形"
+        )
+        return AssetRead.model_validate(asset)
 
     async def _characters(self, script_id: str) -> dict[str, dict[str, str]]:
         """話者の名前 → 肩書き・色（名前帯に使う。統合版 P1）。"""
@@ -1313,6 +1382,19 @@ class DirectionService:
             """左上の角を (left_x, top_y) に合わせる（画面に対する比）。"""
             aw, ah = row.width or 1, row.height or 1
             return native_transform(aw, ah, w, h, cx=left_x + aw / w / 2, cy=top_y + ah / h / 2)
+
+        # 統合版 P2: ポッドキャストの波形（話者ごとに、話している人の声だけを話者の色で）
+        if prof is not None and prof.purpose == Purpose.PODCAST:
+            wave_ = await self._podcast_waves(p, req.script_id, total, part_dir)
+            if wave_ is not None:
+                add(
+                    lane(WAVE_TRACK),
+                    wave_.id,
+                    0,
+                    total,
+                    role="podcast_wave",
+                    transform=place(wave_, 0.5, podcast.CENTER_Y),
+                )
 
         # 統合版 P4: 料理の材料（「材料名 分量」2 秒・STEP n・最後に材料の一覧）
         if prof is not None and prof.purpose == Purpose.RECIPE:

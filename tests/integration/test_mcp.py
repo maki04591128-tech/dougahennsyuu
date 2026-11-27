@@ -275,7 +275,13 @@ async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
         assert r["purpose"] == "game"
         await c.design.set(pid, ProjectDesign(purpose=Purpose.SUBTITLE, extras=[Component.SFX]))
         r = await visual_server.set_project_purpose(pid, "explainer")
-        assert r == {"purpose": "explainer", "extras": ["sfx"], "series_id": None, "genre": None}
+        assert r == {
+            "purpose": "explainer",
+            "extras": ["sfx"],
+            "series_id": None,
+            "genre": None,
+            "hearing_aid": False,
+        }
         assert (await visual_server.check_design(pid))["purpose"] == "explainer"
     finally:
         _shared.set_container(None)

@@ -191,6 +191,7 @@ def build_pack(
         "stack": stack,
         "parts": parts,
         "blink": recipe.get("blink", "closed"),
+        "blink_half": recipe.get("blink_half", "half"),  # 統合版 F1（目の部品に無ければ使わない）
         "expressions": recipe["expressions"],
         "poses": recipe["poses"],
         "gesture_arm": recipe.get("gesture_arm", {}),
@@ -251,6 +252,7 @@ class Pack:
     poses: dict[str, dict[str, str]]
     blink: str
     gesture_arm: dict[str, str] = field(default_factory=dict)
+    blink_half: str = ""  # 統合版 F1: 半目の目の部品の名前（無ければ空）
 
     def expression(self, name: str) -> dict[str, Any]:
         return self.expressions.get(name) or self.expressions["neutral"]
@@ -309,4 +311,5 @@ def load_pack(pack_dir: Path, height: int, mirror: bool = False) -> Pack:
         poses=meta["poses"],
         blink=meta.get("blink", "closed"),
         gesture_arm=meta.get("gesture_arm", {}),
+        blink_half=meta.get("blink_half", "half"),
     )

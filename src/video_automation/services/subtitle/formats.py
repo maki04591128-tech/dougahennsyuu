@@ -1,6 +1,8 @@
 """ASS / SRT 出力 (P4-05 / P4-06)。焼き込みと外部字幕は同じ字幕データから生成する。"""
 
+import re
 from fractions import Fraction
+from typing import Any
 
 from video_automation.schemas.subtitle import SubtitleStyle
 from video_automation.services.design.guard import confusable
@@ -194,8 +196,11 @@ def build_ass(
     speaker_design: dict[str, dict[str, str]] | None = None,
     speaker_entrance: dict[str, str] | None = None,
     ruby: dict[int, list[tuple[int, int, int, str]]] | None = None,
+    emotions: dict[int, str] | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
+
+    emotions は字幕の番号 → 感情（統合版 K4。感情の表現を使う用途だけ渡す）。
 
     speaker_design は話者ごとの字幕の色（fill・outline・alt_outline。統合版 K1 の手元の
     データか利用者の登録）。あればそれを使い、無ければ話者の色から OKLCH で作る（K2）。
@@ -288,6 +293,15 @@ def build_ass(
         cue_fade = fade
         if style.character_entrance and spk in entrances:
             cue_fade = entrance_tags(entrances[spk], style, width, height, mv)
+        emo = EMOTION_SUB.get((emotions or {}).get(k_cue, ""), {})
+        if "entrance" in emo:  # 統合版 K4: 入りを置き換える感情
+            ent = emo["entrance"]
+            cue_fade = (
+                f"{{\\fad({SAD_FADE_MS},{ENTRANCE_OUT_MS})}}"
+                if ent == "sad"
+                else entrance_tags(ent, style, width, height, mv)
+            )
+        first_line = len(lines)
         t0 = ass_time(frame_to_seconds(start, fps))
         t1 = ass_time(frame_to_seconds(end, fps))
         name = spk.replace(",", "，")
@@ -300,6 +314,10 @@ def build_ass(
                 f"{_ass_escape(spk)}{{\\r}}\\N"
             )
         etext = _ass_escape(text)
+        etext_edge = etext  # 二重縁の下の層（文字を透明にした層）用
+        if emo and style.mode != "lyric":
+            tags, edge = _emotion_tags(emo, size, style.outline, style.double_outline)
+            etext, etext_edge = tags + etext, edge + etext
         rb = rubies.get(k_cue) if bottom and style.mode != "lyric" else None
         if rb:
             # 統合版 P7: 行の間（と話者名の下）に、文字の大きさ × 0.55 の空きを入れる
@@ -334,11 +352,11 @@ def build_ass(
                 style.double_outline_outer or speaker_colors.get(spk) or (style.primary_color)
             )
             light = ass_color(light_src)[4:]
-            inner = size * DOUBLE_OUTLINE_RATIO
+            inner = size * DOUBLE_OUTLINE_RATIO * emo.get("border", 1.0)
             outer = inner + DOUBLE_OUTLINE_EXTRA_PX * height / 1080
             lines.append(
                 f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}"
-                f"{{\\1a&HFF&\\3c&H{light}&\\bord{outer:.1f}\\shad0}}{label}{etext}"
+                f"{{\\1a&HFF&\\3c&H{light}&\\bord{outer:.1f}\\shad0}}{label}{etext_edge}"
             )
             lines.append(
                 f"Dialogue: 2,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}"
@@ -348,11 +366,92 @@ def build_ass(
                 lines += _ruby_events(
                     rb, text, t0, t1, st_name, name, fade, size, width, height, mv
                 )
-            continue
-        lines.append(f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}{label}{etext}")
-        if rb:
-            lines += _ruby_events(rb, text, t0, t1, st_name, name, fade, size, width, height, mv)
+        else:
+            lines.append(f"Dialogue: 1,{t0},{t1},{st_name},{name},0,0,0,,{cue_fade}{label}{etext}")
+            if rb:
+                lines += _ruby_events(
+                    rb, text, t0, t1, st_name, name, fade, size, width, height, mv
+                )
+        if emo.get("shake") and bottom and style.alignment == 2 and not rb:
+            lines[first_line:] = _shake(
+                lines[first_line:], start, end, fps, cue_fade, width // 2, height - mv, height
+            )
     return "\r\n".join(lines) + "\r\n"
+
+
+# 統合版 K4: 感情ごとの字幕の変化（4節の表。感情の表現を使う用途だけ）
+SAD_FADE_MS = 400  # 悲しい: 不透明度 0→1、12f
+EMOTION_SUB: dict[str, dict[str, Any]] = {
+    "happy": {"entrance": "ポップ小"},
+    "sad": {"entrance": "sad"},
+    "angry": {"border": 1.3, "shake": True},
+    "surprise": {"entrance": "ポップ中", "size": 1.08},
+    "fear": {"size": 0.95},
+    "tired": {"alpha": 0.90},
+    "excited": {"entrance": "ポップ中"},
+    "sweet": {"entrance": "フェード300"},
+    "whisper": {"size": 0.90, "alpha": 0.90},
+}
+SHAKE_DELAY, SHAKE_STEP, SHAKE_PX = 4, 2, 2  # 怒り: 4f 後に +2px → −2px → 0（2f ずつ、6f）
+
+
+def _emotion_tags(emo: dict[str, Any], size: int, outline: float, double: bool) -> tuple[str, str]:
+    """感情の大きさ・不透明度・縁の ASS のタグ（本文の層用、二重縁の透明な層用）。"""
+    t = ""
+    if "size" in emo:
+        t += f"\\fs{round(size * emo['size'])}"
+    if "border" in emo and not double:  # 二重縁は層ごとの太さに掛ける
+        t += f"\\bord{outline * emo['border']:.1f}"
+    edge = t
+    if "alpha" in emo:
+        a = f"{round((1 - emo['alpha']) * 255):02X}"
+        t += f"\\1a&H{a}&\\3a&H{a}&\\4a&H{a}&"
+        edge += f"\\3a&H{a}&\\4a&H{a}&"
+    return (f"{{{t}}}" if t else ""), (f"{{{edge}}}" if edge else "")
+
+
+_FAD = re.compile(r"\\fad\((\d+),(\d+)\)")
+_ENTRANCE = re.compile(r"\\t\([^()]*\)|\\fscx\d+\\fscy\d+|\\move\([^()]*\)")
+
+
+def _shake(
+    rows: list[str], start: int, end: int, fps: Fraction, cue_fade: str, x: int, y: int, h: int
+) -> list[str]:
+    """怒りの揺れ: 字幕の 1 つの発話の行を、時間で 4 つに分けて x を +2px・−2px にずらす。
+
+    揺れは入りが終わってから（4f か入りの長さの長い方）。入りの動き（拡大・移動）は最初の区間だけ。
+    """
+    m = _FAD.search(cue_fade)
+    fin, fout = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    s0 = start + max(SHAKE_DELAY, -(-fin * fps.numerator // (1000 * fps.denominator)))
+    if end - s0 < 3 * SHAKE_STEP + 1:
+        return rows
+    px = max(1, round(SHAKE_PX * h / 1080))
+    cuts = [start, s0, s0 + SHAKE_STEP, s0 + 2 * SHAKE_STEP, end]
+    shifts: list[int | None] = [None, px, -px, None]
+    out = []
+    for row in rows:
+        f = row.split(",", 9)
+        text = f[9]
+        if "\\p1" in text:  # 字幕の後ろの帯（図形）は揺らさない
+            out.append(row)
+            continue
+        for i, (a, b) in enumerate(zip(cuts, cuts[1:], strict=False)):
+            body = text
+            if i == 0:
+                body = _FAD.sub(lambda mm: f"\\fad({mm.group(1)},0)", body, count=1)
+            else:
+                body = _ENTRANCE.sub("", _FAD.sub("", body))
+                fad = f"\\fad(0,{fout})" if i == 3 and fout else ""
+                dx = shifts[i]
+                pos = f"\\pos({x + dx},{y})" if dx is not None else ""
+                if fad or pos:
+                    body = f"{{{fad}{pos}}}" + body
+                body = body.replace("{}", "")
+            t0 = ass_time(frame_to_seconds(a, fps))
+            t1 = ass_time(frame_to_seconds(b, fps))
+            out.append(",".join([f[0], t0, t1, *f[3:9], body]))
+    return out
 
 
 RUBY_RATIO, RUBY_SPACE = 0.48, 0.55  # 統合版 P7: ふりがなは本文の 48%・行の上に 0.55 の空き
@@ -402,3 +501,36 @@ def build_srt(cues: list[tuple[int, int, str, str]], fps: Fraction) -> str:
             f"{srt_time(frame_to_seconds(end, fps))}\r\n{text.replace(chr(10), chr(13) + chr(10))}"
         )
     return "\r\n\r\n".join(blocks) + "\r\n"
+
+
+MUSIC_MARK_SEC = 2.0  # 統合版 Q7: BGM の始まりと終わりの 2 秒
+
+
+def hearing_aid(
+    rows: list[tuple[int, int, str, str]],
+    fps: Fraction,
+    music: tuple[int, int] | None,
+    name_prefix: bool,
+) -> list[tuple[int, int, str, str]]:
+    """統合版 Q7: 聴覚補助の字幕。
+
+    - BGM の始まりの 2 秒に「♪～」、終わりの 2 秒に「～♪」（BGM が 4 秒より短いときは始まりだけ）
+    - name_prefix のとき、話者が替わった最初の字幕の頭に（名前）。演出の効果音は書かない
+
+    元の行の順と数は変えず、音楽の行は後ろに足す（ふりがななど、行の番号で引く情報を保つ）。
+    """
+    out: list[tuple[int, int, str, str]] = []
+    prev = None
+    for a, b, spk, text in rows:
+        if name_prefix and spk and spk != prev:
+            text = f"（{spk}）{text}"
+        prev = spk or prev
+        out.append((a, b, spk, text))
+    if music is not None:
+        m0, m1 = music
+        n = round(MUSIC_MARK_SEC * fps)
+        if m1 - m0 > 0:
+            out.append((m0, min(m1, m0 + n), "", "♪～"))
+        if m1 - m0 >= 2 * n:
+            out.append((m1 - n, m1, "", "～♪"))
+    return out

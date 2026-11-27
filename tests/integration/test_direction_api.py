@@ -264,6 +264,7 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         "extras": [],
         "series_id": None,
         "genre": None,
+        "hearing_aid": False,
     }
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
@@ -823,3 +824,142 @@ async def test_music_genre_setting(dclient):
     assert (await c.put(f"/projects/{pid}/design", json={"genre": "jazz"})).status_code == 422
     r = await c.put(f"/projects/{pid}/design", json={"purpose": "mv"})
     assert r.json()["genre"] == "edm"  # 省くと前の設定のまま
+
+
+async def test_hearing_aid_subtitles(dclient, tmp_path):
+    """統合版 Q7: 選べる用途でオンにすると、BGM の頭と終わりに ♪ の字幕、話者が替わるたびに（名前）。"""
+    from video_automation.schemas.timeline import (
+        AddClip,
+        AddTrack,
+        Batch,
+        CommandRequest,
+        TrackKind,
+    )
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    container = c.app.state.container
+    render = container.render
+    # 解説（選べない用途）ではオンにしても付けない
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer", "hearing_aid": True})
+    assert (await c.get(f"/projects/{pid}/design")).json()["hearing_aid"] is True
+    ass = (await render._ass_for(sid, 640, 360, tmp_path / "a.ass")).read_text("utf-8-sig")
+    assert "♪" not in ass and "（A）" not in ass
+    # 字幕動画で、BGM を置いて書き出す
+    await c.put(f"/projects/{pid}/design", json={"purpose": "subtitle"})
+    tl = await container.timeline.get_timeline(pid)
+    audio = {t.id for t in tl.tracks if t.kind == "audio"}
+    voice = next(x for x in tl.clips if x.track_id in audio)
+    import uuid
+
+    tid = str(uuid.uuid4())
+    await container.timeline.submit(
+        pid,
+        CommandRequest(
+            command=Batch(
+                commands=[
+                    AddTrack(kind=TrackKind.AUDIO, name="BGM", track_id=tid),
+                    *(
+                        AddClip(
+                            track_id=tid,
+                            asset_id=voice.asset_id,
+                            start_frame=start,
+                            duration_frames=voice.end_frame - voice.start_frame,
+                        )
+                        for start in (0, 300)
+                    ),
+                ]
+            )
+        ),
+    )
+    ass = (await render._ass_for(sid, 640, 360, tmp_path / "b.ass")).read_text("utf-8-sig")
+    assert ",♪～" in ass.replace("}", ",") and "～♪" in ass
+    assert "（A）" in ass and "（B）" in ass
+    # オフに戻すと付けない
+    await c.put(f"/projects/{pid}/design", json={"hearing_aid": False})
+    ass = (await render._ass_for(sid, 640, 360, tmp_path / "c.ass")).read_text("utf-8-sig")
+    assert "♪" not in ass
+
+
+async def test_emotion_subtitles_only_where_allowed(dclient, tmp_path):
+    """統合版 K4: 台本の感情を保存し、感情の表現を使う用途（解説）の字幕だけ変える。"""
+    from sqlalchemy import select
+
+    from video_automation.database.models import ScriptSegment
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    container = c.app.state.container
+    async with container.db.session_factory() as s:
+        segs = (
+            (await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sid)))
+            .scalars()
+            .all()
+        )
+        segs = sorted(segs, key=lambda x: x.sequence)
+        segs[0].emotion = "sad"
+        await s.commit()
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    ass = (await container.render._ass_for(sid, 640, 360, tmp_path / "a.ass")).read_text(
+        "utf-8-sig"
+    )
+    assert "\\fad(400," in ass
+    await c.put(f"/projects/{pid}/design", json={"purpose": "news"})
+    ass = (await container.render._ass_for(sid, 640, 360, tmp_path / "b.ass")).read_text(
+        "utf-8-sig"
+    )
+    assert "\\fad(400," not in ass
+
+
+async def test_podcast_waveform_per_speaker(dclient):
+    """統合版 P2: ポッドキャストでは、話者ごとに話している声だけの波形を下寄りの中央に置く。"""
+    import subprocess
+
+    import numpy as np
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    tl, by = await _apply(c, pid, sid, "podcast")
+    waves = by.get("podcast_wave", [])
+    assert len(waves) == 1  # 話者 A・B を色分けして 1 本
+    # 台詞の終わりまで（終了画面の 15 秒には出さない）
+    voice = max(
+        x["end_frame"]
+        for x in tl["clips"]
+        if x["track_id"]
+        in {t["id"] for t in tl["tracks"] if t["kind"] == "audio" and t["name"] != "BGM"}
+    )
+    assert all(x["start_frame"] == 0 and x["end_frame"] >= voice - 2 for x in waves)
+    assert all(x["transform"]["y"] > 0.2 for x in waves)  # 画面の下寄り
+    # 波形は透過で、話していない間は描かない。A と B で色が違う
+    container = c.app.state.container
+    from video_automation.database.models import Asset
+
+    async with container.db.session_factory() as s:
+        a_row = await s.get(Asset, waves[0]["asset_id"])
+    path = container.settings.data_dir / a_row.path
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout
+    w, h = a_row.width, a_row.height
+    fr = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 4)
+    drawn = (fr[..., 3] > 0).reshape(len(fr), -1).sum(axis=1)
+    assert drawn.max() > 0 and (drawn == 0).any()  # 話していない間は描かない
+    lit = fr[fr[..., 3] > 0][:, :3]
+    assert len({tuple(x) for x in lit[:: max(1, len(lit) // 500)]}) >= 2
+    # 解説では波形を出さない
+    _, by = await _apply(c, pid, sid, "explainer")
+    assert not by.get("podcast_wave")

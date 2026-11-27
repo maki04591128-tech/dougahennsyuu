@@ -221,6 +221,9 @@ class State:
     mouth: int
     eyes_closed: bool
     speaking: float  # 0〜1（話している度合い。明るさに使う）
+    # 統合版 F1: まばたきの何フレーム目か（0〜3。−1 はまばたきでない）。
+    # 開 → 半目 1f → 閉 2f → 半目 1f → 開。半目の部品が無いときは閉じた目 3f（overlay で読み替え）
+    blink_phase: int = -1
     dx: float = 0.0
     dy: float = 0.0
     rot: float = 0.0
@@ -229,6 +232,9 @@ class State:
     arm: float = 0.0  # 身振りで動かす腕の角度
     arm_s: float = 1.0
     pop_arms: tuple[str, ...] = ()
+
+
+BLINK_FRAMES = 4  # 統合版 F1: 半目 1f → 閉 2f → 半目 1f
 
 
 class Animator:
@@ -245,8 +251,9 @@ class Animator:
         self._blips: list[int] = []
         self._blinks = self._blink_frames()
 
-    def _blink_frames(self) -> set[int]:
-        out: set[int] = set()
+    def _blink_frames(self) -> dict[int, int]:
+        """まばたきのフレーム → 何フレーム目か（0〜3。BLINK_FRAMES 枚）。"""
+        out: dict[int, int] = {}
         end = max(
             [s[1] for s in self.sch.spans] + [e.end or e.start for e in self.sch.events] + [0]
         )
@@ -254,10 +261,10 @@ class Animator:
         f = round((1.2 + 0.7 * self.seed) * self.fps)
         r = 12345 + self.seed * 777
         while f < end:
-            out.update(range(f, f + 3))
+            out.update({f + i: i for i in range(BLINK_FRAMES)})
             r = (r * 1103515245 + 12345) & 0x7FFFFFFF
             if r % 6 == 0:  # たまに 2 回続けて
-                out.update(range(f + 6, f + 9))
+                out.update({f + 6 + i: i for i in range(BLINK_FRAMES)})
             f += round((2.4 + (r % 1000) / 1000 * 3.0) * self.fps)
         return out
 
@@ -287,7 +294,8 @@ class Animator:
         if self._expr_prev is not None and expr != self._expr_prev:
             self._blips.append(f)
         self._pose_prev, self._expr_prev = pose, expr
-        st = State(expr, pose, want, f in self._blinks, self._speak)
+        phase = self._blinks.get(f, -1)
+        st = State(expr, pose, want, phase in (1, 2), self._speak, blink_phase=phase)
         # 呼吸（伸び縮み）と重心の揺れ（傾き）
         t = f / self.fps
         st.sy += 0.006 * math.sin(2 * math.pi * t / 3.4 + self.seed)
