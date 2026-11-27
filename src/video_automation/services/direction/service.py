@@ -14,6 +14,7 @@ import json
 import math
 import re
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -94,6 +95,9 @@ from video_automation.services.direction.plan import (
     rule_plan,
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
+from video_automation.services.rendering import flower as fl
+from video_automation.services.rendering import t_extras as tx
+from video_automation.services.rendering import text_scenes as tscn
 from video_automation.services.rendering.card import card_layout
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
 from video_automation.services.rendering.lower_third import draw_lower_third
@@ -205,6 +209,18 @@ CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
 DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
 YEAR_TRACK = "演出・年号"  # 統合版 T43
 PLACE_TRACK = "演出・場所"  # 統合版 H2
+MARK_TRACK = "手描きの印"  # 統合版 N12・N13（スライドの上。build が置く）
+CARD_MARK_TRACK = "演出・項目の印"  # 統合版 I1・N15
+CALLOUT_TRACK = "演出・特長の線"  # 統合版 P9
+MAP_TRACK = "演出・地図"  # 統合版 J1〜J3
+STRIKE_TRACK = "演出・取り消し"  # 統合版 T36・T46
+TEXT_SCENE_TRACK = "演出・文字だけの場面"  # 統合版 T30〜T34
+J_PURPOSES = {Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.EXPLAINER}
+TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
+TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
+BEHIND_TITLE = (TITLE_BACK_TRACK, TITLE_BACK2_TRACK, TITLE_RING_TRACK)  # 立ち絵と題名の下に置く
+TITLE_ECHO_TRACK, TITLE_ECHO2_TRACK = "演出・題名の残響", "演出・題名の残響2"  # 統合版 T49
+CRAWL_TRACK = "演出・奥へ流れる文字"  # 統合版 T44
 # 統合版 段階5d: LLM の chart の種類 → 図、用途 → 使ってよい図
 D_KIND = {
     "number": "D6", "share": "D7", "progress": "D12", "bars": "D3", "race": "D5",
@@ -225,6 +241,10 @@ H1_PURPOSES = {
     Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
 }  # fmt: skip
 EXTRA_TRACKS = (
+    *BEHIND_TITLE,
+    TITLE_ECHO_TRACK,
+    TITLE_ECHO2_TRACK,
+    CRAWL_TRACK,
     PLACE_TRACK,
     YEAR_TRACK,
     CHAPTER_TRACK,
@@ -236,6 +256,11 @@ EXTRA_TRACKS = (
     FX_TRACK,
     EMBER_TRACK,
     ITEM_TRACK,
+    CARD_MARK_TRACK,
+    CALLOUT_TRACK,
+    MAP_TRACK,
+    STRIKE_TRACK,
+    TEXT_SCENE_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
     STEP_TRACK,
@@ -381,6 +406,31 @@ def _reveal_steps(shot: Shot, lines: list, start: int, end: int, min_len: int) -
         times = [start + (end - start) * k // n for k in range(n)]
         bounds = [*times, end]
     return [(bounds[k], bounds[k + 1], k + 1) for k in range(n)]
+
+
+def _polaroid(src: Any, caption: str, h: int, box: float, font_path: str | None) -> Any:
+    """統合版 N17: 写真に白い縁（上左右 2%・下 7%）を付け、下の縁に一言を書いた画。
+    一言は M PLUS Rounded 1c / Medium・画面の高さの 4%・#333333（置いた後の大きさで）。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    iw, ih = src.size
+    side, bottom = round(ih * 0.02), round(ih * 0.07)
+    k = box * h / (ih + side + bottom)  # 置いた後の 1 画素 = 画面の何画素か
+    size = max(10, round(0.04 * h / k))
+    bottom = max(bottom, round(size * 1.6))
+    out = Image.new("RGBA", (iw + 2 * side, ih + side + bottom), (255, 255, 255, 255))
+    out.alpha_composite(src.convert("RGBA"), (side, side))
+    font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size)
+    d = ImageDraw.Draw(out)
+    full = caption.strip()
+    text = full
+    while text and d.textlength(text + ("…" if text != full else ""), font=font) > iw:
+        text = text[:-1]
+    if text != full:
+        text += "…"
+    d.text((out.size[0] / 2, ih + side + bottom / 2), text, font=font, fill=(0x33, 0x33, 0x33),
+           anchor="mm")  # fmt: skip
+    return out
 
 
 def _hex_rgb(c: str) -> tuple[int, int, int]:
@@ -538,6 +588,8 @@ class DirectionService:
         self.timeline = timeline
         self.titles = titles
         self.ffmpeg = ffmpeg
+        # 統合版 N16: 書類の画像を読む OCR（起動時に画面録画と同じものを差す。無ければ使わない）
+        self.ocr_source: Any = lambda: None
 
     async def _podcast_waves(
         self, p: Project, script_id: str, total: int, work: Path
@@ -985,6 +1037,23 @@ class DirectionService:
                 at = at0 + (toc_n if len(chapters) >= 3 else 0)  # N6 の後
                 if at < last or at + n > total:
                     continue
+                if pv == Purpose.GAME:  # T48: 題を縁だけで出してから、左から塗る
+                    num, ttl, mask = await asyncio.to_thread(
+                        hc.chapter_parts, w, h, k, text[:30], font, prof.palette.accent, ink
+                    )
+                    a = await self._overlay(
+                        project_id,
+                        tx.chapter_outline_fill(num, ttl, mask, prof.palette.accent, n, h),
+                        f"章の題名（H1・T48）「{text[:12]}」",
+                        fps,
+                    )
+                    cid = clip(lane(CHAPTER_TRACK), a, at, n, ClipTransform(fit=FitMode.FIT))
+                    anim(cid, [Keyframe(frame=0, opacity=1.0),
+                               Keyframe(frame=n - 7, opacity=1.0, scale=1.0,
+                                        easing=Easing.CUBIC_IN),
+                               Keyframe(frame=n - 1, opacity=0.0, scale=0.96)])  # fmt: skip
+                    last = at + n
+                    continue
                 img = await asyncio.to_thread(
                     hc.chapter_card, w, h, k, text[:30], font, prof.palette.accent, ink
                 )
@@ -1048,6 +1117,376 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _not_telops(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        top: float,
+        ts: float,
+        font: str | None,
+        ink: str,
+        panel: str,
+    ) -> None:
+        """統合版 T36（取り消し線で消す）・T46（打ち直すタイプライター）。
+        1 文に 1 回、画面の上の中央に出す。"""
+        size = max(12, round(min(w, h) * 0.078 * 0.62 * ts))
+        retype = prof.purpose == Purpose.TUTORIAL
+        track = None
+        for ln in lines:
+            ab = tx.not_phrases(ln.text)
+            n = min(total, ln.end) - ln.start
+            if ab is None or n < round(fps):
+                continue
+            make = tx.retype_frames if retype else tx.strike_frames
+            (cw, ch), gen = make(ab[0], ab[1], font, size, ink, panel, n)
+            name = "打ち直すタイプライター（T46）" if retype else "取り消し線（T36）"
+            a = await self._overlay(project_id, gen, name, fps)
+            track = track or lane(STRIKE_TRACK)
+            k = native_scale(cw, ch, w, h)
+            tf = native_transform(cw, ch, w, h, cx=0.5, cy=top + ch * k / 2 / h)
+            cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=ln.start,
+                                duration_frames=n, clip_id=str(uuid4()), transform=tf))  # fmt: skip
+
+    async def _text_scenes(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        windows: list[tuple[Any, int, int]],
+        shown: list[tuple[int, int]],
+        title_end: int,
+        total: int,
+        cmds: list[Any],
+        lane: Any,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+    ) -> list[tuple[int, int]]:
+        """統合版 T30・T32・T33・T34。文字だけの場面の区間を返す（字幕・強調テロップを出さない）。
+        T31（会社紹介の 3D の字組みを飛ぶカメラ）は作らない。"""
+        from video_automation.services.build.bgm_prompts import BGM
+
+        kind = tscn.KIND[prof.purpose.value]
+        busy = [*shown, (0, title_end)]
+        rows = [(x.start, x.end, x.text) for x in lines]
+        chapters = [st for s_, st, _en in windows if s_.kind in (ShotKind.CARD, ShotKind.CHART)]
+        secs = tscn.pick_sections(rows, busy, total, fps, prof.purpose.value, chapters)
+        if not secs:
+            return []
+        spec = BGM.get(prof.purpose)
+        bpm = float(spec[1]) if spec else 120.0
+        script = "".join(x.text for x in lines)
+        track = lane(TEXT_SCENE_TRACK)
+        out: list[tuple[int, int]] = []
+        for i, j in secs:
+            # 次の発話の頭まで（字幕は声より少し長く出るので、その分も覆う）
+            nxt = lines[j].start if j < len(lines) else lines[j - 1].end
+            start, end = lines[i].start, min(total, max(lines[j - 1].end, nxt))
+            ph = [p_ for x in lines[i:j] for p_ in tscn.phrases(x.text, x.start, x.end)]
+            if not ph or end - start < round(fps):
+                continue
+            gen = tscn.frames(kind, ph, start, end - start, w, h, font, prof.palette, fps, bpm,
+                              script)  # fmt: skip
+            a = await self._overlay(project_id, gen, f"文字だけの場面（{kind}）", fps)
+            cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=start,
+                                duration_frames=end - start, clip_id=str(uuid4()),
+                                transform=ClipTransform(fit=FitMode.FIT)))  # fmt: skip
+            out.append((start, end))
+        return out
+
+    async def _flower(
+        self,
+        project_id: str,
+        text: str,
+        emotion: str,
+        color: str,
+        start: int,
+        end: int,
+        cmds: list[Any],
+        txt_t: str,
+        w: int,
+        h: int,
+        fps: float,
+        side: float,
+        strip_top: float,
+        ts: float,
+        add: Any,
+    ) -> None:
+        """統合版 T42: リアクションの強調テロップを花字にする（強調テロップと同じ右上に置く）。
+        色は話者の色から 3 節の作り方（OKLCH）で作る。大きさは強調テロップの文字の 1.4 倍。"""
+        from video_automation.services.design.oklch import FRAME, OUTLINE, TEXT, derive
+
+        col = fl.FlowerColors(
+            edge=derive(color, OUTLINE),
+            frame=derive(color, FRAME),
+            light=derive(color, (0.88, 0.06)),
+            text=derive(color, TEXT),
+        )
+        size = max(12, round(min(w, h) * 0.078 * 0.62 * ts * 1.4))
+        font = self.titles.font_path("M PLUS Rounded 1c")
+        (cw, ch), gen = fl.frames(text[:16], font, size, col, emotion, end - start, fps, h)
+        a = await self._overlay(project_id, gen, f"花字（T42）「{text[:12]}」", fps)
+        k = native_scale(cw, ch, w, h)
+        # 余白を含む画なので、文字の部分が強調テロップと同じ右上に来るよう中心を置く
+        kx = 1 - side - cw * k / 2 / w + size * 0.9 * k / w
+        ky = strip_top + ch * k / 2 / h - size * 0.9 * k / h
+        add(txt_t, a.id, start, end - start, role="keyword",
+            transform=native_transform(cw, ch, w, h, cx=kx, cy=ky))  # fmt: skip
+
+    async def _maps(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        shown: list[tuple[int, int]],
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        box: float,
+        cy: float,
+    ) -> list[str]:
+        """統合版 J1（国の塗り）・J2（地点へ寄る）・J3（経路の線）。地図は Natural Earth を初回に
+        取得する（取れなければ出さない）。地名が地図に無ければ出さない。"""
+        from video_automation.integrations.maps import natural_earth as ne
+        from video_automation.services.rendering import maps as mp
+
+        want = [x for x in lines if str(x.items.get("place") or "").strip()]
+        if not want:
+            return []
+        world = await asyncio.to_thread(ne.ensure, self.settings.data_dir)
+        if world is None:
+            return ["地図のデータ（Natural Earth）を取得できなかったので、地図を出しませんでした"]
+        pal = prof.palette
+        mpal = mp.Palette(pal.base, pal.surface, pal.text_muted, pal.accent)
+        fw, fh = max(2, round(w * box)) // 2 * 2, max(2, round(h * box)) // 2 * 2
+        tf = ClipTransform(fit=FitMode.FIT, scale=box, y=cy - 0.5)
+        used = list(shown)
+        track = None
+        notes: list[str] = []
+        one = round(fps)
+        for k_, ln in enumerate(want):
+            place = str(ln.items["place"]).strip()
+            nxt = want[k_ + 1].start if k_ + 1 < len(want) else total
+            start, end = ln.start, min(total, ln.end + one, nxt)
+            if end - start < one or any(a < end and start < b for a, b in used):
+                continue
+            got = await asyncio.to_thread(mp.frames_for, world, place, ln.text, fw, fh, mpal)
+            if got is None:
+                notes.append(f"地名「{place[:20]}」が地図に無いので、地図を出しませんでした")
+                continue
+            name, fr, still = got
+            track = track or lane(MAP_TRACK)
+            n_mov = min(len(fr), end - start)
+            mov = await self._overlay(project_id, fr[:n_mov], f"{name}「{place[:12]}」", fps)
+            c1 = str(uuid4())
+            cmds.append(AddClip(track_id=track, asset_id=mov.id, start_frame=start,
+                                duration_frames=n_mov, clip_id=c1, transform=tf))  # fmt: skip
+            cmds.append(SetClipAnimation(clip_id=c1, animation=ClipAnimation(keyframes=[
+                Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
+                Keyframe(frame=min(6, n_mov - 1), opacity=1.0)])))  # fmt: skip
+            if end - start > n_mov:
+                b = await self._png(project_id, still.convert("RGBA"), f"{name}「{place[:12]}」")
+                c2 = str(uuid4())
+                m = end - start - n_mov
+                cmds.append(AddClip(track_id=track, asset_id=b.id, start_frame=start + n_mov,
+                                    duration_frames=m, clip_id=c2, transform=tf))  # fmt: skip
+                if m > 8:
+                    cmds.append(SetClipAnimation(clip_id=c2, animation=ClipAnimation(keyframes=[
+                        Keyframe(frame=m - 7, opacity=1.0, easing=Easing.CUBIC_IN),
+                        Keyframe(frame=m - 1, opacity=0.0)])))  # fmt: skip
+            used.append((start, end))
+        return notes
+
+    async def _callouts(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        img: AssetRead,
+        lines: list[Any],
+        start: int,
+        end: int,
+        cmds: list[Any],
+        lane: Any,
+        w: int,
+        h: int,
+        box: float,
+        cy: float,
+        fps: float,
+        font: str | None,
+        ink: str,
+    ) -> None:
+        """統合版 P9: 商品の画像の区間で、LLM が発話に features（最大 3 つ）を付けたとき、
+        画像の左上・右上・右下から外へ線を 8f で伸ばし、先に語を T10 で出す（話す間に 1 つずつ）。
+        ケン・バーンズで少し寄るので、線は画像の置いた範囲の縁から始める（近似）。"""
+        from video_automation.services.rendering import n_marks as nm
+
+        ln = next((x for x in lines if start <= x.start < end and x.items.get("features")), None)
+        if ln is None or not img.width or not img.height:
+            return
+        words = [str(x).strip()[:12] for x in ln.items["features"] if str(x).strip()][:3]
+        if not words:
+            return
+        # 画像を置いた範囲（画面の box 倍の枠に収める。中心は (0.5, cy)）
+        k = min(box * w / img.width, box * h / img.height)
+        iw, ih = img.width * k, img.height * k
+        rect = (w / 2 - iw / 2, cy * h - ih / 2, w / 2 + iw / 2, cy * h + ih / 2)
+        span = max(1, ln.end - ln.start)
+        times = [ln.start + span * i // len(words) for i in range(len(words))]
+        events = [t for t in times if t < end]
+        track = lane(CALLOUT_TRACK)
+        n_anim = nm.P9_LINE + nm.P9_TEXT
+        for i, at in enumerate(events):
+            nxt = events[i + 1] if i + 1 < len(events) else end
+            if nxt <= at:
+                continue
+
+            def layer(f: int, i: int = i, at: int = at) -> Any:
+                shown: list[int | None] = [
+                    (at + f - times[j]) if j <= i else None for j in range(len(words))
+                ]
+                return nm.callout_layer((w, h), rect, words, shown, prof.palette.main, ink, font)
+
+            m = min(n_anim, nxt - at)
+            mov = await self._overlay(project_id, (layer(f) for f in range(m)),
+                                      "特長の引き出し線（P9）", fps)  # fmt: skip
+            cmds.append(AddClip(track_id=track, asset_id=mov.id, start_frame=at,
+                                duration_frames=m, clip_id=str(uuid4())))  # fmt: skip
+            if nxt - at > m:
+                still = await asyncio.to_thread(layer, 10_000)
+                b = await self._png(project_id, still, "特長の引き出し線（P9）")
+                cmds.append(
+                    AddClip(track_id=track, asset_id=b.id, start_frame=at + m,
+                            duration_frames=nxt - at - m, clip_id=str(uuid4()))
+                )  # fmt: skip
+
+    async def _before_after(
+        self,
+        project_id: str,
+        a1: AssetRead,
+        a2: AssetRead,
+        start: int,
+        mid: int,
+        end: int,
+        cmds: list[Any],
+        fig_t: str,
+        h: int,
+        box: float,
+        cy: float,
+        fps: float,
+        font: str | None,
+        add: Any,
+        animate: Any,
+    ) -> None:
+        """統合版 N5: 1 枚目を出し、2 枚目の区間の頭から境目を右端 → 左端へ動かして
+        2 枚目を現す。"""
+        from PIL import Image
+
+        from video_automation.services.rendering import n_cards as nc
+
+        def make() -> tuple[Any, list[Any], Any]:
+            im1 = Image.open(self.settings.data_dir / a1.path).convert("RGBA")
+            im2 = Image.open(self.settings.data_dir / a2.path).convert("RGBA")
+            # 画の 1px = 画面の何 px か（box の高さに合わせて置くので）
+            k = box * h / im1.size[1]
+            frames_, still = nc.before_after_frames(im1, im2, h, font, 1 / k)
+            return im1, frames_, still
+
+        im1, frames_, still = await asyncio.to_thread(make)
+        tf = ClipTransform(fit=FitMode.FIT, scale=box, y=cy - 0.5)
+        first = mid - start
+        if first > 0:
+            cid = add(fig_t, a1.id, start, first, role="image", transform=tf)
+            animate(cid, first, exit_=False)
+        n_mov = min(len(frames_), end - mid)
+        if n_mov > 0:
+            mov = await self._overlay(project_id, frames_[:n_mov], "前後の比較（N5）", fps)
+            add(fig_t, mov.id, mid, n_mov, role="image", transform=tf)
+        if end - mid - n_mov > 0:
+            b = await self._png(project_id, still, "前後の比較（N5）")
+            cid = add(fig_t, b.id, mid + n_mov, end - mid - n_mov, role="image", transform=tf)
+            animate(cid, end - mid - n_mov, None)
+        del im1
+
+    async def _document(
+        self, project_id: str, img: AssetRead, said: str
+    ) -> tuple[AssetRead, list[Keyframe]] | None:
+        """統合版 N16: OCR の文字数が 120 字以上の画像（書類・記事）で、発話の語と一致する行が
+        あれば、その行に T37 のマーカー（accent・不透明度 40%・文字の高さの 45%）、他の行を
+        不透明度 55% にした画と、その行が中央に来るよう 1.00→1.25 に 24f で寄るカメラのキー。"""
+        from PIL import Image, ImageDraw
+
+        from video_automation.services.direction import slides as sl
+
+        engine = self.ocr_source()
+        if engine is None or not said.strip():
+            return None
+        path = self.settings.data_dir / img.path
+        try:
+            (res,) = await asyncio.to_thread(engine.read, [path])
+        except Exception:  # noqa: BLE001 - 読めなければ普通の画像のまま
+            return None
+        if len(res.text.replace(" ", "")) < 120:
+            return None
+        j = sl.best_line(res, sl.tokens(said))
+        if j is None:
+            return None
+        prof = await self.design.profile_for(project_id) if self.design else None
+        accent = prof.palette.accent if prof else "#FFD966"
+
+        def make() -> Any:
+            im = Image.open(path).convert("RGBA")
+            sx, sy = im.size[0] / max(1, res.width), im.size[1] / max(1, res.height)
+            lay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+            d = ImageDraw.Draw(lay)
+            for k, ln in enumerate(res.lines):
+                x, y, bw, bh = ln.box
+                box = (x * sx, y * sy, (x + bw) * sx, (y + bh) * sy)
+                if k == j:
+                    top = box[3] - (box[3] - box[1]) * 0.45
+                    r, g, b = _hex_rgb(accent)
+                    d.rectangle((box[0], top, box[2], box[3]), fill=(r, g, b, round(255 * 0.4)))
+                else:
+                    bg = sl.background(im, (box[0], box[1], box[2] - box[0], box[3] - box[1]))
+                    d.rectangle(box, fill=(*bg, round(255 * 0.45)))
+            im.alpha_composite(lay)
+            return im
+
+        out = await asyncio.to_thread(make)
+        a = await self._png(project_id, out, f"書類の強調（N16）{img.name[:20]}")
+        x, y, bw, bh = res.lines[j].box
+        px, py = sl.pan_for((x + bw / 2) / res.width, (y + bh / 2) / res.height)
+        keys = [
+            Keyframe(frame=0, zoom=1.0, pan_x=0.0, pan_y=0.0, easing=Easing.CUBIC_IN_OUT),
+            Keyframe(frame=24, zoom=sl.ZOOM, pan_x=px, pan_y=py),
+        ]
+        return a, keys
+
+    async def _photo_card(
+        self, project_id: str, img: AssetRead, caption: str, h: int, box: float
+    ) -> AssetRead:
+        """統合版 N17: 写真に白い縁と一言を付けた画（_polaroid）の素材。"""
+        from PIL import Image
+
+        path = self.titles.font_path("M PLUS Rounded 1c Medium")
+
+        def draw() -> Any:
+            src = Image.open(self.settings.data_dir / img.path).convert("RGBA")
+            return _polaroid(src, caption, h, box, path)
+
+        out = await asyncio.to_thread(draw)
+        return await self._png(project_id, out, f"写真と一言（N17）{img.name[:20]}")
 
     async def _sticker(self, project_id: str, img: AssetRead, h: int) -> AssetRead:
         """統合版 I3: 透過の画像の形に沿って白の縁（8px）と影を付けた画像。"""
@@ -1251,6 +1690,7 @@ class DirectionService:
         # 統合版 段階5d: LLM が発話に付けた項目から出す部品（H2・N3・N10・P11）
         sa = safe_area_for(prof, w, h)
         placed_place: set[str] = set()
+        last_tag: AddClip | None = None
         for i, ln in enumerate(lines):
             it = ln.items
             end = min(total, ln.end + one_sec)
@@ -1260,7 +1700,19 @@ class DirectionService:
                 and pv in (Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.VLOG)
                 and pl not in placed_place
             ):
-                # H2: 左上に場所のタグ（4 秒。ピンが落ちる 8f）
+                # H2: 左上に場所のタグ（4 秒。ピンが落ちる 8f）。前のタグがまだ出ていれば、
+                # 次のタグの頭で前のタグを終える（同じトラックで重ねない）
+                if (
+                    last_tag is not None
+                    and last_tag.start_frame + (last_tag.duration_frames or 0) > ln.start
+                ):
+                    old_n = last_tag.duration_frames or 0
+                    # 同じ時刻に始まることは無い（発話の頭は 1 フレーム以上ずれる）
+                    keep = max(1, ln.start - last_tag.start_frame)
+                    cmds[cmds.index(last_tag)] = last_tag.model_copy(
+                        update={"duration_frames": keep}
+                    )
+                    shorten_animation(cmds, last_tag.clip_id, old_n, old_n - keep)
                 n = min(round(4 * fps), total - ln.start)
                 img = await asyncio.to_thread(nc.place_tag, w, h, pl[:20], font, pal.accent, ink)
                 a_ = await self._png(project_id, img, f"場所のタグ（H2）「{pl[:12]}」")
@@ -1268,9 +1720,10 @@ class DirectionService:
                 tf = native_transform(bw_, bh_, w, h, cx=sa.left + bw_ / w / 2,
                                       cy=sa.top + bh_ / h / 2, max_w=1.0)  # fmt: skip
                 cid = str(uuid4())
-                cmds.append(AddClip(track_id=lane(PLACE_TRACK), asset_id=a_.id,
-                                    start_frame=ln.start, duration_frames=n, clip_id=cid,
-                                    transform=tf))  # fmt: skip
+                last_tag = AddClip(track_id=lane(PLACE_TRACK), asset_id=a_.id,
+                                   start_frame=ln.start, duration_frames=n, clip_id=cid,
+                                   transform=tf)  # fmt: skip
+                cmds.append(last_tag)
                 if n > 14:
                     cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=[
                         Keyframe(frame=0, y=-20 / h, opacity=0.0, easing=Easing.BACK_OUT),
@@ -1411,17 +1864,28 @@ class DirectionService:
         return notes
 
     async def _overlay(
-        self, project_id: str, frames_: list[Any], name: str, fps: float
+        self, project_id: str, frames_: Iterable[Any], name: str, fps: float
     ) -> AssetRead:
-        """透過の画の列を 1 本の動画（PNG の mov）にして素材にする（最後に透明の 1 枚を足す）。"""
+        """透過の画の列を 1 本の動画（PNG の mov）にして素材にする（最後に透明の 1 枚を足す）。
+        画の列は生成器でもよい（1 枚ずつ描いて書き出すので、長い列でもメモリに溜めない）。"""
         from PIL import Image
 
         out_dir = self.settings.data_dir / "projects" / project_id / "assets"
         work = out_dir / f"ov_{uuid4().hex[:8]}"
         work.mkdir(parents=True, exist_ok=True)
-        blank = Image.new("RGBA", frames_[0].size, (0, 0, 0, 0))
-        for i, fr in enumerate([*frames_, blank]):
-            await asyncio.to_thread(fr.save, work / f"{i:04d}.png")
+
+        def save_all() -> None:
+            size = None
+            i = 0
+            for i, fr in enumerate(frames_):  # noqa: B007
+                size = fr.size
+                fr.save(work / f"{i:04d}.png")
+            if size is None:
+                shutil.rmtree(work, True)
+                raise CommandError("no overlay frames")
+            Image.new("RGBA", size, (0, 0, 0, 0)).save(work / f"{i + 1:04d}.png")
+
+        await asyncio.to_thread(save_all)
         mov = work.with_suffix(".mov")
         await self.ffmpeg.run(
             ["-y", "-framerate", f"{fps:.6f}", "-i", str(work / "%04d.png"),
@@ -1432,6 +1896,212 @@ class DirectionService:
             project_id, mov, AssetKind.VIDEO, "pillow", name
         )
         return AssetRead.model_validate(row)
+
+    async def _card_marks(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        body: list[str],
+        lines: list[Any],
+        steps: list[tuple[int, int, int | None]],
+        creq: CardRequest,
+        card: AssetRead,
+        cmds: list[Any],
+        lane: Any,
+        w: int,
+        h: int,
+        cy: float,
+        max_h: float,
+        max_w: float,
+        fps: float,
+    ) -> None:
+        """統合版 I1（項目の最初の文節が絵記号の語なら、頭に線の絵を 12f で描く）と
+        N15（後の文が「できました」「完了」「終わり」で終わったら、その時に出ている最後の項目に
+        チェックを 8f で描き、項目の文字を不透明度 55% に見せる）。
+
+        印はカードと同じ大きさの透過の画に描き、カードと同じ置き方で 1 本のトラックに重ねる
+        （印が増えるたびに、描く動き → 止め絵 の順に置く）。"""
+        from PIL import Image, ImageDraw
+
+        from video_automation.services.rendering import n_cards as nc
+        from video_automation.services.rendering import n_marks as nm
+
+        def _on(base: Any, pic: Any, pos: tuple[int, int]) -> Any:
+            im = base.copy()
+            im.alpha_composite(pic, pos)
+            return im
+
+        pv = prof.purpose
+        i1 = pv in (Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS)
+        n15 = pv in (Purpose.TUTORIAL, Purpose.RECIPE)
+        cw, ch = card.width or 0, card.height or 0
+        if not (i1 or n15) or not cw or not ch:
+            return
+        layout = card_layout(creq, w, h)
+        end = steps[-1][1]
+        if steps[0][2] is None:
+            shown_at = [steps[0][0]] * len(body)
+        else:
+            shown_at = [steps[min(j, len(steps) - 1)][0] for j in range(len(body))]
+        pal = prof.palette
+        # (時刻, 描く画の列, 描いた後の画, 置く左上) の印の一覧
+        marks: list[tuple[int, list[Any], tuple[int, int]]] = []
+        dims: list[tuple[int, tuple[int, int, int, int]]] = []
+        if i1:
+            for j, item in enumerate(body):
+                name = pick_icon(nc.first_phrase(item), [])
+                head = nm.item_head(layout, j)
+                if name is None or head is None:
+                    continue
+                hx, hy, side = head
+                ln = next((x for x in layout.lines if x.item == j), None)
+                lh = ln.size if ln else side
+                right = (ln.x if ln else hx + side) - max(2, round(lh * 0.08))
+                # 文字の 1.2 倍（カードからはみ出さない）
+                size = max(8, min(round(lh * 1.2), right))
+                fr = await asyncio.to_thread(nm.icon_draw_frames, name, size, pal.main)
+                # 行頭記号を面の色で隠して、その場所に絵を描く（文字の左に、行の中央の高さで）
+                cover = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+                panel = (*_hex_rgb(creq.panel_color), 255)
+                ImageDraw.Draw(cover).rectangle(
+                    (hx - 1, hy - 1, hx + side + 1, hy + side + 1), fill=panel
+                )
+                pos = (right - size, round((ln.y if ln else hy) + lh / 2 - size / 2))
+                fr = [_on(cover, f_, pos) for f_ in fr]
+                marks.append((shown_at[j], fr, (0, 0)))
+        if n15:
+            done: set[int] = set()
+            for ln_ in lines:
+                if not (steps[0][0] <= ln_.start < end) or not nm.is_done(ln_.text):
+                    continue
+                jj = max((x for x in range(len(body)) if shown_at[x] <= ln_.start), default=None)
+                head = nm.item_head(layout, jj) if jj is not None else None
+                box = nm.item_box(layout, jj) if jj is not None else None
+                if jj is None or jj in done or head is None or box is None:
+                    continue
+                done.add(jj)
+                hx, hy, side = head
+                size = max(8, round(side * 1.3))
+                fr = await asyncio.to_thread(nm.check_frames, size, pal.accent)
+                at = max(ln_.start, ln_.end - 1)
+                marks.append(
+                    (at, fr, (round(hx + side / 2 - size / 2), round(hy + side / 2 - size / 2)))
+                )
+                dims.append((at, box))
+        marks = sorted((m for m in marks if m[0] < end), key=lambda m: m[0])
+        if not marks:
+            return
+        dim_col = (*_hex_rgb(creq.panel_color), round(255 * nm.N15_DIM))
+
+        def canvas(t: int, upto: int, anim_k: int | None) -> Any:
+            """t の時点の印の画。upto 番目までは描き終えた画、upto 番目は anim_k 枚目。"""
+            im = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            for at, (bx, by, bw, bh) in dims:
+                if at <= t:
+                    d.rectangle((bx, by, bx + bw, by + bh), fill=dim_col)
+            for k_, (_at, fr, pos) in enumerate(marks[: upto + 1]):
+                pic = fr[min(anim_k, len(fr) - 1)] if k_ == upto and anim_k is not None else fr[-1]
+                im.alpha_composite(pic, pos)
+            return im
+
+        tf = native_transform(cw, ch, w, h, cx=0.5, cy=cy, max_h=max_h, max_w=max_w)
+        track = lane(CARD_MARK_TRACK)
+        for k_, (at, fr, _pos) in enumerate(marks):
+            nxt = marks[k_ + 1][0] if k_ + 1 < len(marks) else end
+            if nxt <= at:
+                continue
+            n_anim = min(len(fr), nxt - at)
+            seq = [canvas(at, k_, i) for i in range(n_anim)]
+            a = await self._overlay(project_id, seq, "項目の印（I1・N15）", fps)
+            cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=at,
+                                duration_frames=n_anim, clip_id=str(uuid4()),
+                                transform=tf))  # fmt: skip
+            if nxt - at > n_anim:
+                still = await self._png(project_id, canvas(at, k_, None), "項目の印（I1・N15）")
+                cmds.append(AddClip(track_id=track, asset_id=still.id, start_frame=at + n_anim,
+                                    duration_frames=nxt - at - n_anim, clip_id=str(uuid4()),
+                                    transform=tf))  # fmt: skip
+
+    async def _title_extras(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        title: str,
+        cmds: list[Any],
+        lane: Any,
+        at: int,
+        n: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+        size: float,
+        dy: float,
+    ) -> None:
+        """統合版 T47（ランキング・イベントの帯）・T49（縦型ショートの残響）・
+        T50（イベントの円周）。
+        題名を出している間（at から n フレーム）だけ置く。"""
+        pv = prof.purpose
+        pal = prof.palette
+        if n <= 0 or not title.strip():
+            return
+
+        def add(track: str, a: AssetRead, start: int, length: int, tf: ClipTransform,
+                keys: list[Keyframe]) -> None:  # fmt: skip
+            cid = str(uuid4())
+            cmds.append(AddClip(track_id=lane(track), asset_id=a.id, start_frame=start,
+                                duration_frames=length, clip_id=cid, transform=tf))  # fmt: skip
+            cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+
+        sec = n / fps
+        if pv in (Purpose.RANKING, Purpose.EVENT):  # T47: −8°（左へ）と ＋8°（右へ）の帯
+            move = tx.BAND_SPEED * sec
+            for k, (face, angle, y, sign) in enumerate(
+                ((pal.accent, tx.BAND_ANGLE, -0.06, -1), (pal.main, -tx.BAND_ANGLE, 0.06, 1))
+            ):
+                img = await asyncio.to_thread(tx.title_band, w, h, title, font, face, ink, angle)
+                a = await self._png(project_id, img, f"流れる帯（T47）{k + 1}")
+                tf = native_transform(img.size[0], img.size[1], w, h, cx=0.5, cy=0.5 + dy + y,
+                                      max_w=10.0)  # fmt: skip
+                x0 = -sign * move / 2
+                keys = [Keyframe(frame=0, opacity=0.0, x=x0, easing=Easing.LINEAR),
+                        Keyframe(frame=min(6, n - 1), opacity=1.0,
+                                 x=x0 + sign * move * min(6, n - 1) / n, easing=Easing.LINEAR),
+                        Keyframe(frame=max(7, n - 7), opacity=1.0,
+                                 x=x0 + sign * move * max(7, n - 7) / n, easing=Easing.LINEAR),
+                        Keyframe(frame=n - 1, opacity=0.0, x=x0 + sign * move)]  # fmt: skip
+                add(TITLE_BACK_TRACK if k == 0 else TITLE_BACK2_TRACK, a, at, n, tf, keys)
+        if pv == Purpose.EVENT:  # T50: 画面の高さの 38% の円周に題名を並べ、20 秒で 1 周
+            img = await asyncio.to_thread(tx.ring_text, round(h * 0.38), title, font,
+                                          pal.text_muted, h)  # fmt: skip
+            a = await self._png(project_id, img, "円周を回る文字（T50）")
+            tf = native_transform(img.size[0], img.size[1], w, h, cx=0.5, cy=0.5 + dy,
+                                  max_w=10.0, max_h=10.0)  # fmt: skip
+            turn = 360.0 * sec / tx.RING_SEC
+            keys = [Keyframe(frame=0, opacity=0.0, rotation=0.0, easing=Easing.LINEAR),
+                    Keyframe(frame=min(6, n - 1), opacity=1.0,
+                             rotation=turn * min(6, n - 1) / n, easing=Easing.LINEAR),
+                    Keyframe(frame=max(7, n - 7), opacity=1.0,
+                             rotation=turn * max(7, n - 7) / n, easing=Easing.LINEAR),
+                    Keyframe(frame=n - 1, opacity=0.0, rotation=turn)]  # fmt: skip
+            add(TITLE_RING_TRACK, a, at, n, tf, keys)
+        if pv == Purpose.SHORT:  # T49: 上下に縁だけの文字を 2 段ずつ、題名に近い段から 4f ずらし
+            for k in (1, 2):
+                st = 4 * (k - 1)
+                m = n - st
+                if m < 8:
+                    continue
+                img = await asyncio.to_thread(tx.echo_pair, w, h, title, font, pal.text, size, k,
+                                              dy)  # fmt: skip
+                a = await self._png(project_id, img, f"段々の残響（T49）{k} 段目")
+                keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
+                        Keyframe(frame=6, opacity=1.0),
+                        Keyframe(frame=max(7, m - 7), opacity=1.0, easing=Easing.CUBIC_IN),
+                        Keyframe(frame=m - 1, opacity=0.0)]  # fmt: skip
+                add(TITLE_ECHO_TRACK if k == 1 else TITLE_ECHO2_TRACK, a, at + st, m,
+                    ClipTransform(fit=FitMode.FIT), keys)  # fmt: skip
 
     async def _effects(
         self,
@@ -1541,8 +2211,10 @@ class DirectionService:
         w: int,
         h: int,
         lane: Any,
+        txt_t: str | None = None,
+        keywords: set[str] | None = None,
     ) -> list[str]:
-        """統合版 E6〜E10。cmds の図のトラックのクリップの境目に切り替えを足す。"""
+        """統合版 E6〜E13。cmds の図のトラックのクリップの境目に切り替えを足す。"""
         kind = tz.PURPOSE_TRANSITION[prof.purpose.value]
         figs = [c for c in cmds if isinstance(c, AddClip) and c.track_id == fig_t]
         ends = {c.start_frame + (c.duration_frames or 0) for c in figs}
@@ -1550,21 +2222,61 @@ class DirectionService:
         cuts = tz.pick_cuts(list(heads), fps, total, prof.purpose.value)
         if not cuts:
             return []
+
+        def enter(b: int, name: str, n: int) -> None:
+            cid = heads[b].clip_id
+            if cid:
+                cmds.append(
+                    SetClipAnimation(
+                        clip_id=cid,
+                        transition=Transition(type=TransitionType(name), duration_frames=n),
+                    )
+                )
+
+        if (
+            kind == "E13"
+        ):  # マッチカット: 境目にかかる強調テロップを 8f 持ち越す。無ければディゾルブ
+            texts = [c for c in cmds if isinstance(c, AddClip) and c.track_id == txt_t]
+            kws = [c for c in texts if c.clip_id in (keywords or set())]
+            near = round(0.5 * fps)
+            for b in cuts:
+                hold = b + tz.MATCH_HOLD
+                cand = [
+                    c
+                    for c in kws
+                    if c.start_frame < b <= c.start_frame + (c.duration_frames or 0) + near
+                    and c.start_frame + (c.duration_frames or 0) <= hold
+                ]
+                pick = max(cand, key=lambda c: c.start_frame) if cand else None
+                if pick is not None:
+                    p_end = pick.start_frame + (pick.duration_frames or 0)
+                    busy = any(
+                        c is not pick
+                        and c.start_frame < hold
+                        and p_end < c.start_frame + (c.duration_frames or 0)
+                        for c in texts
+                    )
+                    if not busy and hold <= total:
+                        old = pick.duration_frames or 0
+                        i = cmds.index(pick)
+                        cmds[i] = pick.model_copy(
+                            update={"duration_frames": hold - pick.start_frame}
+                        )
+                        shorten_animation(cmds, pick.clip_id, old, old - (hold - pick.start_frame))
+                        continue
+                enter(b, "dissolve", 8)
+            return []
         if kind in tz.ENTRANCE:
             name, n = tz.ENTRANCE[kind]
             for b in cuts:
-                cid = heads[b].clip_id
-                if cid:
-                    cmds.append(
-                        SetClipAnimation(
-                            clip_id=cid,
-                            transition=Transition(type=TransitionType(name), duration_frames=n),
-                        )
-                    )
-            return []
+                enter(b, name, n)
+            if kind != "E11":
+                return []
         n, at = tz.OVERLAY[kind], tz.CUT_AT[kind]
         pal = prof.palette
         cols = [pal.main, pal.accent, pal.chart[1] if len(pal.chart) > 1 else pal.base2]
+        if kind == "E11":
+            cols = [pal.surface]
         out_dir = self.settings.data_dir / "projects" / project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
         tid = None
@@ -1689,6 +2401,7 @@ class DirectionService:
 
         kb_index = 0  # 連続する画像のケン・バーンズの向き（B3）
         n_sticker = 0  # 統合版 I3: 何枚目のステッカーか（傾きの向き）
+        n_photo = 0  # 統合版 N17: 何枚目の写真か（傾きの向き）
 
         def ken_burns(clip_id: str, a: AssetRead, length: int, box: float) -> None:
             """画像のケン・バーンズ（統合版 B3）。拡大量 = 秒数 × 1.75%（最小 8%・最大 20%）。
@@ -1769,7 +2482,16 @@ class DirectionService:
         recording = rec_t is not None and any(c.track_id == rec_t.id for c in tl.clips)
         if tachie is not None or rec_t is not None:
             # 背景 → 画面録画 → 図・カード → 立ち絵 → 文字（後から足した背景で隠さない）
-            order = [rec_t.id if rec_t else None, fig_t, tachie.id if tachie else None, txt_t]
+            mark_t = next(
+                (t for t in tl.tracks if t.name == MARK_TRACK and t.kind == TrackKind.VIDEO), None
+            )
+            order = [
+                rec_t.id if rec_t else None,
+                mark_t.id if mark_t else None,
+                fig_t,
+                tachie.id if tachie else None,
+                txt_t,
+            ]
             for tid in order:
                 if tid is not None:
                     cmds.append(MoveTrack(track_id=tid, index=1000))
@@ -1893,27 +2615,43 @@ class DirectionService:
             beams = prof is not None and prof.allows(Component.SUN_BEAMS)  # 統合版 L3
             if beams:
                 use(Component.SUN_BEAMS)
-            t_asset = await self.titles.create(
-                TitleCardRequest(
-                    project_id=p.id,
-                    text=plan.title[:100],
-                    duration_sec=dur,
-                    animation=title_entrance(prof, plan.title, kinetic),  # type: ignore[arg-type]
-                    # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
-                    fade_out_sec=0.0,
-                    # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
-                    # 題名の幅は画面幅の 80%×size（title_card.py）。題名は立ち絵の頭と同じ高さに
-                    # 出るので、縁取りの分も含めて列の 85% に収める（実機: 18 文字の題名が
-                    # ずんだもんの頭に重なった）
-                    size=min(0.95, main_w * (0.85 if tachie else 0.95) / 0.8 * ts),
-                    position="center",
-                    text_color=ink,
-                    outline_color=title_outline,
-                    font=heading_font,
-                    gloss=gloss,
-                    sun_beams=beams,
-                )
+            t_size = min(0.95, main_w * (0.85 if tachie else 0.95) / 0.8 * ts)
+            t45 = (
+                tx.rotating_words(plan.title[:100])
+                if prof is not None and prof.purpose == Purpose.PROMO
+                else None
             )
+            if t45 is not None:  # 統合版 T45: 「／」で区切った語を同じ位置で入れ替える
+                t_asset = await self._overlay(
+                    p.id,
+                    tx.rotating_frames(w, h, t45[0], t45[1], max(1, round(dur * fps)),
+                                       self.titles.font_path(heading_font), ink,
+                                       prof.palette.accent if prof else accent, t_size),
+                    f"回る語の見出し（T45）「{plan.title[:20]}」",
+                    fps,
+                )  # fmt: skip
+            else:
+                t_asset = await self.titles.create(
+                    TitleCardRequest(
+                        project_id=p.id,
+                        text=plan.title[:100],
+                        duration_sec=dur,
+                        animation=title_entrance(prof, plan.title, kinetic),  # type: ignore[arg-type]
+                        # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
+                        fade_out_sec=0.0,
+                        # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
+                        # 題名の幅は画面幅の 80%×size（title_card.py）。題名は立ち絵の頭と同じ
+                        # 高さに出るので、縁取りの分も含めて列の 85% に収める（実機: 18 文字の
+                        # 題名がずんだもんの頭に重なった）
+                        size=t_size,
+                        position="center",
+                        text_color=ink,
+                        outline_color=title_outline,
+                        font=heading_font,
+                        gloss=gloss,
+                        sun_beams=beams,
+                    )
+                )
             t_len = min(title_end, media_frames(t_asset, title_end))
             t_cid = add(
                 txt_t,
@@ -1924,6 +2662,11 @@ class DirectionService:
                 **({"transform": ClipTransform(y=title_dy)} if title_dy else {}),
             )
             animate(t_cid, t_len, None, title_exit=True)
+            if prof is not None:  # 統合版 T47・T49・T50: 題名のまわりの文字
+                await self._title_extras(
+                    p.id, prof, plan.title[:100], cmds, lane, t_at, t_len, fps, w, h,
+                    self.titles.font_path(heading_font), ink, t_size, title_dy,
+                )  # fmt: skip
             if plan.subtitle:
                 sreq = CardRequest(
                     project_id=p.id,
@@ -2001,8 +2744,38 @@ class DirectionService:
                 continue
             windows.append((s, start, end))
         shown: list[tuple[int, int]] = []  # 実際に図・カード・画像を出した区間
-        for s, start, end in windows:
+        # 統合版 N5: 「以前は…今は」の文の区間に続く 2 枚の画像は、前後の比較にまとめる
+        pair_of: dict[int, int] = {}
+        if prof is not None and prof.purpose in (Purpose.EXPLAINER, Purpose.TUTORIAL,
+                                                 Purpose.PRODUCT):  # fmt: skip
+            from video_automation.services.rendering import n_cards as nc
+
+            for i_ in range(len(windows) - 1):
+                (sh1, w_st, _w_e1), (sh2, _w_s2, w_e2) = windows[i_], windows[i_ + 1]
+                if sh1.kind != ShotKind.IMAGE or sh2.kind != ShotKind.IMAGE:
+                    continue
+                if i_ - 1 in pair_of:  # 前の組の 2 枚目は使わない
+                    continue
+                spoken = [x for x in lines if w_st <= x.start < w_e2]
+                if any(nc.is_before_after(x.text) for x in spoken):
+                    pair_of[i_] = i_ + 1
+        skip_win = set(pair_of.values())
+        for w_i, (s, start, end) in enumerate(windows):
             length = end - start
+            if w_i in skip_win:
+                continue
+            if w_i in pair_of:
+                sh2, mid, end2 = windows[pair_of[w_i]]
+                img1 = assets[s.asset_id or ""]
+                img2 = assets[sh2.asset_id or ""]
+                use(Component.IMAGE)
+                box = min(zone_h, main_w)
+                await self._before_after(
+                    p.id, img1, img2, start, mid, end2, cmds, fig_t, h, box, zone_cy, fps,
+                    self.titles.font_path(heading_font), add, animate,
+                )  # fmt: skip
+                shown.append((start, end2))
+                continue
             if s.kind == ShotKind.CARD:
                 use(Component.CARD)
                 steps = _reveal_steps(s, lines, start, end, frames(REVEAL_MIN_SEC))
@@ -2083,6 +2856,12 @@ class DirectionService:
                         )
                         dy = ITEM_IN_PX / 1080  # 1080p で 16px（画面の高さに対する比）
                         animate(iid, t1 - t0, "item", exit_=k == last, item_dy=dy)
+                if prof is not None and s.body:  # 統合版 I1・N15: 項目の頭の印
+                    full = creq.model_copy(update={"reveal": None, "hide_item": None})
+                    await self._card_marks(
+                        p.id, prof, s.body, lines, steps, full, a, cmds, lane, w, h,
+                        zone_cy, zone_h, main_w, fps,
+                    )  # fmt: skip
                 shown.append((start, end))
             elif s.kind == ShotKind.CHART:
                 use(Component.CHART)
@@ -2142,7 +2921,14 @@ class DirectionService:
                 shown.append((start, shown_end))
             else:  # IMAGE
                 img = assets[s.asset_id or ""]  # 置けるものだけ mains に残している
-                if req.match_look and prof is not None:
+                cap = img.caption  # 見た目を合わせた画は別の素材になるので、先に取っておく
+                doc_keys: list[Keyframe] | None = None
+                if prof is not None and prof.purpose in (Purpose.DOCUMENTARY, Purpose.NEWS):
+                    said_ = " ".join(x.text for x in lines if start <= x.start < end)
+                    got_doc = await self._document(p.id, img, said_)
+                    if got_doc is not None:  # 書類は見た目を揃えない（文字の色が変わる）
+                        img, doc_keys = got_doc
+                if req.match_look and doc_keys is None and prof is not None:
                     img = await self._matched_image(p.id, img, prof, assets)
                 use(Component.IMAGE)
                 box = min(zone_h, main_w)
@@ -2153,6 +2939,16 @@ class DirectionService:
                 )
                 if sticker:  # 統合版 I3: 切り抜きの画像は白の縁と影を付けたステッカーにする
                     img = await self._sticker(p.id, img, h)
+                photo = (
+                    prof is not None
+                    and prof.purpose in (Purpose.DOCUMENTARY, Purpose.STORY, Purpose.VLOG)
+                    and bool(cap)
+                    and not sticker
+                )
+                if photo:  # 統合版 N17: 白い縁と一言を付けた写真にする
+                    img = await self._photo_card(p.id, img, cap or "", h, box)
+                if doc_keys is not None:  # 統合版 N16: 書類の一致した行に寄って印を付ける
+                    box = 0.70
                 cid = add(
                     fig_t,
                     img.id,
@@ -2162,7 +2958,27 @@ class DirectionService:
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
                 dx = parallax_dx(img, box) if prof is not None else 0.0
-                if sticker and length > 6:
+                if doc_keys is not None:
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=doc_keys))
+                    )
+                elif photo and length > 12:
+                    # 統合版 N17: 回転 −3°（次は ＋2°、以後交互）、上から y −6%→0・
+                    # scale 1.08→1.00 を 12f（easeOutCubic）
+                    n_photo += 1
+                    rot = -3.0 if n_photo % 2 else 2.0
+                    keys = [
+                        Keyframe(frame=0, y=-0.06, scale=1.08, rotation=rot, opacity=0.0,
+                                 easing=Easing.CUBIC_OUT),
+                        Keyframe(frame=12, y=0.0, scale=1.0, rotation=rot, opacity=1.0),
+                        Keyframe(frame=length - 7, opacity=1.0, rotation=rot,
+                                 easing=Easing.CUBIC_IN),
+                        Keyframe(frame=length - 1, opacity=0.0, rotation=rot),
+                    ]  # fmt: skip
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys))
+                    )
+                elif sticker and length > 6:
                     # 統合版 I3: scale 1.3→1.0・回転 +10°→（奇数番目 −6°、偶数番目 ＋6°）を 5f
                     n_sticker += 1
                     rot = -6.0 if n_sticker % 2 else 6.0
@@ -2184,7 +3000,28 @@ class DirectionService:
                 else:
                     animate(cid, length)
                     ken_burns(cid, img, length, box)
+                if prof is not None and prof.purpose == Purpose.PRODUCT:  # 統合版 P9
+                    await self._callouts(
+                        p.id, prof, img, lines, start, end, cmds, lane, w, h, box, zone_cy, fps,
+                        self.titles.font_path(heading_font), ink,
+                    )  # fmt: skip
                 shown.append((start, end))
+
+        # 統合版 T30・T32・T33・T34: 素材の無い 3 秒以上の台詞の区間を文字だけの場面にする
+        no_subs: list[tuple[int, int]] = []
+        if prof is not None and prof.purpose.value in tscn.KIND:
+            no_subs = await self._text_scenes(
+                p.id, prof, lines, windows, shown, title_end, total, cmds, lane, fps, w, h,
+                self.titles.font_path(heading_font),
+            )  # fmt: skip
+            shown += no_subs
+
+        # 統合版 J1〜J3: LLM が place を付けた発話の間、図の枠に地図（図・カードの無い所だけ）
+        if prof is not None and prof.purpose in J_PURPOSES:
+            skipped += await self._maps(
+                p.id, prof, lines, cmds, lane, shown, total, fps, w, h, min(zone_h, main_w),
+                zone_cy,
+            )  # fmt: skip
 
         # テロップ（その発話の間。重なる分は前を短くする）
         kws = [s for s in plan.shots if s.kind == ShotKind.KEYWORD]
@@ -2195,14 +3032,39 @@ class DirectionService:
         for s in kws:
             start = max(lines[s.from_line - 1].start + frames(0.15), title_end)
             end = lines[(s.to_line or s.from_line) - 1].end
+            if any(a_ < end and start < b_ for a_, b_ in no_subs):
+                continue  # 文字だけの場面では強調テロップを出さない
             if spans and spans[-1][2] > start:
                 prev = spans[-1]
                 spans[-1] = (prev[0], prev[1], start)
             spans.append((s, start, end))
+        flower_at: list[int] = []  # 統合版 T42: 花字を出した時刻（1 分に 3 回まで）
+        chars_t42: dict[str, dict[str, str]] | None = None
         for s, start, end in spans:
             if end - start < frames(0.6):
                 continue
             use(Component.KEYWORD)
+            ln_k = lines[s.from_line - 1]
+            if (
+                prof is not None
+                and prof.purpose in (Purpose.GAME, Purpose.VLOG, Purpose.SHORT)
+                and ln_k.emotion in fl.EMOTIONS
+                and sum(1 for t_ in flower_at if start - t_ < frames(60)) < 3
+                and end - start > fl.OUT + 8
+            ):
+                if chars_t42 is None:
+                    chars_t42 = await self._characters(req.script_id)
+                names_ = list(dict.fromkeys(x.speaker for x in lines))
+                spk_col = (chars_t42.get(ln_k.speaker, {}).get("color") or
+                           prof.palette.speakers[names_.index(ln_k.speaker)
+                                                 % len(prof.palette.speakers)])  # fmt: skip
+                await self._flower(
+                    p.id, s.text, ln_k.emotion, spk_col, start, end, cmds, txt_t, w, h, fps,
+                    side, strip_top, ts, add,
+                )  # fmt: skip
+                flower_at.append(start)
+                use(Component.EMPHASIS_TEXT)
+                continue
             kreq = CardRequest(
                 project_id=p.id,
                 heading=s.text,
@@ -2244,6 +3106,15 @@ class DirectionService:
                 animate(cid, end - start, mspec.pop)
             else:
                 animate(cid, end - start, slide_preset("right", mspec))
+
+        # 統合版 T36（解説・講義・会社紹介）・T46（操作説明）: 「A ではなく B」の A を消して B に
+        if prof is not None and prof.purpose in (
+            Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE, Purpose.TUTORIAL,
+        ):  # fmt: skip
+            await self._not_telops(
+                p.id, prof, lines, cmds, lane, total, fps, w, h, strip_top, ts,
+                self.titles.font_path(heading_font), ink, panel,
+            )  # fmt: skip
 
         # 統合版 P1: 名前帯（インタビュー・ドキュメンタリー・ニュース・会社紹介）
         if (
@@ -2553,6 +3424,21 @@ class DirectionService:
             # 予告編の題名は台詞の後（t_at から tr_title フレーム）。他の用途は 0〜title_end
             t_end = t_at + tr_title if tr_title else title_end
             await self._effects(p.id, prof, lines, cmds, lane, t_at, t_end, total, fps, w, h)
+            if prof.purpose in (Purpose.TRAILER, Purpose.STORY) and lines:  # 統合版 T44
+                ln0 = lines[0]
+                n0 = min(total, ln0.end) - ln0.start
+                if n0 > 6:
+                    a0 = await self._overlay(
+                        p.id,
+                        tx.crawl_frames(w, h, ln0.text, self.titles.font_path(heading_font),
+                                        ink, n0, fps),
+                        "奥へ流れる文字（T44）",
+                        fps,
+                    )  # fmt: skip
+                    c0 = str(uuid4())
+                    cmds.append(AddClip(track_id=lane(CRAWL_TRACK), asset_id=a0.id,
+                                        start_frame=ln0.start, duration_frames=n0, clip_id=c0,
+                                        transform=ClipTransform(fit=FitMode.FIT)))  # fmt: skip
 
         # 統合版 H3・H4・H6: ニュースの帯・クレジットロール・中間字幕のカード
         if prof is not None:
@@ -2580,7 +3466,10 @@ class DirectionService:
 
         # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
         if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:
-            skipped += await self._cut_transitions(p.id, prof, cmds, fig_t, total, fps, w, h, lane)
+            kw_ids = {cid for cid, r in roles.items() if r == "keyword"}
+            skipped += await self._cut_transitions(
+                p.id, prof, cmds, fig_t, total, fps, w, h, lane, txt_t, kw_ids
+            )
 
         if es:  # 終了画面（まとめの文字と、YouTube の要素を置く場所の目安の枠）
             out = (
@@ -2606,6 +3495,24 @@ class DirectionService:
             )
             cid = add(fig_t, row.id, total + ed, es, role="end_screen")
             animate(cid, es)
+        if any(x in track for x in BEHIND_TITLE):  # 統合版 T47・T50: 立ち絵と題名の下へ
+            for name in BEHIND_TITLE:
+                if name in track:
+                    cmds.append(MoveTrack(track_id=track[name], index=1000))
+            for t_ in tl.tracks:
+                if t_.name == TACHIE_TRACK and t_.kind == TrackKind.VIDEO:
+                    cmds.append(MoveTrack(track_id=t_.id, index=1000))
+            cmds.append(MoveTrack(track_id=txt_t, index=1000))
+            for name in EXTRA_TRACKS:
+                if name in track and name not in BEHIND_TITLE:
+                    cmds.append(MoveTrack(track_id=track[name], index=1000))
+        if prof is not None and lines:
+            from video_automation.services.rendering import h_cards as hc_
+
+            if prof.purpose == Purpose.STORY:  # H6: 中間字幕のカードの文の字幕は出さない
+                no_subs += [(x.start, x.end) for x in lines if hc_.is_intertitle(x.text)]
+            if prof.purpose in (Purpose.TRAILER, Purpose.STORY):  # T44: 最初の台詞
+                no_subs.append((lines[0].start, lines[0].end))
         res = await self.timeline.submit(
             p.id,
             CommandRequest(
@@ -2641,6 +3548,8 @@ class DirectionService:
                     for s, start, _end in windows
                     if s.kind in (ShotKind.CARD, ShotKind.CHART) and (s.heading or "").strip()
                 ],
+                # 字幕を出さない区間（文字だけの場面 T30〜T34・中間字幕 H6・奥へ流れる文字 T44）
+                "no_subtitles": [[a_, b_] for a_, b_ in no_subs],
             }
             await self.design.record(
                 p.id,

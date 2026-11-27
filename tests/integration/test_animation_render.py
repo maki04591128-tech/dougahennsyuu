@@ -246,6 +246,29 @@ async def test_transitions(mclient, imgs, ttype, check):
     assert after[2] > 200 and after[0] < 30
 
 
+async def test_page_turn_and_cube_transitions(mclient, imgs):
+    """統合版 E11: 右下の角から左上へ現れる。"""
+    c = mclient
+    pid, (a, b) = await _setup(c, imgs, ["red", "blue"], length=30)
+    await anim(c, pid, clip_id=b, transition={"type": "page_turn", "duration_frames": 10})
+    m = await frame(c, pid, 35)
+    assert mean(m, 280, 320, 140, 180)[2] > 200  # 右下は次の画（青）
+    assert mean(m, 0, 40, 0, 40)[0] > 200  # 左上はまだ前の画（赤）
+
+
+async def test_cube_transition_pushes_previous(mclient, imgs):
+    """統合版 E12: 前の画が左へ押し出される。"""
+    c = mclient
+    pid, (a, b) = await _setup(c, imgs, ["marker", "blue"], length=30)
+    base = bbox(await frame(c, pid, 10), WHITE)
+    await anim(c, pid, clip_id=b, transition={"type": "cube", "duration_frames": 10})
+    mid = bbox(await frame(c, pid, 35), WHITE)
+    # 前の画の印は左へ押し出される（押し出さないスライドなら印は元の位置に残る）
+    assert mid is None or mid[1] < base[0] - 40, (base, mid)
+    after = mean(await frame(c, pid, 45))
+    assert after[2] > 200
+
+
 async def test_render_mp4_with_animation_and_range(mclient, imgs, media_dir):
     c = mclient
     pid, (a, b) = await _setup(c, imgs, ["marker", "blue"], length=30)

@@ -56,6 +56,7 @@ class AssetRead(BaseModel):
     has_audio: bool
     source: str
     audio_file_id: str | None = None
+    caption: str | None = None  # 統合版 N17: 利用者の一言（写真の下に書く）
     created_at: datetime
 
 
@@ -63,6 +64,11 @@ class AssetImportRequest(BaseModel):
     project_id: str
     path: str = Field(min_length=1, max_length=1000)
     name: str | None = None
+    caption: str | None = Field(default=None, max_length=200)  # 統合版 N17
+
+
+class AssetCaptionRequest(BaseModel):
+    caption: str = Field(default="", max_length=200)  # 空なら外す
 
 
 class TrackRead(BaseModel):

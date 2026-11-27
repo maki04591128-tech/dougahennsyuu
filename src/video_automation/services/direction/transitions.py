@@ -5,7 +5,12 @@
 
 - E6 形のワイプ・E9 光漏れ・E10 グリッチは、切り替えの時刻に重ねる透過の動画（下の画は替えない）
 - E7 ウィップパン・E8 ズームパンチは、次のショットの入り（Transition の whip・zoom_punch）
-- E11 ページめくり・E12 キューブ・E13 マッチカットは未対応（今のまま）
+- E11 ページめくりは、次のショットの入り（page_turn: 右下の角から左上へ現れる）と、めくれる面
+  （型の surface）と影を重ねる透過の動画
+- E12 キューブは、次のショットが右から入り、前のショットが左へ押し出される（cube）。
+  立方体の遠近（Y 軸の回転）は付けない
+- E13 マッチカットは、境目にかかる強調テロップを次のショットへ 8f 持ち越す（下の画はカット）。
+  強調テロップが無い境目はディゾルブ 8f
 """
 
 from __future__ import annotations
@@ -23,10 +28,22 @@ PURPOSE_TRANSITION: dict[str, str] = {
     "short": "E8",
     "event": "E9",
     "game": "E10",
+    "story": "E11",
+    "lecture": "E11",
+    "product": "E12",
+    "promo": "E13",
 }
-OVERLAY = {"E6": 16, "E9": 12, "E10": 6}  # 重ねる動画の長さ（30fps のフレーム）
-CUT_AT = {"E6": 9, "E9": 6, "E10": 3}  # 重ねる動画の何フレーム目で下の画が替わるか
-ENTRANCE = {"E7": ("whip", 6), "E8": ("zoom_punch", 5)}  # 次のショットの入り（種類, フレーム）
+OVERLAY = {"E6": 16, "E9": 12, "E10": 6, "E11": 18}  # 重ねる動画の長さ（30fps のフレーム）
+# 重ねる動画の何フレーム目で下の画が替わるか（E11 は入りと同時に始める）
+CUT_AT = {"E6": 9, "E9": 6, "E10": 3, "E11": 0}
+# 次のショットの入り（種類, フレーム）
+ENTRANCE = {
+    "E7": ("whip", 6),
+    "E8": ("zoom_punch", 5),
+    "E11": ("page_turn", 18),
+    "E12": ("cube", 14),
+}
+MATCH_HOLD = 8  # E13: 強調テロップを次のショットへ持ち越すフレーム数
 PER_MINUTE = {"short": 99, "event": 1}  # 2.1 の上限。無い用途は 1 分に 1 か所
 
 
@@ -141,9 +158,45 @@ def glitch(w: int, h: int, colors: list[str], seed: int) -> list[Any]:
     return out
 
 
+def page_fold(w: int, h: int, surface: str) -> list[Any]:
+    """E11: めくれる面（型の surface）と影（幅は画面の 2%）。18f（easeInOutCubic）。
+
+    めくれる線は「x/W + y/H = 2(1−e)」（右下の角から左上へ進む。次のショットの page_turn と同じ）。
+    めくれた面は、線の右下側の帯（幅は めくれた量と残りの量の小さい方の半分）にする。"""
+    import numpy as np
+    from PIL import Image
+
+    n = 18
+    xs = np.arange(w, dtype=np.float32)[None, :] / w
+    ys = np.arange(h, dtype=np.float32)[:, None] / h
+    s = xs + ys
+    shadow = 0.02 * 2  # 画面の 2%（s の単位で）
+    col = _rgb(surface)
+    out = []
+    for f in range(n):
+        e = _cubic_io((f + 1) / n)
+        c = 2 * (1 - e)
+        band = min(2 - c, c) * 0.5
+        rgba = np.zeros((h, w, 4), np.uint8)
+        face = (s >= c) & (s < c + band)
+        rgba[face, 0], rgba[face, 1], rgba[face, 2] = col
+        # めくれた面の内側ほど少し暗く（紙の裏の丸み）
+        shade = np.clip((s - c) / max(band, 1e-6), 0, 1)
+        rgba[..., 3] = np.where(face, 255, 0).astype(np.uint8)
+        for k in range(3):
+            rgba[..., k] = np.where(face, (rgba[..., k] * (1 - 0.18 * shade)).astype(np.uint8), 0)
+        sh = (s >= c + band) & (s < c + band + shadow) & (band > 0)
+        a = np.clip(1 - (s - c - band) / shadow, 0, 1) * 0.35 * 255
+        rgba[..., 3] = np.where(sh, a.astype(np.uint8), rgba[..., 3])
+        out.append(Image.fromarray(rgba, "RGBA"))
+    return out
+
+
 def overlay_frames(kind: str, w: int, h: int, colors: list[str], seed: int) -> list[Any]:
     if kind == "E6":
         return shape_wipe(w, h, colors)
     if kind == "E9":
         return light_leak(w, h)
+    if kind == "E11":
+        return page_fold(w, h, colors[0])
     return glitch(w, h, colors, seed)

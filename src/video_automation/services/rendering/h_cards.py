@@ -123,10 +123,18 @@ def ticker_strip(w: int, h: int, items: list[str], font: str | None) -> tuple[An
 def chapter_card(w: int, h: int, number: int, title: str, font: str | None, accent: str,
                  ink: str) -> Any:  # fmt: skip
     """H1: 章の番号（画面の高さの 22%・型の accent・不透明度 35%）の上に章の題（高さの 8%）。"""
+    num, ttl, _mask = chapter_parts(w, h, number, title, font, accent, ink)
+    num.alpha_composite(ttl)
+    return num
+
+
+def chapter_parts(w: int, h: int, number: int, title: str, font: str | None, accent: str,
+                  ink: str) -> tuple[Any, Any, Any]:  # fmt: skip
+    """H1 の番号の層・題の層・題の文字の形（L）。統合版 T48（縁から塗りへ）で題だけを動かす。"""
     from PIL import Image, ImageDraw
 
-    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
+    num = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(num)
     fn = _font(font, round(h * 0.22))
     d.text((w / 2, h / 2), f"{number:02d}", font=fn, fill=(*_rgb(accent), round(255 * 0.35)),
            anchor="mm")  # fmt: skip
@@ -135,6 +143,10 @@ def chapter_card(w: int, h: int, number: int, title: str, font: str | None, acce
     while d.textlength(title, font=ft) > w * 0.8 and size > 12:
         size -= 2
         ft = _font(font, size)
-    d.text((w / 2, h / 2), title, font=ft, fill=(*_rgb(ink), 255), anchor="mm",
-           stroke_width=max(1, size // 14), stroke_fill=(0, 0, 0, 160))  # fmt: skip
-    return im
+    ttl = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(ttl).text((w / 2, h / 2), title, font=ft, fill=(*_rgb(ink), 255),
+                             anchor="mm", stroke_width=max(1, size // 14),
+                             stroke_fill=(0, 0, 0, 160))  # fmt: skip
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).text((w / 2, h / 2), title, font=ft, fill=255, anchor="mm")
+    return num, ttl, mask

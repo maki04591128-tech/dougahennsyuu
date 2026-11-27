@@ -1381,3 +1381,516 @@ async def test_pros_cons_and_cycle(dclient):
     tl, _ = await _apply(c, pid, sid, "explainer")
     names = {a["name"] for a in tl["assets"]}
     assert "循環の図（N2）" in names and "手順の流れ（N1）" in names  # 手順の後に円周
+
+
+async def test_title_text_extras(dclient):
+    """統合版 T47・T50（イベントの題名の後ろの帯と円周）・T49（縦型ショートの残響）・
+    T45（PR の「／」の語の入れ替え）・T44（予告編の最初の台詞を奥へ流す）。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    tl, by = await _apply(c, pid, sid, "event")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    order = [t["name"] for t in tl["tracks"]]
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    back = [x for x in tl["clips"] if tracks[x["track_id"]].startswith("演出・題名の")]
+    assert sorted(names[x["asset_id"]] for x in back) == [
+        "円周を回る文字（T50）", "流れる帯（T47）1", "流れる帯（T47）2",
+    ]  # fmt: skip
+    title = by["title_card"][0]
+    assert all(x["start_frame"] == title["start_frame"] for x in back)
+    # 題名（演出・文字）の下に置く
+    assert max(order.index(n) for n in ("演出・題名の後ろ", "演出・題名の円周")) < order.index(
+        "演出・文字"
+    )
+    ring = next(x for x in back if "T50" in names[x["asset_id"]])
+    rots = [k["rotation"] for k in ring["animation"]["keyframes"]]
+    assert rots[0] == 0 and 0 < rots[-1] < 360
+    band = next(x for x in back if names[x["asset_id"]].endswith("1"))
+    xs = [k["x"] for k in band["animation"]["keyframes"]]
+    assert xs[-1] < xs[0]  # 上の帯は左へ
+
+    tl, _ = await _apply(c, pid, sid, "short")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    echo = sorted(
+        (x["start_frame"], names[x["asset_id"]])
+        for x in tl["clips"]
+        if tracks[x["track_id"]].startswith("演出・題名の残響")
+    )
+    assert [n for _s, n in echo] == ["段々の残響（T49）1 段目", "段々の残響（T49）2 段目"]
+    assert echo[1][0] - echo[0][0] == 4
+    # 前の用途の帯は外す
+    assert not [x for x in tl["clips"] if tracks[x["track_id"]].startswith("演出・題名の後ろ")]
+
+    await c.put(f"/projects/{pid}/design", json={"purpose": "promo"})
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    plan["title"] = "速い／軽い／安い"
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    roles = await c.app.state.container.design.clip_roles(pid)
+    t_clip = next(x for x in tl["clips"] if roles.get(x["id"]) == "title_card")
+    assert names[t_clip["asset_id"]].startswith("回る語の見出し（T45）")
+
+    tl, _ = await _apply(c, pid, sid, "trailer")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    crawl = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・奥へ流れる文字"]
+    assert [names[x["asset_id"]] for x in crawl] == ["奥へ流れる文字（T44）"]
+
+
+async def test_game_chapter_title_outline_then_fill(dclient):
+    """統合版 T48: ゲーム実況の章の題（H1）は縁だけで出してから塗る（動画の素材）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.direction import DirectionPlan
+    from video_automation.schemas.timeline import AddClip
+    from video_automation.services.design.profiles import PROFILES
+
+    c = dclient
+    pid, _ = await _ready_script(c)
+    d = c.app.state.container.direction
+    cmds: list = []
+    await d._h_cards(pid, PROFILES[Purpose.GAME], DirectionPlan(), [], [(0, "序盤"),
+                     (300, "ボス戦")], cmds, lambda n: n, 900, 30.0, 640, 360,
+                     None, "#FFFFFF")  # fmt: skip
+    (card,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    a = next(x for x in tl["assets"] if x["id"] == card.asset_id)
+    assert a["kind"] == "video" and "T48" in a["name"] and card.duration_frames == 75
+
+
+async def test_cut_transitions_page_cube_and_match(dclient):
+    """統合版 E11（朗読・講義のページめくり）・E12（商品紹介のキューブ）・E13（PR のマッチカット）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import AddClip, SetClipAnimation
+    from video_automation.services.design.profiles import PROFILES
+
+    c = dclient
+    pid, _ = await _ready_script(c)
+    d = c.app.state.container.direction
+
+    def shots(kw_end: int = 310):
+        return [
+            AddClip(track_id="fig", asset_id="a", start_frame=0, duration_frames=300, clip_id="x"),
+            AddClip(
+                track_id="fig", asset_id="a", start_frame=300, duration_frames=300, clip_id="y"
+            ),
+            AddClip(
+                track_id="txt",
+                asset_id="a",
+                start_frame=250,
+                duration_frames=kw_end - 250,
+                clip_id="k",
+            ),  # fmt: skip
+            SetClipAnimation(
+                clip_id="k",
+                animation={
+                    "keyframes": [
+                        {"frame": 0, "opacity": 0.0},
+                        {"frame": 6, "opacity": 1.0},
+                        {"frame": kw_end - 250 - 7, "opacity": 1.0},
+                        {"frame": kw_end - 250 - 1, "opacity": 0.0},
+                    ]
+                },
+            ),  # fmt: skip
+        ]
+
+    cmds = shots()
+    await d._cut_transitions(pid, PROFILES[Purpose.STORY], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut")  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    assert an.clip_id == "y" and an.transition.type == "page_turn"
+    assert an.transition.duration_frames == 18
+    (ov,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "cut"]
+    assert (ov.start_frame, ov.duration_frames) == (300, 18)
+
+    cmds = shots()
+    await d._cut_transitions(pid, PROFILES[Purpose.PRODUCT], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut")  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    assert an.transition.type == "cube" and an.transition.duration_frames == 14
+
+    # E13: 境目にかかる強調テロップを 8f 持ち越し（出のキーも後ろへ）、下の画はカット
+    cmds = shots(kw_end=300)
+    await d._cut_transitions(pid, PROFILES[Purpose.PROMO], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut", "txt", {"k"})  # fmt: skip
+    kw = next(x for x in cmds if isinstance(x, AddClip) and x.clip_id == "k")
+    assert kw.start_frame + kw.duration_frames == 308
+    keys = next(x for x in cmds if isinstance(x, SetClipAnimation) and x.clip_id == "k")
+    assert keys.animation.keyframes[-1].frame == 57
+    assert not [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    # 強調テロップが無い境目はディゾルブ 8f
+    cmds = shots()[:2]
+    await d._cut_transitions(pid, PROFILES[Purpose.PROMO], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut", "txt", set())  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    assert an.transition.type == "dissolve" and an.transition.duration_frames == 8
+
+
+async def test_card_item_marks_icon_and_checklist(dclient):
+    """統合版 I1（解説: 項目の頭に線の絵）・N15（操作説明: 「できました」でチェックと薄く）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "設定の手順を説明します。"},
+        {"speaker": "A", "text": "まずバッテリーを確認します。"},
+        {"speaker": "A", "text": "確認できました。"},
+        {"speaker": "A", "text": "次に時間を合わせます。"},
+        {"speaker": "A", "text": "これで完了です。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+
+    async def apply(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+            "plan"
+        ]
+        plan["shots"] = [
+            {"kind": "card", "from_line": 2, "to_line": 5, "heading": "手順",
+             "body": ["バッテリーを確認", "時間を合わせる"], "style": "point"},
+        ]  # fmt: skip
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+        return sorted(
+            (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・項目の印"),
+            key=lambda x: x["start_frame"],
+        ), tl
+
+    marks, tl = await apply("tutorial")
+    # 「できました」「完了です」の 2 回、印が増える（描く動き → 止め絵）
+    assert len(marks) >= 3
+    assert all(a["end_frame"] <= b["start_frame"] for a, b in zip(marks, marks[1:], strict=False))
+    marks, tl = await apply("explainer")
+    assert marks  # バッテリー・時間の絵
+    marks, tl = await apply("news")
+    assert not marks
+
+
+async def test_photo_with_caption(dclient, media_dir):
+    """統合版 N17: 一言の付いた写真は、白い縁と一言を付けて傾けて置く（解説では付けない）。"""
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    src = media_dir / "photo_n17.png"
+    Image.new("RGB", (400, 300), (40, 120, 200)).save(src)
+    a = (
+        await c.post(
+            "/assets/import",
+            json={"project_id": pid, "path": str(src), "caption": "夏の海で"},
+        )
+    ).json()
+    assert a["caption"] == "夏の海で"
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 2, "to_line": 4, "asset_id": a["id"]}],
+    }
+
+    async def image_clip(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        res = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        roles = await c.app.state.container.design.clip_roles(pid)
+        clip = next((x for x in tl["clips"] if roles.get(x["id"]) == "image"), None)
+        assert clip is not None, res
+        return clip, {x["id"]: x for x in tl["assets"]}[clip["asset_id"]]
+
+    clip, asset = await image_clip("story")
+    assert asset["name"].startswith("写真と一言（N17）")
+    assert asset["height"] > 300 and asset["width"] > 400  # 白い縁の分だけ大きい
+    keys = clip["animation"]["keyframes"]
+    assert keys[0]["rotation"] == -3 and keys[0]["y"] == -0.06 and keys[1]["frame"] == 12
+    clip, asset = await image_clip("explainer")
+    assert not asset["name"].startswith("写真と一言")
+    # 一言を外すと普通の写真
+    r = await c.put(f"/assets/{a['id']}/caption", json={"caption": ""})
+    assert r.status_code == 200 and r.json()["caption"] is None
+    clip, asset = await image_clip("story")
+    assert not asset["name"].startswith("写真と一言")
+
+
+async def test_before_after_slider(dclient, media_dir):
+    """統合版 N5: 「以前は…今は」の文の区間に続く 2 枚の画像は、境目を動かす前後の比較に。"""
+    from PIL import Image
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "部屋を片付けました。"},
+        {"speaker": "A", "text": "以前は物だらけでしたが、今はすっきりです。"},
+        {"speaker": "A", "text": "床が見えるようになりました。"},
+        {"speaker": "A", "text": "とても快適です。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    ids = []
+    for k, col in enumerate(((200, 60, 60), (60, 160, 90))):
+        src = media_dir / f"ba_{k}.png"
+        Image.new("RGB", (400, 300), col).save(src)
+        a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+        ids.append(a["id"])
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [
+            {"kind": "image", "from_line": 2, "to_line": 2, "asset_id": ids[0]},
+            {"kind": "image", "from_line": 3, "to_line": 4, "asset_id": ids[1]},
+        ],
+    }
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a["id"]: a for a in tl["assets"]}
+    roles = await c.app.state.container.design.clip_roles(pid)
+    imgs = sorted(
+        (x for x in tl["clips"] if roles.get(x["id"]) == "image"), key=lambda x: x["start_frame"]
+    )
+    kinds = [names[x["asset_id"]]["name"] for x in imgs]
+    assert kinds[0] == names[ids[0]]["name"]
+    assert kinds[1:] == ["前後の比較（N5）", "前後の比較（N5）"]
+    mov = imgs[1]
+    assert names[mov["asset_id"]]["kind"] == "video" and mov["end_frame"] - mov["start_frame"] == 45
+    assert imgs[0]["end_frame"] == imgs[1]["start_frame"] == imgs[2]["start_frame"] - 45
+
+
+async def test_product_feature_callouts(dclient, media_dir):
+    """統合版 P9: 商品紹介の画像の区間で features があれば、画像の角から線と語を 1 つずつ出す。"""
+    from PIL import Image
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "新しいリュックを紹介します。"},
+        {"speaker": "A", "text": "軽くて水に強く、長く使えます。"},
+        {"speaker": "A", "text": "通勤にもぴったりです。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {1: {"features": ["軽量", "防水", "長持ち"]}})
+    src = media_dir / "bag_p9.png"
+    Image.new("RGB", (400, 400), (90, 90, 120)).save(src)
+    a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 1, "to_line": 3, "asset_id": a["id"]}],
+    }
+    await c.put(f"/projects/{pid}/design", json={"purpose": "product"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {x["id"]: x["name"] for x in tl["assets"]}
+    call = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・特長の線"),
+        key=lambda x: x["start_frame"],
+    )
+    # 3 つの語: それぞれ「描く動き → 止め絵」
+    assert len(call) == 6 and all(names[x["asset_id"]] == "特長の引き出し線（P9）" for x in call)
+    assert all(a_["end_frame"] <= b_["start_frame"] for a_, b_ in zip(call, call[1:], strict=False))
+
+
+def _fake_world(data_dir):
+    import json as _json
+
+    d = data_dir / "maps"
+    d.mkdir(parents=True, exist_ok=True)
+
+    def sq(x0, y0, x1, y1):
+        return {
+            "type": "Polygon",
+            "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]],
+        }
+
+    countries = {"features": [
+        {"properties": {"NAME_JA": "日本", "ADM0_A3": "JPN"}, "geometry": sq(130, 30, 145, 45)},
+        {"properties": {"NAME_JA": "フランス", "ADM0_A3": "FRA"}, "geometry": sq(-4, 43, 8, 51)},
+    ]}  # fmt: skip
+    places = {"features": [
+        {"properties": {"NAME_JA": "パリ", "ADM0_A3": "FRA"},
+         "geometry": {"type": "Point", "coordinates": [2.35, 48.86]}},
+        {"properties": {"NAME_JA": "東京都", "ADM0_A3": "JPN"},
+         "geometry": {"type": "Point", "coordinates": [139.7, 35.7]}},
+    ]}  # fmt: skip
+    (d / "ne_110m_admin_0_countries.geojson").write_text(_json.dumps(countries), "utf-8")
+    (d / "ne_110m_populated_places.geojson").write_text(_json.dumps(places), "utf-8")
+
+
+async def test_maps_country_city_and_route(dclient):
+    """統合版 J1（国）・J2（都市）・J3（1 つの文に 2 地点）。地図に無い地名は出さない。"""
+    c = dclient
+    _fake_world(c.app.state.container.settings.data_dir)
+    lines = [
+        {"speaker": "A", "text": "日本の話をします。"},
+        {"speaker": "B", "text": "パリは花の都と呼ばれます。"},
+        {"speaker": "A", "text": "東京からパリまで飛行機で行きます。"},
+        {"speaker": "B", "text": "アトランティスは伝説の島です。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {0: {"place": "日本"}, 1: {"place": "パリ"}, 2: {"place": "東京"},
+                              3: {"place": "アトランティス"}})  # fmt: skip
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    plan = {"title": "", "subtitle": "", "shots": []}
+    res = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    assert any("アトランティス" in n for n in res["skipped"]), res["skipped"]
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    maps = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・地図"),
+        key=lambda x: x["start_frame"],
+    )
+    kinds = [names[x["asset_id"]].split("「")[0] for x in maps]
+    assert kinds == [
+        "国の塗り（J1）", "国の塗り（J1）", "地点へ寄る（J2）", "地点へ寄る（J2）",
+        "経路の線（J3）", "経路の線（J3）",
+    ]  # fmt: skip
+    # ニュース以外の用途（Vlog）では地図を出さない
+    await c.put(f"/projects/{pid}/design", json={"purpose": "vlog"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    assert not [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・地図"]
+
+
+async def test_flower_text_for_reactions(dclient):
+    """統合版 T42: ゲーム実況で、うれしい・驚き・熱くなる発話の強調テロップを花字にする。"""
+    from sqlalchemy import select
+
+    from video_automation.database.models import ScriptSegment
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "ボスに挑みます。"},
+        {"speaker": "A", "text": "やったー勝った！"},
+        {"speaker": "B", "text": "次の面へ進みます。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    async with c.app.state.container.db.session_factory() as s:
+        segs = sorted(
+            (await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sid)))
+            .scalars()
+            .all(),
+            key=lambda x: x.sequence,
+        )
+        segs[1].emotion = "happy"
+        await s.commit()
+    plan = {"title": "", "subtitle": "", "shots": [
+        {"kind": "keyword", "from_line": 2, "text": "勝った！"},
+        {"kind": "keyword", "from_line": 3, "text": "次の面"},
+    ]}  # fmt: skip
+
+    async def keyword_names(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        roles = await c.app.state.container.design.clip_roles(pid)
+        names = {a["id"]: a for a in tl["assets"]}
+        kws = sorted(
+            (x for x in tl["clips"] if roles.get(x["id"]) == "keyword"),
+            key=lambda x: x["start_frame"],
+        )
+        return [names[x["asset_id"]] for x in kws]
+
+    got = await keyword_names("game")
+    assert got[0]["name"].startswith("花字（T42）") and got[0]["kind"] == "video"
+    assert not got[1]["name"].startswith("花字")  # ふつうの感情は今までのテロップ
+    got = await keyword_names("explainer")
+    assert not any(a["name"].startswith("花字") for a in got)
+
+
+async def test_not_phrase_strike_and_retype(dclient):
+    """統合版 T36（解説: 取り消し線）・T46（操作説明: 打ち直す）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "料理の話をします。"},
+        {"speaker": "A", "text": "塩ではなく砂糖を使います。"},
+        {"speaker": "B", "text": "なるほど、よくわかりました。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    plan = {"title": "", "subtitle": "", "shots": []}
+    for purpose, name in (
+        ("explainer", "取り消し線（T36）"),
+        ("tutorial", "打ち直すタイプライター（T46）"),
+    ):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+        names = {a["id"]: a["name"] for a in tl["assets"]}
+        got = [
+            names[x["asset_id"]] for x in tl["clips"] if tracks[x["track_id"]] == "演出・取り消し"
+        ]
+        assert got == [name], purpose
+
+
+async def test_text_only_scene_hides_subtitles(dclient, tmp_path):
+    """統合版 T32: PR で素材の無い 3 秒以上の区間は一語ずつの場面にし、その間の字幕を出さない。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "新しい靴が出ました。とても軽くて歩きやすいです。"},
+        {"speaker": "A", "text": "雨の日も安心して履けます。"},
+        {"speaker": "A", "text": "ぜひお店で試してください。"},
+    ] * 4
+    pid, sid = await _ready_script(c, lines)
+    tl0 = (await c.get(f"/projects/{pid}/timeline")).json()
+    assert tl0["duration_frames"] > 300, tl0["duration_frames"]
+    await c.put(f"/projects/{pid}/design", json={"purpose": "promo"})
+    plan = {"title": "", "subtitle": "", "shots": []}
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    sc = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・文字だけの場面"]
+    assert sc and all(names[x["asset_id"]] == "文字だけの場面（T32）" for x in sc)
+    hide = (await c.app.state.container.design.outline(pid))["no_subtitles"]
+    assert hide and hide[0][0] == sc[0]["start_frame"]
+    ass = (
+        await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "t.ass")
+    ).read_text("utf-8-sig")
+
+    def sec(t):
+        h_, m_, s_ = t.split(":")
+        return int(h_) * 3600 + int(m_) * 60 + float(s_)
+
+    starts = [sec(ln.split(",")[1]) for ln in ass.splitlines() if ln.startswith("Dialogue:")]
+    a0, b0 = hide[0][0] / 30, hide[0][1] / 30
+    cues = [(x.start_frame, x.end_frame) for x in await c.app.state.container.subtitles.cues(sid)]
+    assert starts and not [t for t in starts if a0 <= t < b0 - 0.05], (hide, cues)
+
+
+async def test_document_highlight_in_news(dclient, media_dir):
+    """統合版 N16: 120 字以上の書類の画像は、話した語と一致する行に印を付けて寄る。"""
+    from PIL import Image
+
+    from video_automation.integrations.ocr.engine import FakeOcr, OcrLine, OcrResult, OcrWord
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "発表された資料を見てみましょう。"},
+        {"speaker": "A", "text": "売上高は前年より増えました。"},
+        {"speaker": "A", "text": "詳しくは後ほどお伝えします。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    src = media_dir / "doc_n16.png"
+    Image.new("RGB", (800, 600), (250, 250, 250)).save(src)
+    a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    stem = a["path"].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    rows = ["第3四半期の決算の概要について" * 2, "売上高は前年同期比で増加しました" * 2,
+            "営業利益は横ばいでした" * 3, "今後の見通しについては変更ありません" * 2]  # fmt: skip
+    res = OcrResult(800, 600, [OcrLine([OcrWord(t, 40, 60 + 120 * i, 700, 40)])
+                               for i, t in enumerate(rows)])  # fmt: skip
+    c.app.state.container.screencast.ocr = FakeOcr({stem: res})
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 2, "to_line": 3, "asset_id": a["id"]}],
+    }
+    await c.put(f"/projects/{pid}/design", json={"purpose": "news"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    roles = await c.app.state.container.design.clip_roles(pid)
+    clip = next(x for x in tl["clips"] if roles.get(x["id"]) == "image")
+    names = {x["id"]: x["name"] for x in tl["assets"]}
+    assert names[clip["asset_id"]].startswith("書類の強調（N16）")
+    keys = clip["animation"]["keyframes"]
+    assert keys[-1]["zoom"] == 1.25 and keys[-1]["frame"] == 24 and keys[-1]["pan_y"] < 0
+    assert clip["transform"]["scale"] == 0.7
