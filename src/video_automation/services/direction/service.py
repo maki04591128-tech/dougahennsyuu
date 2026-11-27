@@ -1224,8 +1224,7 @@ class DirectionService:
         h: int,
         font: str | None,
     ) -> list[tuple[int, int]]:
-        """統合版 T30・T32・T33・T34。文字だけの場面の区間を返す（字幕・強調テロップを出さない）。
-        T31（会社紹介の 3D の字組みを飛ぶカメラ）は作らない。"""
+        """統合版 T30〜T34。文字だけの場面の区間を返す（字幕・強調テロップを出さない）。"""
         from video_automation.services.build.bgm_prompts import BGM
 
         kind = tscn.KIND[prof.purpose.value]
