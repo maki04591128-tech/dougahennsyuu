@@ -1527,3 +1527,42 @@ async def test_cut_transitions_page_cube_and_match(dclient):
                              lambda n: "cut", "txt", set())  # fmt: skip
     (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
     assert an.transition.type == "dissolve" and an.transition.duration_frames == 8
+
+
+async def test_card_item_marks_icon_and_checklist(dclient):
+    """統合版 I1（解説: 項目の頭に線の絵）・N15（操作説明: 「できました」でチェックと薄く）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "設定の手順を説明します。"},
+        {"speaker": "A", "text": "まずバッテリーを確認します。"},
+        {"speaker": "A", "text": "確認できました。"},
+        {"speaker": "A", "text": "次に時間を合わせます。"},
+        {"speaker": "A", "text": "これで完了です。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+
+    async def apply(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+            "plan"
+        ]
+        plan["shots"] = [
+            {"kind": "card", "from_line": 2, "to_line": 5, "heading": "手順",
+             "body": ["バッテリーを確認", "時間を合わせる"], "style": "point"},
+        ]  # fmt: skip
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+        return sorted(
+            (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・項目の印"),
+            key=lambda x: x["start_frame"],
+        ), tl
+
+    marks, tl = await apply("tutorial")
+    # 「できました」「完了です」の 2 回、印が増える（描く動き → 止め絵）
+    assert len(marks) >= 3
+    assert all(a["end_frame"] <= b["start_frame"] for a, b in zip(marks, marks[1:], strict=False))
+    marks, tl = await apply("explainer")
+    assert marks  # バッテリー・時間の絵
+    marks, tl = await apply("news")
+    assert not marks

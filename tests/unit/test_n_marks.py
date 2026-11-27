@@ -36,3 +36,22 @@ def test_magnifier_enlarges_the_word():
     assert px[cx, cx][:3] == (0, 0, 0) and px[cx + 11, cx][:3] == (0, 0, 0)
     fr = list(nm.magnifier_frames((400, 200), lens, (190, 90, 20, 20), 20))
     assert fr[0].getchannel("A").getextrema()[1] < 255 and fr[-1].getbbox() is not None
+
+
+def test_done_words_and_item_geometry():
+    from video_automation.schemas.animation import CardRequest
+    from video_automation.services.rendering.card import card_layout
+
+    assert nm.is_done("確認できました。") and nm.is_done("これで完了です！")
+    assert not nm.is_done("完了したら次へ進みます。")
+    req = CardRequest(project_id="p", heading="手順", body=["一つ目", "二つ目"], style="point")
+    lay = card_layout(req, 1920, 1080)
+    b0, b1 = nm.item_box(lay, 0), nm.item_box(lay, 1)
+    assert b0 and b1 and b1[1] > b0[1]
+    assert nm.item_head(lay, 1) is not None and nm.item_box(lay, 5) is None
+    fr = nm.check_frames(40, "#00AA00")
+    assert len(fr) == nm.N15_DRAW and fr[-1].getbbox() is not None
+    ic = nm.icon_draw_frames("battery", 40, "#0000FF")
+    assert len(ic) == nm.I1_DRAW
+    a0 = ic[0].getchannel("A").getextrema()[1] if ic[0].getbbox() else 0
+    assert ic[-1].getbbox() is not None and a0 <= 255

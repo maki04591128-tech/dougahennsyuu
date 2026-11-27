@@ -134,3 +134,89 @@ def magnifier_frames(
             part.putalpha(part.getchannel("A").point(lambda v, u=u: round(v * u)))
         im.alpha_composite(part, (round(x + (lw - sw) / 2), round(y + (lh - sh) / 2)))
         yield im
+
+
+# ---------- カードの項目の印（統合版 I1 線のアイコン・N15 チェックリスト） ----------
+
+DONE_WORDS = ("できました", "完了", "終わり")  # N15: 文の終わりの語
+I1_DRAW, N15_DRAW = 12, 8
+N15_DIM = 0.45  # 項目の文字を不透明度 55% に見せるため、面の色を 45% で重ねる
+
+
+def is_done(text: str) -> bool:
+    """N15: 文が「できました」「完了」「終わり」で終わるか（句点・感嘆符は除く）。"""
+    t = text.rstrip("。．！!？?　 ～〜ー")
+    return t.endswith(DONE_WORDS) or t.endswith(("完了です", "終わりです"))
+
+
+def item_box(layout: Any, item: int) -> tuple[int, int, int, int] | None:
+    """カードの本文の item 番目の文字の範囲（カードの画素。x, y, 幅, 高さ）と、行の大きさ。"""
+    from video_automation.services.rendering.card import text_width
+
+    ls = [ln for ln in layout.lines if ln.item == item]
+    if not ls:
+        return None
+    x0 = min(ln.x for ln in ls)
+    y0 = min(ln.y for ln in ls)
+    x1 = max(ln.x + text_width(ln.text, ln.size) for ln in ls)
+    y1 = max(ln.y + ln.size for ln in ls)
+    return round(x0), round(y0), round(x1 - x0), round(y1 - y0)
+
+
+def item_head(layout: Any, item: int) -> tuple[int, int, int] | None:
+    """項目の頭（行頭記号があればその位置・一辺、無ければ 1 行目の左）。カードの画素。"""
+    for (bx, by, side), it in zip(layout.bullets, layout.bullet_items, strict=False):
+        if it == item:
+            return bx, by, side
+    ls = [ln for ln in layout.lines if ln.item == item]
+    if not ls:
+        return None
+    return ls[0].x - ls[0].size, ls[0].y, ls[0].size
+
+
+def icon_draw_frames(name: str, size: int, color: str) -> list[Any]:
+    """I1: 線の絵記号を 12f（easeInOutSine）で描く（中心から時計回りに現す）。"""
+    from PIL import Image, ImageDraw
+
+    from video_automation.services.rendering.pictogram import render_icon
+
+    icon = render_icon(name, max(4, size), color)
+    out = []
+    for i in range(I1_DRAW):
+        u = _sine_io((i + 1) / I1_DRAW)
+        m = Image.new("L", icon.size, 0)
+        ImageDraw.Draw(m).pieslice((-size, -size, 2 * size, 2 * size), -90, -90 + 360 * u,
+                                   fill=255)  # fmt: skip
+        fr = icon.copy()
+        from PIL import ImageChops
+
+        fr.putalpha(ImageChops.multiply(icon.getchannel("A"), m))
+        out.append(fr)
+    return out
+
+
+def check_frames(size: int, color: str) -> list[Any]:
+    """N15: チェックを 8f で描く（線を伸ばす）。"""
+    from PIL import Image, ImageDraw
+
+    pts = [(0.18, 0.55), (0.42, 0.78), (0.84, 0.26)]
+    seg = [(pts[0], pts[1]), (pts[1], pts[2])]
+    lens = [math.dist(a, b) for a, b in seg]
+    total = sum(lens)
+    width = max(2, round(size / 7))
+    out = []
+    for i in range(N15_DRAW):
+        u = _cubic_out((i + 1) / N15_DRAW) * total
+        im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        acc = 0.0
+        for (a, b), ln in zip(seg, lens, strict=True):
+            if u <= acc:
+                break
+            t = min(1.0, (u - acc) / ln)
+            p = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            d.line([(a[0] * size, a[1] * size), (p[0] * size, p[1] * size)],
+                   fill=(*_rgb(color), 255), width=width, joint="curve")  # fmt: skip
+            acc += ln
+        out.append(im)
+    return out

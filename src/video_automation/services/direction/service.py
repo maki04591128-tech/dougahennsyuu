@@ -208,6 +208,7 @@ DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
 YEAR_TRACK = "演出・年号"  # 統合版 T43
 PLACE_TRACK = "演出・場所"  # 統合版 H2
 MARK_TRACK = "手描きの印"  # 統合版 N12・N13（スライドの上。build が置く）
+CARD_MARK_TRACK = "演出・項目の印"  # 統合版 I1・N15
 TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
 TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
 BEHIND_TITLE = (TITLE_BACK_TRACK, TITLE_BACK2_TRACK, TITLE_RING_TRACK)  # 立ち絵と題名の下に置く
@@ -248,6 +249,7 @@ EXTRA_TRACKS = (
     FX_TRACK,
     EMBER_TRACK,
     ITEM_TRACK,
+    CARD_MARK_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
     STEP_TRACK,
@@ -1473,6 +1475,131 @@ class DirectionService:
         )
         return AssetRead.model_validate(row)
 
+    async def _card_marks(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        body: list[str],
+        lines: list[Any],
+        steps: list[tuple[int, int, int | None]],
+        creq: CardRequest,
+        card: AssetRead,
+        cmds: list[Any],
+        lane: Any,
+        w: int,
+        h: int,
+        cy: float,
+        max_h: float,
+        max_w: float,
+        fps: float,
+    ) -> None:
+        """統合版 I1（項目の最初の文節が絵記号の語なら、頭に線の絵を 12f で描く）と
+        N15（後の文が「できました」「完了」「終わり」で終わったら、その時に出ている最後の項目に
+        チェックを 8f で描き、項目の文字を不透明度 55% に見せる）。
+
+        印はカードと同じ大きさの透過の画に描き、カードと同じ置き方で 1 本のトラックに重ねる
+        （印が増えるたびに、描く動き → 止め絵 の順に置く）。"""
+        from PIL import Image, ImageDraw
+
+        from video_automation.services.rendering import n_cards as nc
+        from video_automation.services.rendering import n_marks as nm
+
+        def _on(base: Any, pic: Any, pos: tuple[int, int]) -> Any:
+            im = base.copy()
+            im.alpha_composite(pic, pos)
+            return im
+
+        pv = prof.purpose
+        i1 = pv in (Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS)
+        n15 = pv in (Purpose.TUTORIAL, Purpose.RECIPE)
+        cw, ch = card.width or 0, card.height or 0
+        if not (i1 or n15) or not cw or not ch:
+            return
+        layout = card_layout(creq, w, h)
+        end = steps[-1][1]
+        if steps[0][2] is None:
+            shown_at = [steps[0][0]] * len(body)
+        else:
+            shown_at = [steps[min(j, len(steps) - 1)][0] for j in range(len(body))]
+        pal = prof.palette
+        # (時刻, 描く画の列, 描いた後の画, 置く左上) の印の一覧
+        marks: list[tuple[int, list[Any], tuple[int, int]]] = []
+        dims: list[tuple[int, tuple[int, int, int, int]]] = []
+        if i1:
+            for j, item in enumerate(body):
+                name = pick_icon(nc.first_phrase(item), [])
+                head = nm.item_head(layout, j)
+                if name is None or head is None:
+                    continue
+                hx, hy, side = head
+                ln = next((x for x in layout.lines if x.item == j), None)
+                lh = ln.size if ln else side
+                right = (ln.x if ln else hx + side) - max(2, round(lh * 0.08))
+                size = max(
+                    8, min(round(lh * 1.2), right)
+                )  # 文字の 1.2 倍（カードからはみ出さない）
+                fr = await asyncio.to_thread(nm.icon_draw_frames, name, size, pal.main)
+                # 行頭記号を面の色で隠して、その場所に絵を描く（文字の左に、行の中央の高さで）
+                cover = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+                ImageDraw.Draw(cover).rectangle((hx - 1, hy - 1, hx + side + 1, hy + side + 1),
+                                                fill=(*_hex_rgb(creq.panel_color), 255))  # fmt: skip
+                pos = (right - size, round((ln.y if ln else hy) + lh / 2 - size / 2))
+                fr = [_on(cover, f_, pos) for f_ in fr]
+                marks.append((shown_at[j], fr, (0, 0)))
+        if n15:
+            done: set[int] = set()
+            for ln_ in lines:
+                if not (steps[0][0] <= ln_.start < end) or not nm.is_done(ln_.text):
+                    continue
+                jj = max((x for x in range(len(body)) if shown_at[x] <= ln_.start), default=None)
+                head = nm.item_head(layout, jj) if jj is not None else None
+                box = nm.item_box(layout, jj) if jj is not None else None
+                if jj is None or jj in done or head is None or box is None:
+                    continue
+                done.add(jj)
+                hx, hy, side = head
+                size = max(8, round(side * 1.3))
+                fr = await asyncio.to_thread(nm.check_frames, size, pal.accent)
+                at = max(ln_.start, ln_.end - 1)
+                marks.append(
+                    (at, fr, (round(hx + side / 2 - size / 2), round(hy + side / 2 - size / 2)))
+                )
+                dims.append((at, box))
+        marks = sorted((m for m in marks if m[0] < end), key=lambda m: m[0])
+        if not marks:
+            return
+        dim_col = (*_hex_rgb(creq.panel_color), round(255 * nm.N15_DIM))
+
+        def canvas(t: int, upto: int, anim_k: int | None) -> Any:
+            """t の時点の印の画。upto 番目までは描き終えた画、upto 番目は anim_k 枚目。"""
+            im = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            for at, (bx, by, bw, bh) in dims:
+                if at <= t:
+                    d.rectangle((bx, by, bx + bw, by + bh), fill=dim_col)
+            for k_, (_at, fr, pos) in enumerate(marks[: upto + 1]):
+                pic = fr[min(anim_k, len(fr) - 1)] if k_ == upto and anim_k is not None else fr[-1]
+                im.alpha_composite(pic, pos)
+            return im
+
+        tf = native_transform(cw, ch, w, h, cx=0.5, cy=cy, max_h=max_h, max_w=max_w)
+        track = lane(CARD_MARK_TRACK)
+        for k_, (at, fr, _pos) in enumerate(marks):
+            nxt = marks[k_ + 1][0] if k_ + 1 < len(marks) else end
+            if nxt <= at:
+                continue
+            n_anim = min(len(fr), nxt - at)
+            seq = [canvas(at, k_, i) for i in range(n_anim)]
+            a = await self._overlay(project_id, seq, "項目の印（I1・N15）", fps)
+            cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=at,
+                                duration_frames=n_anim, clip_id=str(uuid4()),
+                                transform=tf))  # fmt: skip
+            if nxt - at > n_anim:
+                still = await self._png(project_id, canvas(at, k_, None), "項目の印（I1・N15）")
+                cmds.append(AddClip(track_id=track, asset_id=still.id, start_frame=at + n_anim,
+                                    duration_frames=nxt - at - n_anim, clip_id=str(uuid4()),
+                                    transform=tf))  # fmt: skip
+
     async def _title_extras(
         self,
         project_id: str,
@@ -2275,6 +2402,12 @@ class DirectionService:
                         )
                         dy = ITEM_IN_PX / 1080  # 1080p で 16px（画面の高さに対する比）
                         animate(iid, t1 - t0, "item", exit_=k == last, item_dy=dy)
+                if prof is not None and s.body:  # 統合版 I1・N15: 項目の頭の印
+                    full = creq.model_copy(update={"reveal": None, "hide_item": None})
+                    await self._card_marks(
+                        p.id, prof, s.body, lines, steps, full, a, cmds, lane, w, h,
+                        zone_cy, zone_h, main_w, fps,
+                    )  # fmt: skip
                 shown.append((start, end))
             elif s.kind == ShotKind.CHART:
                 use(Component.CHART)
