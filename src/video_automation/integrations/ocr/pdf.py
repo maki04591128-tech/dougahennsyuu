@@ -2,7 +2,7 @@
 
 - Windows: Windows.Data.Pdf（PdfPage.RenderToStreamAsync）を PowerShell から使う（追加の部品なし）
 - それ以外: Poppler の pdftoppm があれば使う（テスト・開発用）
-2 倍 = PDF の 1pt を 2 画素（144dpi）にする。
+2 倍 = 画面の標準（96dpi、Windows.Data.Pdf のページの大きさの単位）の 2 倍（192dpi）。
 """
 
 from __future__ import annotations

@@ -32,7 +32,7 @@ def test_find_pii_email_key_phone_and_boxes() -> None:
         [
             _line("連", "絡", "先", ":", "taro.yamada@example.co.jp"),
             _line("key", "=", "sk-abcdefghij0123456789", y=50),
-            _line("電", "話", "090-1234-5678", y=90),
+            _line("電", "話", "090ー1234ー5678", y=90),  # 実機の OCR は '-' を「ー」と読む
             _line("AKIAABCDEFGHIJKLMNOP", y=130),
             _line("2024-01-02", "12:30", y=170),  # 日付・時刻は電話番号ではない
             _line("sk-short", y=210),

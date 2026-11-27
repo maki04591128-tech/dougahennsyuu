@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from video_automation.integrations.ocr.engine import OcrResult, union
@@ -33,6 +34,19 @@ PII_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 
+_DASH = set("ー－‐‑‒–—―−ｰ")
+
+
+def _norm(c: str) -> str:
+    """1 字ずつそろえる（全角の英数字 → 半角、長音・ダッシュ → '-'）。長さは変えない。
+
+    日本語の OCR は電話番号の '-' を「ー」と読むことがある（実機で確認）。"""
+    if c in _DASH:
+        return "-"
+    n = unicodedata.normalize("NFKC", c)
+    return n if len(n) == 1 else c
+
+
 def _digits(s: str) -> int:
     return sum(c.isdigit() for c in s)
 
@@ -51,7 +65,7 @@ def find_pii(res: OcrResult) -> list[Hit]:
         # 語を空白なしでつなぎ、文字ごとに元の語の番号を覚える（日本語の OCR は語を細かく分ける）
         text, owner = "", []
         for i, w in enumerate(ln.words):
-            text += w.text
+            text += "".join(_norm(ch) for ch in w.text)
             owner += [i] * len(w.text)
         taken: list[tuple[int, int]] = []
         for kind, pat in PII_PATTERNS.items():
