@@ -105,6 +105,7 @@ def _launch_obs(wait: float = 40.0) -> int | None:
     exe = obs_exe()
     if exe is None:
         raise ObsError("OBS が見つかりません（導入の bat を先に実行してください）")
+    _clear_crash_marks(exe)
     flags = 0x00000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS
     proc = subprocess.Popen(
         [
@@ -126,6 +127,18 @@ def _launch_obs(wait: float = 40.0) -> int | None:
         except Exception:  # noqa: BLE001
             time.sleep(1.0)
     raise ObsError("OBS の WebSocket につながりませんでした")
+
+
+def _clear_crash_marks(exe: Path) -> None:
+    """前回 OBS が正しく閉じなかった印を消す（残っていると起動時に「セーフモードで起動するか」の
+    窓が出て、WebSocket が使えないまま止まる。2026-11-27 実機）。ポータブル版の設定の場所。"""
+    sentinel = exe.parents[2] / "config" / "obs-studio" / ".sentinel"
+    if sentinel.is_dir():
+        for f in sentinel.iterdir():
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
 
 def setup_scene(obs: ObsClient, window_id: str, width: int = 1920, height: int = 1080) -> None:
@@ -196,11 +209,15 @@ def setup_scene(obs: ObsClient, window_id: str, width: int = 1920, height: int =
         name = special.get(k)
         if name:
             obs.call("SetInputMute", {"inputName": name, "inputMuted": True})
-    # 録画の形式: 落ちても読める mp4（OBS 30.2 以降の hybrid_mp4）・画質は高め
+    # 録画の形式: 落ちても読める mp4（OBS 30.2 以降の hybrid_mp4）・画質は高め。
+    # 符号化は x264（CPU）。実機（RTX 5050）では NVENC が「出力開始に失敗しました」で始まらず、
+    # その知らせの窓が開いたままになって後の録画も止まった（2026-11-27）
     for cat, key, val in (
         ("Output", "Mode", "Simple"),
         ("SimpleOutput", "RecFormat2", "hybrid_mp4"),
         ("SimpleOutput", "RecQuality", "Small"),
+        ("SimpleOutput", "RecEncoder", "x264"),
+        ("SimpleOutput", "Preset", "veryfast"),
     ):
         try:
             obs.call(
