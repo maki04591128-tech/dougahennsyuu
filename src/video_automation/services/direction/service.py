@@ -102,6 +102,7 @@ from video_automation.services.direction.plan import (
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering import flower as fl
+from video_automation.services.rendering import numbers
 from video_automation.services.rendering import t_extras as tx
 from video_automation.services.rendering import text_scenes as tscn
 from video_automation.services.rendering.card import card_layout
@@ -332,6 +333,9 @@ T38_PURPOSES = frozenset(
     }
 )  # fmt: skip
 T38_SCALE = 1.15
+# 統合版 T35: 強調テロップの 2 桁以上の半角数字を回す用途
+T35_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE, Purpose.PRODUCT})
+_T35_NUM = re.compile(r"[0-9]{2,}")
 
 
 def t38_hit(line_text: str, phrase: str, query: dict[str, Any] | None, strike: bool = True) -> bool:
@@ -1170,6 +1174,48 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _roll_card(
+        self, project_id: str, kreq: CardRequest, still: AssetRead, n: int, fps: float
+    ) -> AssetRead:
+        """統合版 T35: 強調テロップのカードを、数字が回ってから止まる画の列（n フレーム）にする。"""
+        from PIL import Image
+
+        text = kreq.heading
+        k = numbers.roll_frames_count(text)
+        work = (
+            self.settings.data_dir / "projects" / project_id / "assets" / f"t35_{uuid4().hex[:8]}"
+        )
+        work.mkdir(parents=True, exist_ok=True)
+        imgs: list[Any] = []
+        try:
+            shown: dict[str, Any] = {}
+            for f in range(min(k, n)):
+                t = numbers.roll_text(text, f)
+                if t not in shown:
+                    out = work / f"{len(shown):03d}.png"
+                    await self.titles.card_png(kreq.model_copy(update={"heading": t}), out)
+                    shown[t] = await asyncio.to_thread(
+                        lambda p_=out: Image.open(p_).convert("RGBA")
+                    )
+                imgs.append(shown[t])
+        except Exception:  # noqa: BLE001 - 回せないときは止まった数字のまま
+            await asyncio.to_thread(shutil.rmtree, work, True)
+            return still
+        final = await asyncio.to_thread(
+            lambda: Image.open(self.settings.data_dir / still.path).convert("RGBA")
+        )
+        size = final.size
+
+        def gen() -> Any:
+            for im in imgs:
+                yield im if im.size == size else im.resize(size)
+            for _ in range(n - len(imgs)):
+                yield final
+
+        a = await self._overlay(project_id, gen(), f"数字が回る（T35）「{text[:12]}」", fps)
+        await asyncio.to_thread(shutil.rmtree, work, True)
+        return a
 
     async def _not_telops(
         self,
@@ -3141,6 +3187,13 @@ class DirectionService:
                 scale=round(0.62 * ts * (T38_SCALE if hit38 else 1.0), 3),
             )
             a = await self.titles.card(kreq)
+            if (
+                prof is not None
+                and prof.purpose in T35_PURPOSES
+                and _T35_NUM.search(s.text)
+                and numbers.find_year(s.text) is None
+            ):  # 統合版 T35: 強調テロップの 2 桁以上の数字を回す
+                a = await self._roll_card(p.id, kreq, a, end - start, fps)
             texts.append(text_use("keyword", kreq, a, w, h, sec(start), sec(end)))
             aw, ah = a.width or 1, a.height or 1
             # 右上に置く（左上は章の見出しの場所。layout-no-overlap の「補助」の枠）

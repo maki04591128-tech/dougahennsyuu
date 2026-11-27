@@ -330,6 +330,11 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         (x.get("animation") or {}).get("preset") for x in tl["clips"] if x["track_id"] == txt
     ]
     assert presets.count("pop_in_soft") == 2, presets  # 解説の pop は控えめ（統合版 B2）
+    # 統合版 T35: 解説の強調テロップの 2 桁以上の数字は、回ってから止まる画の列にする
+    names_ = {a["id"]: a["name"] for a in tl["assets"]}
+    rolled = [names_[x["asset_id"]] for x in tl["clips"] if x["track_id"] == txt
+              and names_[x["asset_id"]].startswith("数字が回る（T35）")]  # fmt: skip
+    assert rolled, sorted(names_.values())
     rec = (await c.app.state.container.design.manifest(pid)).colors
     assert "#4CB3E6" in rec and "#F2B544" in rec
 
