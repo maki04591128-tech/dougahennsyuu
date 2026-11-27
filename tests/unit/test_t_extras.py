@@ -58,3 +58,22 @@ def test_outline_then_fill():
     # 塗りの途中は左だけ
     mid = fr[22]
     assert mid.getpixel((50, 40))[3] == 255 and mid.getpixel((150, 40))[3] == 0
+
+
+def test_not_phrases_and_strike_retype():
+    assert tx.not_phrases("塩ではなく砂糖を使います。") == ("塩", "砂糖")
+    assert tx.not_phrases("右クリックじゃなく、左クリックです。") == ("右クリック", "左クリック")
+    assert tx.not_phrases("これは問題ではない。") is None
+    (cw, ch), gen = tx.strike_frames("塩", "砂糖", None, 40, "#FFFFFF", "#000000", 40)
+    fr = list(gen)
+    assert len(fr) == 40 and fr[0].size == (cw, ch)
+    # 線を引いた後（9f 目）は赤がある、消えた後は無い
+    import numpy as np
+
+    def red(im):
+        a = np.asarray(im)
+        return int(((a[..., 0] > 200) & (a[..., 1] < 90) & (a[..., 3] > 200)).sum())
+
+    assert red(fr[9]) > 0 and red(fr[-1]) == 0
+    (cw, ch), gen = tx.retype_frames("右", "左クリック", None, 40, "#FFFFFF", "#000000", 40)
+    assert len(list(gen)) == 40

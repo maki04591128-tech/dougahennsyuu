@@ -338,3 +338,123 @@ def crawl_frames(w: int, h: int, text: str, font: str | None, ink: str, n: int, 
         im = strip.transform((w, h), Image.Transform.PERSPECTIVE, coeffs, Image.Resampling.BICUBIC)
         im.putalpha(ImageChops.multiply(im.getchannel("A"), alpha_ramp))
         yield im
+
+
+# ---------- T36 取り消し線で消す・T46 打ち直すタイプライター ----------
+
+NOT_WORDS = ("ではなく", "じゃなく")
+STRIKE_RED = "#E03A3A"
+_CUT = "、。，．,.!！?？をがはにでとへものや "
+
+
+def not_phrases(text: str) -> tuple[str, str] | None:
+    """「A ではなく B」の A（直前の 1 字を含む文節）と B（続く文節）。無ければ None。"""
+    idx = min((i for i in (text.find(w) for w in NOT_WORDS) if i > 0), default=-1)
+    if idx <= 0:
+        return None
+    word = next(w for w in NOT_WORDS if text.find(w) == idx)
+    before = text[:idx]
+    cut = max(before.rfind(ch) for ch in _CUT)
+    a = before[cut + 1 :].strip()
+    rest = text[idx + len(word) :].lstrip("、, ")
+    stop = min((i for i in (rest.find(ch) for ch in "、。！？!?") if i >= 0), default=len(rest))
+    b = rest[:stop]
+    for tail in ("です", "でした", "だ", "にします", "を使います"):
+        if b.endswith(tail) and len(b) > len(tail):
+            b = b[: -len(tail)]
+            break
+    if not a or not b:
+        return None
+    return a[-10:], b[:10]
+
+
+def _card(w: int, h: int, size: int) -> tuple[Any, Any]:
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    return im, ImageDraw.Draw(im)
+
+
+def strike_frames(a: str, b: str, font: str | None, size: int, ink: str, panel: str, n: int
+                  ) -> tuple[tuple[int, int], Iterator[Any]]:  # fmt: skip
+    """T36: 「A B」を出し、A の文字の高さの中央に太さ 文字の大きさ × 0.08・#E03A3A の線を左から
+    右へ 3f（linear）で引き、6f 静止の後、A を scale y 1→0 に 6f（easeInCubic）で消して、B を
+    左へ詰める（6f、easeOutCubic）。入りは不透明度 0→1 を 6f。"""
+    from PIL import Image, ImageDraw
+
+    f = _font(font, size)
+    gap = size * 0.4
+    wa, wb = f.getlength(a), f.getlength(b)
+    pad = round(size * 0.35)
+    cw, ch = round(wa + gap + wb + 2 * pad), round(size * 1.6)
+    t_in, t_line, t_hold, t_out = 6, 3, 6, 6
+
+    def gen() -> Iterator[Any]:
+        for i in range(n):
+            im = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle((0, 0, cw - 1, ch - 1), radius=round(size * 0.25),
+                                fill=(*_rgb(panel), 225))  # fmt: skip
+            t = i - t_in
+            sy = 1.0
+            shift = 0.0
+            if t >= t_line + t_hold:
+                u = min(1.0, (t - t_line - t_hold + 1) / t_out)
+                sy = 1 - u**3
+                shift = (wa + gap) * _ease_out(u)
+            cy = ch / 2
+            if sy > 0.02:
+                layer = Image.new("RGBA", (round(wa) + 4, ch), (0, 0, 0, 0))
+                ld = ImageDraw.Draw(layer)
+                ld.text((0, cy), a, font=f, fill=(*_rgb(ink), 255), anchor="lm")
+                if t >= 0:
+                    x1 = wa * min(1.0, (t + 1) / t_line)
+                    lw = max(2, round(size * 0.08))
+                    ld.line([(0, cy), (x1, cy)], fill=(*_rgb(STRIKE_RED), 255), width=lw)
+                if sy < 1:
+                    lh = max(1, round(ch * sy))
+                    layer = layer.resize((layer.size[0], lh), Image.Resampling.BICUBIC)
+                im.alpha_composite(layer, (pad, round((ch - layer.size[1]) / 2)))
+            d.text((pad + wa + gap - shift, cy), b, font=f, fill=(*_rgb(ink), 255), anchor="lm")
+            if i < t_in:
+                im.putalpha(im.getchannel("A").point(lambda v, k=(i + 1) / t_in: round(v * k)))
+            yield im
+
+    return (cw, ch), gen()
+
+
+def retype_frames(a: str, b: str, font: str | None, size: int, ink: str, panel: str, n: int
+                  ) -> tuple[tuple[int, int], Iterator[Any]]:  # fmt: skip
+    """T46: A を後ろから 1 字 1f で消し（カーソル「▍」を付ける）、続く B を 1 字 2f で打つ。"""
+    from PIL import Image, ImageDraw
+
+    f = _font(font, size)
+    pad = round(size * 0.35)
+    cur = "▍"
+    cw = round(max(f.getlength(a), f.getlength(b)) + f.getlength(cur) + 2 * pad)
+    ch = round(size * 1.6)
+    hold = 12  # A を読ませる間
+
+    def text_at(i: int) -> str:
+        if i < hold:
+            return a
+        k = i - hold
+        if k < len(a):
+            return a[: len(a) - k - 1]
+        k -= len(a)
+        return b[: min(len(b), k // 2 + 1)]
+
+    def gen() -> Iterator[Any]:
+        for i in range(n):
+            im = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle((0, 0, cw - 1, ch - 1), radius=round(size * 0.25),
+                                fill=(*_rgb(panel), 225))  # fmt: skip
+            s = text_at(i)
+            d.text((pad, ch / 2), s, font=f, fill=(*_rgb(ink), 255), anchor="lm")
+            if (i // 8) % 2 == 0:  # カーソルは 15f 周期で点滅（T6 と同じ）
+                d.text((pad + f.getlength(s), ch / 2), cur, font=f, fill=(*_rgb(ink), 255),
+                       anchor="lm")  # fmt: skip
+            yield im
+
+    return (cw, ch), gen()

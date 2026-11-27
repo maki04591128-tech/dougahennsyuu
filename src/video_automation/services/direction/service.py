@@ -212,6 +212,7 @@ MARK_TRACK = "手描きの印"  # 統合版 N12・N13（スライドの上。bui
 CARD_MARK_TRACK = "演出・項目の印"  # 統合版 I1・N15
 CALLOUT_TRACK = "演出・特長の線"  # 統合版 P9
 MAP_TRACK = "演出・地図"  # 統合版 J1〜J3
+STRIKE_TRACK = "演出・取り消し"  # 統合版 T36・T46
 J_PURPOSES = {Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.EXPLAINER}
 TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
 TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
@@ -256,6 +257,7 @@ EXTRA_TRACKS = (
     CARD_MARK_TRACK,
     CALLOUT_TRACK,
     MAP_TRACK,
+    STRIKE_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
     STEP_TRACK,
@@ -1110,6 +1112,43 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _not_telops(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        top: float,
+        ts: float,
+        font: str | None,
+        ink: str,
+        panel: str,
+    ) -> None:
+        """統合版 T36（取り消し線で消す）・T46（打ち直すタイプライター）。
+        1 文に 1 回、画面の上の中央に出す。"""
+        size = max(12, round(min(w, h) * 0.078 * 0.62 * ts))
+        retype = prof.purpose == Purpose.TUTORIAL
+        track = None
+        for ln in lines:
+            ab = tx.not_phrases(ln.text)
+            n = min(total, ln.end) - ln.start
+            if ab is None or n < round(fps):
+                continue
+            make = tx.retype_frames if retype else tx.strike_frames
+            (cw, ch), gen = make(ab[0], ab[1], font, size, ink, panel, n)
+            name = "打ち直すタイプライター（T46）" if retype else "取り消し線（T36）"
+            a = await self._overlay(project_id, gen, name, fps)
+            track = track or lane(STRIKE_TRACK)
+            k = native_scale(cw, ch, w, h)
+            tf = native_transform(cw, ch, w, h, cx=0.5, cy=top + ch * k / 2 / h)
+            cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=ln.start,
+                                duration_frames=n, clip_id=str(uuid4()), transform=tf))  # fmt: skip
 
     async def _flower(
         self,
@@ -2937,6 +2976,15 @@ class DirectionService:
                 animate(cid, end - start, mspec.pop)
             else:
                 animate(cid, end - start, slide_preset("right", mspec))
+
+        # 統合版 T36（解説・講義・会社紹介）・T46（操作説明）: 「A ではなく B」の A を消して B に
+        if prof is not None and prof.purpose in (
+            Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE, Purpose.TUTORIAL,
+        ):  # fmt: skip
+            await self._not_telops(
+                p.id, prof, lines, cmds, lane, total, fps, w, h, strip_top, ts,
+                self.titles.font_path(heading_font), ink, panel,
+            )  # fmt: skip
 
         # 統合版 P1: 名前帯（インタビュー・ドキュメンタリー・ニュース・会社紹介）
         if (

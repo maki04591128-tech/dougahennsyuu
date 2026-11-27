@@ -1795,3 +1795,28 @@ async def test_flower_text_for_reactions(dclient):
     assert not got[1]["name"].startswith("花字")  # ふつうの感情は今までのテロップ
     got = await keyword_names("explainer")
     assert not any(a["name"].startswith("花字") for a in got)
+
+
+async def test_not_phrase_strike_and_retype(dclient):
+    """統合版 T36（解説: 取り消し線）・T46（操作説明: 打ち直す）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "料理の話をします。"},
+        {"speaker": "A", "text": "塩ではなく砂糖を使います。"},
+        {"speaker": "B", "text": "なるほど、よくわかりました。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    plan = {"title": "", "subtitle": "", "shots": []}
+    for purpose, name in (
+        ("explainer", "取り消し線（T36）"),
+        ("tutorial", "打ち直すタイプライター（T46）"),
+    ):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+        names = {a["id"]: a["name"] for a in tl["assets"]}
+        got = [
+            names[x["asset_id"]] for x in tl["clips"] if tracks[x["track_id"]] == "演出・取り消し"
+        ]
+        assert got == [name], purpose
