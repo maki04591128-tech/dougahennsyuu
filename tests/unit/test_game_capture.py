@@ -42,7 +42,9 @@ def test_long_recording_fits_limit_and_keeps_order() -> None:
     total = sum(s.length for s in spans)
     assert 600 < total <= 900
     assert spans[0].start == 0.0  # 最初の画面は必ず残す
-    assert all(a.end <= b.start for a, b in zip(spans, spans[1:], strict=False))  # 時刻の順・重なりなし
+    assert all(
+        a.end <= b.start for a, b in zip(spans, spans[1:], strict=False)
+    )  # 時刻の順・重なりなし
     out = hl.retime(marks, spans)
     assert out and all(0 <= m.t < total for m in out)
     assert [m.t for m in out] == sorted(m.t for m in out)

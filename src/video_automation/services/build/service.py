@@ -1079,6 +1079,9 @@ class BuildService:
         # 統合版 V11: 各サビの直前の 1 小節を主色の面にし、白と黒の形を置く
         bars = mv.motif_bars(spans, bt.times, fps)
         shape = await self._motif_shape([x.text for x in cues]) if bars else "circle"
+        # 統合版 V7: B メロの最後の小節にグリッド、2 番の A メロに画面内の画面、1 番の A メロの
+        # 最後にカード（V11 の小節とは重ねない）
+        cuts, v7 = mv.apply_v7(cuts, spans, bt.times, fps, [(a, b) for a, _, b in bars])
         cuts = mv.insert_planes(cuts, bars)
         genre = (await c.design.get(project_id)).genre or "pop"
         main, ink = mv.V12_MAIN.get(genre, mv.V12_MAIN["pop"])
@@ -1236,7 +1239,13 @@ class BuildService:
         await c.design.record(
             project_id,
             "mv_shots",
-            {"used": used, "cuts": len(cuts), "ink": len(entries), "motif": len(bars)},
+            {
+                "used": used,
+                "cuts": len(cuts),
+                "ink": len(entries),
+                "motif": len(bars),
+                "v7": v7,
+            },
         )
         notes = [
             f"絵から {len(files)} 種のショットを作り、"
@@ -1244,6 +1253,17 @@ class BuildService:
         ]
         if entries:
             notes.append(f"サビの頭 {len(entries)} か所をインクの転換にしました")
+        v7_text = [
+            t
+            for t, k in (
+                (f"グリッド {v7['grid']} か所", v7["grid"]),
+                ("2 番の A メロに画面内の画面", v7["pip"]),
+                ("1 番の A メロの最後にカード", v7["cards"]),
+            )
+            if k
+        ]
+        if v7_text:
+            notes.append("、".join(v7_text) + "を入れました")
         if bars:
             notes.append(
                 f"サビの前の {len(bars)} 小節に、白と黒の{mv.MOTIF_LABEL[shape]}を置きました"

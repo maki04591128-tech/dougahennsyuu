@@ -330,11 +330,36 @@ def _key(ob, path, frame, value, index=-1):
     ob.keyframe_insert(path, index=index, frame=frame)
 
 
+NEON_ALPHA = (0.0, 1.0, 0.3, 1.0, 0.5, 1.0)  # 点滅・ネオン: 2f ごと（10f）
+FLICKER_OUT = (1.0, 0.2, 1.0, 0.2, 0.0)  # 点滅して消える: 2f ごと（8f）
+EXIT_F = 8  # 行全体の出の長さ
+
+
+def line_alpha(entrance, exit_, length, out_at):
+    """行の場面のストリップの不透明度のキー（場面の中のフレーム, 値）。使った (入り, 出) も返す。"""
+    keys = []
+    ent = ext = None
+    if entrance == "neon":
+        keys += [(1 + 2 * j, a) for j, a in enumerate(NEON_ALPHA)]
+        ent = "neon"
+    if out_at < length:
+        if exit_ == "flicker":
+            keys += [(out_at + 2 * j, a) for j, a in enumerate(FLICKER_OUT)]
+            ext = "flicker"
+        elif exit_ in ("fade", "dissolve", "fall_back", "rise_out", "stretch_out"):
+            n = 10 if exit_ == "dissolve" else EXIT_F
+            keys += [(out_at, 1.0), (min(length, out_at + n), 0.0)]
+            ext = exit_
+    return keys, ent, ext
+
+
 def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
     """統合版 V5 の改訂: 行全体（物体）の入り・待機・出。文字ごとの弾み（bounce）は場面の中の
-    ジオメトリーノードが受け持ち、ここでは行全体の拡大・位置を動かす。作っていない動きは使わない。"""
+    ジオメトリーノードが受け持ち、ここでは行全体の拡大・位置・回転を動かす。不透明度（点滅・
+    ネオン・フェード）は line_alpha で場面のストリップに付ける。作っていない動きは使わない。"""
     obs = [o for o in sc.objects if o.type == "MESH"]
     used = []
+    _, ent_a, ext_a = line_alpha(entrance, exit_, length, out_at)
     for ob in obs:
         x0, y0 = ob.location.x, ob.location.y
         if entrance == "zoom":  # 拡大して登場: scale 1.4→1.0、10f
@@ -352,6 +377,11 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
         elif entrance == "shake":  # 震わせる: x ±3px を 2f ごとに 6 回
             for j in range(7):
                 _key(ob, "location", 12 + 2 * j, x0 + (3 * PX if j % 2 else -3 * PX) * (j < 6), 0)
+        elif entrance == "tilt3d":  # 3D で傾ける: Y 軸 −35°→−20°、24f
+            _key(ob, "rotation_euler", 1, math.radians(-35.0), 1)
+            _key(ob, "rotation_euler", 25, math.radians(-20.0), 1)
+        elif entrance == ent_a:
+            pass  # ネオン（不透明度だけ）
         else:
             entrance = "bounce"
         hold_end = max(12, out_at)
@@ -375,9 +405,27 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
                 k += 1
         else:
             hold = "static"
+        end_ = min(length, out_at + EXIT_F)
         if exit_ == "shrink" and out_at < length:  # 縮んで消える: 1→0.8（文字ごとの出と重ねる）
             _key(ob, "scale", out_at, (1.0, 1.0, 1.0))
             _key(ob, "scale", min(length, out_at + 5), (0.8, 0.8, 0.8))
+        elif exit_ == "spin_out" and out_at < length:  # 回って消える: Z +90°・1→0、8f
+            z0 = ob.rotation_euler.z
+            _key(ob, "rotation_euler", out_at, z0, 2)
+            _key(ob, "rotation_euler", end_, z0 + math.radians(90.0), 2)
+            _key(ob, "scale", out_at, tuple(ob.scale))
+            _key(ob, "scale", end_, (0.01, 0.01, 0.01))
+        elif exit_ == "fall_back" and out_at < length:  # 後ろへ倒れる: X 0→−70°、8f
+            _key(ob, "rotation_euler", out_at, ob.rotation_euler.x, 0)
+            _key(ob, "rotation_euler", end_, math.radians(-70.0), 0)
+        elif exit_ == "rise_out" and out_at < length:  # 上へ抜ける: y +8%、8f
+            _key(ob, "location", out_at, y0, 1)
+            _key(ob, "location", end_, y0 + 0.08 * H * PX, 1)
+        elif exit_ == "stretch_out" and out_at < length:  # 伸びて消える: y 1→3・x 1→0.6、8f
+            _key(ob, "scale", out_at, (1.0, 1.0, 1.0))
+            _key(ob, "scale", end_, (0.6, 3.0, 1.0))
+        elif exit_ in (ext_a,) and ext_a is not None:
+            pass  # 不透明度だけ（点滅・フェード）
         else:
             exit_ = "shrink_chars"
         used = [entrance, hold, exit_]
@@ -857,8 +905,11 @@ def main():
                         ob_.rotation_euler.z = math.radians(-8.0)
                 center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
                 mo = c.get("motion")
+                alpha_keys = []
                 if mo:  # 統合版 V5 の改訂
-                    got = line_motion(ksc, mo[0], mo[1], mo[2], length, max(8, length - 14))
+                    out_at_ = max(8, length - 14)
+                    got = line_motion(ksc, mo[0], mo[1], mo[2], length, out_at_)
+                    alpha_keys = line_alpha(mo[0], mo[2], length, out_at_)[0]
                     for g in got:
                         REPORT.setdefault("motion", {}).setdefault(g, 0)
                         REPORT["motion"][g] += 1
@@ -867,6 +918,9 @@ def main():
                 st = se.strips.new_scene(f"lyric{i}_{r}", ksc, 44 + (i % 3) * 2 + r % 2, f0 + r * 3)
                 set_duration(st, length - r * 3)
                 st.blend_type = "ALPHA_OVER"
+                for fr_, a_ in alpha_keys:  # 場面の中のフレーム（1 から）→ 編集のフレーム
+                    if fr_ <= length - r * 3:
+                        kp_(st, "blend_alpha", f0 + r * 3 + fr_ - 1, a_)
             n += 1
         use("lyric_text", n)
         use("kinetic_text", n)

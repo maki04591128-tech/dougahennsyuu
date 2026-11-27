@@ -241,11 +241,12 @@ def test_bake_shots_frames_and_camera(tmp_path):
     img.save(half)
     fps = Fraction(30)
     items = [(paths[0], 5, []), (half, 20, mv.camera("upper", 20, 30)), (paths[2], 7, [])]
+    items += [(paths[1], 1, [])] * 3  # V7 のグリッドの 1 フレームのカット
     assert mv_bake.groups(85, 40) == [(0, 40), (40, 80), (80, 85)]
     parts = []
-    for gi, (a, b) in enumerate([(0, 2), (2, 3)]):
+    for gi, (a, b) in enumerate([(0, 2), (2, 6)]):
         out = tmp_path / f"p{gi}.mp4"
-        args = mv_bake.group_args(items[a:b], fps, w, h, out, 1 if b == 3 else 0)
+        args = mv_bake.group_args(items[a:b], fps, w, h, out, 1 if b == 6 else 0)
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], check=True)
         parts.append(out)
     lst = tmp_path / "l.txt"
@@ -265,7 +266,7 @@ def test_bake_shots_frames_and_camera(tmp_path):
             check=True,
         ).stdout
     )
-    assert int(info["streams"][0]["nb_read_frames"]) == 5 + 20 + 7 + 1
+    assert int(info["streams"][0]["nb_read_frames"]) == 5 + 20 + 7 + 3 + 1
     raw = subprocess.run(
         [
             "ffmpeg",
@@ -292,3 +293,68 @@ def test_bake_shots_frames_and_camera(tmp_path):
         return int(np.argmax(row > 128))
 
     assert edge(6) > edge(23)
+
+
+def _v7_spans():
+    # A(8〜14) B(14〜20) サビ(20〜32) A(32〜38) B(38〜44) サビ(44〜56)
+    starts = [8 + 3 * i for i in range(16)]
+    secs = ["verse"] * 2 + ["bridge"] * 2 + ["chorus_first"] + ["chorus"] * 3
+    secs += ["verse"] * 2 + ["bridge"] * 2 + ["chorus"] * 4
+    return mv.line_spans(starts, [s + 2.5 for s in starts], secs, 2.0)
+
+
+def test_v7_grid_pip_cards():
+    beats = [i * 0.5 for i in range(130)]
+    spans = _v7_spans()
+    cuts = mv.plan_cuts(beats, spans, 65, 30)
+    bars = mv.motif_bars(spans, beats, 30)
+    assert [(a, b) for a, _, b in bars] == [(540, 600), (1260, 1320)]
+    out, used = mv.apply_v7(cuts, spans, beats, 30, [(a, b) for a, _, b in bars])
+    assert used == {"grid": 2, "pip": 1, "cards": 1}
+    assert all(a.end == b.start for a, b in zip(out, out[1:], strict=False))
+    # グリッド: B メロの最後の小節は V11 と重なるので 1 小節前（480〜540）。1f ずつ 16 枠
+    g = [c for c in out if c.shot.startswith("grid") and 480 <= c.start < 540]
+    assert g[0].start == 480 and g[0].shot == "grid_1" and g[14].shot == "grid_15"
+    assert g[-1].shot == "grid" and g[-1].start == 495 and g[-1].end == 540
+    # カード: 1 番の A メロ（8〜14 秒）の最後の 6 拍（14 秒まで）、2 拍ごとに 1 枚
+    cards = [c for c in out if c.shot.startswith("cards_")]
+    assert [(c.start, c.end, c.shot) for c in cards] == [
+        (330, 360, "cards_1"),
+        (360, 390, "cards_2"),
+        (390, 420, "cards_3"),
+    ]
+    # 画面内の画面: 2 番の A メロ（32〜38 秒）
+    pip = [c for c in out if c.shot == "pip"]
+    assert [(c.start, c.end) for c in pip] == [(960, 1140)]
+    out2 = mv.insert_planes(out, bars)
+    assert all(a.end == b.start for a, b in zip(out2, out2[1:], strict=False))
+
+
+def test_v7_images():
+    src = Image.new("RGB", (400, 600), (240, 120, 160))
+    w, h = 320, 180
+    g3 = np.asarray(mv.shot_image(src, "grid_3", w, h, "#3E5C9A", "#FFFFFF"))
+    assert (g3[10, 10, :3] != (0x3E, 0x5C, 0x9A)).any()  # 1 枠目は出ている
+    assert (g3[h - 5, w - 5, :3] == (0x3E, 0x5C, 0x9A)).all()  # 16 枠目はまだ
+    pip = mv.shot_image(src, "pip", w, h, "#3E5C9A", "#FFFFFF")
+    assert pip.getpixel((5, 90))[:3] == (0x3E, 0x5C, 0x9A)
+    assert pip.getpixel((160, 90))[:3] != (0x3E, 0x5C, 0x9A)
+    c1 = np.asarray(mv.shot_image(src, "cards_1", w, h, "#3E5C9A", "#FFFFFF"))
+    c3 = np.asarray(mv.shot_image(src, "cards_3", w, h, "#3E5C9A", "#FFFFFF"))
+    white = lambda a: int(((a[..., :3] == 255).all(axis=-1)).sum())  # noqa: E731
+    assert white(c3) > white(c1) > 0  # 白い縁が増える
+
+
+def test_v4_brightness_match():
+    fg = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
+    fg.paste((250, 250, 250, 255), (10, 10, 30, 30))
+    out = np.asarray(mv.match_brightness(fg, 0.3)).astype(float) / 255
+    lum = out[15, 15, :3] @ [0.2126, 0.7152, 0.0722]
+    assert abs(lum - 0.45) < 0.01 and out[0, 0, 3] == 0
+    dark = Image.new("RGBA", (10, 10), (60, 60, 60, 255))
+    assert mv.match_brightness(dark, 0.3) is dark  # 暗いものは変えない
+    # 切り抜きと面: 白い切り抜きは、濃い主色の面より 0.15 だけ明るい所まで暗くなる
+    src = Image.new("RGBA", (100, 150), (0, 0, 0, 0))
+    src.paste((255, 255, 255, 255), (30, 20, 70, 140))
+    shot = np.asarray(mv.shot_image(src, "cutout", 320, 180, "#3E5C9A", "#FFFFFF")).astype(float)
+    assert shot[90, 160, :3].max() < 200
