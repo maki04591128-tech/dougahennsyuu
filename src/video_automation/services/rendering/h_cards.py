@@ -118,3 +118,23 @@ def ticker_strip(w: int, h: int, items: list[str], font: str | None) -> tuple[An
     for r in range(reps * 2):
         d.text((r * unit, th / 2), text, font=f, fill=(255, 255, 255, 255), anchor="lm")
     return im, period
+
+
+def chapter_card(w: int, h: int, number: int, title: str, font: str | None, accent: str,
+                 ink: str) -> Any:  # fmt: skip
+    """H1: 章の番号（画面の高さの 22%・型の accent・不透明度 35%）の上に章の題（高さの 8%）。"""
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    fn = _font(font, round(h * 0.22))
+    d.text((w / 2, h / 2), f"{number:02d}", font=fn, fill=(*_rgb(accent), round(255 * 0.35)),
+           anchor="mm")  # fmt: skip
+    size = round(h * 0.08)
+    ft = _font(font, size)
+    while d.textlength(title, font=ft) > w * 0.8 and size > 12:
+        size -= 2
+        ft = _font(font, size)
+    d.text((w / 2, h / 2), title, font=ft, fill=(*_rgb(ink), 255), anchor="mm",
+           stroke_width=max(1, size // 14), stroke_fill=(0, 0, 0, 160))  # fmt: skip
+    return im

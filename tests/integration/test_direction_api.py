@@ -1130,3 +1130,28 @@ async def test_h_cards_story_and_news(dclient):
     band = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・ニュースの帯"]
     tick = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・ティッカー"]
     assert band and tick and tick[0]["animation"]["keyframes"][-1]["x"] < 0
+
+
+async def test_h1_chapter_cards_and_h5_closing(dclient):
+    """統合版 H1（2 章目からの章の題名カード）・H5（PR の最後の 3 秒の締め）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.direction import DirectionPlan
+    from video_automation.schemas.timeline import AddClip, SetClipAnimation
+    from video_automation.services.design.profiles import PROFILES
+
+    c = dclient
+    pid, _ = await _ready_script(c)
+    d = c.app.state.container.direction
+    cmds: list = []
+    await d._h_cards(pid, PROFILES[Purpose.EXPLAINER], DirectionPlan(), [], [(0, "はじめに"),
+                     (300, "仕組み"), (600, "まとめ")], cmds, lambda n: n, 900, 30.0, 640, 360,
+                     None, "#FFFFFF")  # fmt: skip
+    cards = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
+    assert [x.start_frame for x in cards] == [300, 600] and cards[0].duration_frames == 75
+    anims = [x for x in cmds if isinstance(x, SetClipAnimation)]
+    assert anims[0].animation.keyframes[-1].opacity == 0.0
+    cmds = []
+    await d._h_cards(pid, PROFILES[Purpose.PROMO], DirectionPlan(title="新しい靴"), [], [], cmds,
+                     lambda n: n, 900, 30.0, 640, 360, None, "#FFFFFF")  # fmt: skip
+    (close,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・締め"]
+    assert close.start_frame == 810 and close.duration_frames == 90

@@ -201,7 +201,12 @@ WAVE_TRACK = "演出・波形"  # 統合版 P2
 CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
 FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
+CHAPTER_TRACK = "演出・章"  # 統合版 H1
+H1_PURPOSES = {
+    Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
+}  # fmt: skip
 EXTRA_TRACKS = (
+    CHAPTER_TRACK,
     CLOSE_TRACK,
     NEWS_TRACK,
     TICKER_TRACK,
@@ -862,7 +867,7 @@ class DirectionService:
         font: str | None,
         ink: str,
     ) -> list[str]:
-        """統合版 H3（ニュース）・H4（朗読・物語）・H6（朗読・物語）。"""
+        """統合版 H1（章の題名）・H3（ニュース）・H4・H6（朗読・物語）・H5（締め）。"""
         from video_automation.services.rendering import h_cards as hc
 
         notes: list[str] = []
@@ -916,6 +921,35 @@ class DirectionService:
                     if f1 > 0:
                         anim(cid, [Keyframe(frame=0, y=round(y0, 4), easing=Easing.LINEAR),
                                    Keyframe(frame=f1, y=round(y_end, 4))])  # fmt: skip
+        if pv in H1_PURPOSES:  # H1: 2 章目からの頭に章の題名カード（2.5 秒、出は B4 の 6f）
+            n = round(2.5 * fps)
+            last = -1
+            for k, (at, text) in enumerate([c_ for c_ in chapters if c_[0] > 0], start=2):
+                if at < last or at + n > total:
+                    continue
+                img = await asyncio.to_thread(
+                    hc.chapter_card, w, h, k, text[:30], font, prof.palette.accent, ink
+                )
+                a = await self._png(project_id, img, f"章の題名（H1）「{text[:12]}」")
+                cid = clip(lane(CHAPTER_TRACK), a, at, n, ClipTransform(fit=FitMode.FIT))
+                anim(cid, [Keyframe(frame=0, opacity=0.0, y=0.02, easing=Easing.CUBIC_OUT),
+                           Keyframe(frame=12, opacity=1.0, y=0.0),
+                           Keyframe(frame=n - 7, opacity=1.0, scale=1.0, easing=Easing.CUBIC_IN),
+                           Keyframe(frame=n - 1, opacity=0.0, scale=0.96)])  # fmt: skip
+                last = at + n
+        if pv in (Purpose.PROMO, Purpose.EVENT) and plan.title:  # H5: 最後の 3 秒に締めのカード
+            n = round(3 * fps)
+            at = total - n
+            if at > 0:
+                t_ = await self.titles.create(
+                    TitleCardRequest(project_id=project_id, text=plan.title[:100],
+                                     duration_sec=n / fps, animation="slam", fade_out_sec=0.0,
+                                     text_color=ink, font=None)
+                )  # fmt: skip
+                clip(lane(CLOSE_TRACK), t_, at, n, ClipTransform())
+            notes.append(
+                "締めのカード（H5）のボタンと URL は、設定の項目がまだ無いため出していません"
+            )
         if pv == Purpose.NEWS:  # H3: 下の見出しの帯（章で替える）とティッカー
             heads = chapters or [(0, plan.title or "ニュース")]
             if heads[0][0] > 0:
