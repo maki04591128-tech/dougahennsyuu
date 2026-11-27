@@ -1535,14 +1535,15 @@ class DirectionService:
                 ln = next((x for x in layout.lines if x.item == j), None)
                 lh = ln.size if ln else side
                 right = (ln.x if ln else hx + side) - max(2, round(lh * 0.08))
-                size = max(
-                    8, min(round(lh * 1.2), right)
-                )  # 文字の 1.2 倍（カードからはみ出さない）
+                # 文字の 1.2 倍（カードからはみ出さない）
+                size = max(8, min(round(lh * 1.2), right))
                 fr = await asyncio.to_thread(nm.icon_draw_frames, name, size, pal.main)
                 # 行頭記号を面の色で隠して、その場所に絵を描く（文字の左に、行の中央の高さで）
                 cover = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
-                ImageDraw.Draw(cover).rectangle((hx - 1, hy - 1, hx + side + 1, hy + side + 1),
-                                                fill=(*_hex_rgb(creq.panel_color), 255))  # fmt: skip
+                panel = (*_hex_rgb(creq.panel_color), 255)
+                ImageDraw.Draw(cover).rectangle(
+                    (hx - 1, hy - 1, hx + side + 1, hy + side + 1), fill=panel
+                )
                 pos = (right - size, round((ln.y if ln else hy) + lh / 2 - size / 2))
                 fr = [_on(cover, f_, pos) for f_ in fr]
                 marks.append((shown_at[j], fr, (0, 0)))
