@@ -319,6 +319,71 @@ def kinetic_text_scene(
     return sc
 
 
+PX = 16.0 / W  # 文字の場面の 1px（カメラの可視幅は長辺で 16）
+
+
+def _key(ob, path, frame, value, index=-1):
+    if index >= 0:
+        getattr(ob, path)[index] = value
+    else:
+        setattr(ob, path, value)
+    ob.keyframe_insert(path, index=index, frame=frame)
+
+
+def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
+    """統合版 V5 の改訂: 行全体（物体）の入り・待機・出。文字ごとの弾み（bounce）は場面の中の
+    ジオメトリーノードが受け持ち、ここでは行全体の拡大・位置を動かす。作っていない動きは使わない。"""
+    obs = [o for o in sc.objects if o.type == "MESH"]
+    used = []
+    for ob in obs:
+        x0, y0 = ob.location.x, ob.location.y
+        if entrance == "zoom":  # 拡大して登場: scale 1.4→1.0、10f
+            _key(ob, "scale", 1, (1.4, 1.4, 1.4))
+            _key(ob, "scale", 11, (1.0, 1.0, 1.0))
+        elif entrance == "stretch":  # 伸ばして登場: y 3.0→1.0・x 0.6→1.0、8f
+            _key(ob, "scale", 1, (0.6, 3.0, 1.0))
+            _key(ob, "scale", 9, (1.0, 1.0, 1.0))
+        elif entrance == "slam":  # T17 叩きつける: 行全体 3.0→1.0、4f
+            _key(ob, "scale", 1, (3.0, 3.0, 3.0))
+            _key(ob, "scale", 5, (1.0, 1.0, 1.0))
+        elif entrance == "fade_up":  # せり上がる: y +8px→0、10f
+            _key(ob, "location", 1, y0 - 8 * PX, 1)
+            _key(ob, "location", 11, y0, 1)
+        elif entrance == "shake":  # 震わせる: x ±3px を 2f ごとに 6 回
+            for j in range(7):
+                _key(ob, "location", 12 + 2 * j, x0 + (3 * PX if j % 2 else -3 * PX) * (j < 6), 0)
+        else:
+            entrance = "bounce"
+        hold_end = max(12, out_at)
+        if hold == "breathe":  # 呼吸: 1.000→1.015→1.000、周期 3.2 秒
+            per = round(3.2 * FPS)
+            f = 12
+            while f < hold_end:
+                _key(ob, "scale", f, (1.0, 1.0, 1.0))
+                if f + per // 2 < hold_end:
+                    _key(ob, "scale", f + per // 2, (1.015, 1.015, 1.015))
+                f += per
+        elif hold == "drift":  # 漂う: 右へ画面の幅の 1%／秒
+            _key(ob, "location", 12, x0, 0)
+            _key(ob, "location", hold_end, x0 + 0.01 * W * PX * (hold_end - 12) / FPS, 0)
+        elif hold == "sway":  # 揺れ: 周期 2 秒・±8px
+            per = round(2 * FPS)
+            f, k = 12, 0
+            while f < hold_end:
+                _key(ob, "location", f, x0 + (8 * PX if k % 2 else -8 * PX) * (k > 0), 0)
+                f += per // 2
+                k += 1
+        else:
+            hold = "static"
+        if exit_ == "shrink" and out_at < length:  # 縮んで消える: 1→0.8（文字ごとの出と重ねる）
+            _key(ob, "scale", out_at, (1.0, 1.0, 1.0))
+            _key(ob, "scale", min(length, out_at + 5), (0.8, 0.8, 0.8))
+        else:
+            exit_ = "shrink_chars"
+        used = [entrance, hold, exit_]
+    return used
+
+
 def center_x(sc, name, frame):
     """文字の物体を、全部の文字が出そろったフレームの形で、左右の中央に寄せる。"""
     ob = sc.objects.get(name)
@@ -330,7 +395,11 @@ def center_x(sc, name, frame):
     ev = ob.evaluated_get(dg)
     xs = [v[0] for v in ev.bound_box]
     if max(xs) - min(xs) > 1e-4:
-        ob.location.x -= (max(xs) + min(xs)) / 2 * ob.scale.x
+        dx = (max(xs) + min(xs)) / 2 * ob.scale.x
+        ob.location.x -= dx
+        sh = sc.objects.get(name + "_shadow")  # 影（M7）も同じだけ寄せる
+        if sh is not None:
+            sh.location.x -= dx
 
 
 def make_whoosh(path: Path, sec=0.45, rate=48000):
@@ -786,9 +855,15 @@ def main():
                 if sec in ("chorus", "chorus_first"):  # 統合版 M3: サビは斜め（−8°）
                     for ob_ in ksc.objects:
                         ob_.rotation_euler.z = math.radians(-8.0)
+                center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
+                mo = c.get("motion")
+                if mo:  # 統合版 V5 の改訂
+                    got = line_motion(ksc, mo[0], mo[1], mo[2], length, max(8, length - 14))
+                    for g in got:
+                        REPORT.setdefault("motion", {}).setdefault(g, 0)
+                        REPORT["motion"][g] += 1
                 REPORT.setdefault("sections", {}).setdefault(sec or "none", 0)
                 REPORT["sections"][sec or "none"] += 1
-                center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
                 st = se.strips.new_scene(f"lyric{i}_{r}", ksc, 44 + (i % 3) * 2 + r % 2, f0 + r * 3)
                 set_duration(st, length - r * 3)
                 st.blend_type = "ALPHA_OVER"

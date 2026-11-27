@@ -100,3 +100,45 @@ def test_film_light_and_rim():
     a.paste(255, (100, 40, 220, 160))
     rim = mv.film(im, a)
     assert rim.getpixel((101, 100))[0] > mv.film(im).getpixel((101, 100))[0]  # 縁の帯
+
+
+def test_paper_texture_only_for_mv():
+    """V9: MV・リリックだけ、紙の質感を乗算 10% で重ねて 2f ごとにずらす。"""
+    import shutil
+    import subprocess
+
+    from video_automation.schemas.design import Purpose
+    from video_automation.services.design.profiles import PROFILES
+    from video_automation.services.rendering import finish
+
+    mvc = finish.finish_chain(PROFILES[Purpose.MV], 640, 360)
+    assert "all_mode=multiply:all_opacity=0.1" in mvc and "floor(n/2)" in mvc
+    assert "multiply" not in finish.finish_chain(PROFILES[Purpose.EXPLAINER], 640, 360)
+    if shutil.which("ffmpeg"):
+        out = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=white:s=640x360:d=1:r=30",
+                "-filter_complex",
+                f"[0:v]{finish.paper(640, 360)}[o]",
+                "-map",
+                "[o]",
+                "-frames:v",
+                "4",
+                "-pix_fmt",
+                "rgb24",
+                "-f",
+                "rawvideo",
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+        ).stdout
+        f = np.frombuffer(out, np.uint8).reshape(4, 360, 640, 3).astype(int)
+        assert 230 < f.mean() < 255  # 白が少しだけ暗くなる
+        assert (f[0] == f[1]).all() and not (f[1] == f[2]).all()  # 2f ごとにずれる
