@@ -79,7 +79,29 @@
 | Q3 投稿 | 「APIで非公開に上げる」 | `tools/youtube_upload.py`。公開は本人が Studio で。1 本目で非公開に固定されないか確かめる |
 | Q4 話し手 | 「voicevox2人の掛け合いで実況及び機能解説役のclaudeと質問兼ガヤのQwenでやり取りしてほしいです」 | VOICEVOX の 2 人。Claude 役（実況・機能の解説）の台詞は Claude が書き、Qwen 役（質問・ガヤ）の台詞はローカル LLM の Qwen が書く。台本の作り方は「片側入力」（`USER_ONE_SIDE`: Claude の台詞を固定し、相手役を `generate_counterpart_dialogue` で作らせる） |
 
-## 5. 次に作るもの（順）
+## 5. 作ったもの（2026-11-27 の 2 回目）
+本人 2026-11-27「全てclaudeで進めて下さい」「長いプレイに関しては動画をカット編集し見どころのみを集めて15分までに凝縮してください」
+
+| 部分 | 場所 | 中身 |
+|---|---|---|
+| OBS | PC の `%LOCALAPPDATA%\va_obs\obs`（ポータブル版 33.0.3、管理者権限なし。zip の SHA-256 を GitHub の値と照合） | WebSocket は 127.0.0.1:4455、パスワードは `%USERPROFILE%\.va_obs\ws_password.txt`。初回の自動構成ウィザードは出さない |
+| OBS の操作 | `integrations/obs/client.py` | obs-websocket 5 の同期クライアント（認証つき） |
+| 録画とプレイ記録 | `services/capture/session.py` | 場面 `VA_Game` に「ゲームの窓」（window_capture・同じ exe）と「ゲームの音」（wasapi_process_output_capture）だけを置き、デスクトップ音声・マイクは消音。記録の時刻は OBS の録画時間。保存先 `%USERPROFILE%\Videos\va_capture\<日時>\`（`session.json`） |
+| 見どころ | `services/capture/highlights.py` | 録画が 15 分を超えるとき: 最初の 12 秒＋印の前後（大事さ 1: −3/+6 秒、2: −5/+10、3 と見どころ: −8/+18）。近い区間（3 秒以内）はつなぐ。収まらなければ「大事さ²の合計 ÷ 長さ」の高い区間から選び、時刻の順に並べる。つなぎ目は 0.25 秒のフェード。印は詰めた後の時刻に付け直す |
+| 台詞の時刻合わせ | `ScriptSegment.anchor_sec`、`subtitle_service.synchronize` | 時刻つきのセリフはその時刻より前に置かない。3 秒以上遅れたセリフは「動画をつくる」の注意に出る |
+| 掛け合い | `BuildRequest.play_lines`・`cast`、`BuildRunRequest.script_model` | 1 人目「Claude」（実況・機能の解説、声 四国めたん）のセリフは固定、2 人目「Qwen」（質問・ガヤ、声 ずんだもん）のセリフはローカル LLM が作る（台本の形は片側入力） |
+| MCP | `mcp_servers/game_video_server.py`（Claude デスクトップアプリに `gameVideo` として登録） | `capture_start` / `capture_mark` / `capture_stop` / `capture_status` / `make_highlights` / `build_game_video` / `youtube_auth` / `youtube_upload` / `job_status`。時間のかかる処理は裏の仕事にして job id を返す。VOICEVOX・Ollama が止まっていれば起こす |
+
+### 遊んで動画にする手順（Claude）
+1. `play_launch`（開発用ビルド）→ Discord で配信（gameyou の `kb/1_guide/claude_play.md` §5）→ `capture_start`
+2. 遊びながら `capture_mark`（出来事 event・見どころ highlight・感想 comment・場面 scene、大事さ 1〜3）
+3. `capture_stop` → `make_highlights` → `job_status` で待つ（返る `marks` は詰めた後の時刻）
+4. 返った記録を見て、Claude のセリフを `[{at_sec, text}]` で書く（1 つの区間の長さを超えないように短く）
+5. `build_game_video(video=…_highlights.mp4, play_lines=…, reference=返った reference, script_model=<Qwen のモデル>)` → `job_status`
+6. 題名・説明・タグを書き、`youtube_upload(confirm=True)`（既定は非公開）
+7. 配信を止め、開いた窓を閉じる
+
+## 6. 次に作るもの（順）
 1. G6＋G1: OBS の録画の開始・停止とプレイ記録の印（`play_record_start` / `play_mark` / `play_record_stop`、gameyou の `wakuwakuPlay`）
 2. G2＋G3: 台詞ごとの録画時刻で声を置き、見どころだけ切り出して詰める（このツールの「動画をつくる」）。
    片側入力（Claude の台詞は固定・Qwen が相手役）を「動画をつくる」から使えるようにする
