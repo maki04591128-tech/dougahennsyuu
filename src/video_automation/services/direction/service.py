@@ -209,6 +209,7 @@ YEAR_TRACK = "演出・年号"  # 統合版 T43
 PLACE_TRACK = "演出・場所"  # 統合版 H2
 MARK_TRACK = "手描きの印"  # 統合版 N12・N13（スライドの上。build が置く）
 CARD_MARK_TRACK = "演出・項目の印"  # 統合版 I1・N15
+CALLOUT_TRACK = "演出・特長の線"  # 統合版 P9
 TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
 TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
 BEHIND_TITLE = (TITLE_BACK_TRACK, TITLE_BACK2_TRACK, TITLE_RING_TRACK)  # 立ち絵と題名の下に置く
@@ -250,6 +251,7 @@ EXTRA_TRACKS = (
     EMBER_TRACK,
     ITEM_TRACK,
     CARD_MARK_TRACK,
+    CALLOUT_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
     STEP_TRACK,
@@ -1104,6 +1106,68 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _callouts(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        img: AssetRead,
+        lines: list[Any],
+        start: int,
+        end: int,
+        cmds: list[Any],
+        lane: Any,
+        w: int,
+        h: int,
+        box: float,
+        cy: float,
+        fps: float,
+        font: str | None,
+        ink: str,
+    ) -> None:
+        """統合版 P9: 商品の画像の区間で、LLM が発話に features（最大 3 つ）を付けたとき、
+        画像の左上・右上・右下から外へ線を 8f で伸ばし、先に語を T10 で出す（話す間に 1 つずつ）。
+        ケン・バーンズで少し寄るので、線は画像の置いた範囲の縁から始める（近似）。"""
+        from video_automation.services.rendering import n_marks as nm
+
+        ln = next((x for x in lines if start <= x.start < end and x.items.get("features")), None)
+        if ln is None or not img.width or not img.height:
+            return
+        words = [str(x).strip()[:12] for x in ln.items["features"] if str(x).strip()][:3]
+        if not words:
+            return
+        # 画像を置いた範囲（画面の box 倍の枠に収める。中心は (0.5, cy)）
+        k = min(box * w / img.width, box * h / img.height)
+        iw, ih = img.width * k, img.height * k
+        rect = (w / 2 - iw / 2, cy * h - ih / 2, w / 2 + iw / 2, cy * h + ih / 2)
+        span = max(1, ln.end - ln.start)
+        times = [ln.start + span * i // len(words) for i in range(len(words))]
+        events = [t for t in times if t < end]
+        track = lane(CALLOUT_TRACK)
+        n_anim = nm.P9_LINE + nm.P9_TEXT
+        for i, at in enumerate(events):
+            nxt = events[i + 1] if i + 1 < len(events) else end
+            if nxt <= at:
+                continue
+
+            def layer(f: int, i: int = i, at: int = at) -> Any:
+                shown: list[int | None] = [
+                    (at + f - times[j]) if j <= i else None for j in range(len(words))
+                ]
+                return nm.callout_layer((w, h), rect, words, shown, prof.palette.main, ink, font)
+
+            m = min(n_anim, nxt - at)
+            mov = await self._overlay(project_id, (layer(f) for f in range(m)),
+                                      "特長の引き出し線（P9）", fps)  # fmt: skip
+            cmds.append(AddClip(track_id=track, asset_id=mov.id, start_frame=at,
+                                duration_frames=m, clip_id=str(uuid4())))  # fmt: skip
+            if nxt - at > m:
+                still = await asyncio.to_thread(layer, 10_000)
+                b = await self._png(project_id, still, "特長の引き出し線（P9）")
+                cmds.append(
+                    AddClip(track_id=track, asset_id=b.id, start_frame=at + m,
+                            duration_frames=nxt - at - m, clip_id=str(uuid4()))
+                )  # fmt: skip
 
     async def _before_after(
         self,
@@ -2654,6 +2718,11 @@ class DirectionService:
                 else:
                     animate(cid, length)
                     ken_burns(cid, img, length, box)
+                if prof is not None and prof.purpose == Purpose.PRODUCT:  # 統合版 P9
+                    await self._callouts(
+                        p.id, prof, img, lines, start, end, cmds, lane, w, h, box, zone_cy, fps,
+                        self.titles.font_path(heading_font), ink,
+                    )  # fmt: skip
                 shown.append((start, end))
 
         # テロップ（その発話の間。重なる分は前を短くする）

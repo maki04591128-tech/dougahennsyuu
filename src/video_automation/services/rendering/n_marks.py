@@ -220,3 +220,73 @@ def check_frames(size: int, color: str) -> list[Any]:
             acc += ln
         out.append(im)
     return out
+
+
+# ---------- P9 特長の引き出し線（商品紹介） ----------
+
+P9_LINE, P9_TEXT = 8, 10  # 線を伸ばす 8f、語を T10 で出す 10f
+
+
+def _expo_out(u: float) -> float:
+    u = min(max(u, 0.0), 1.0)
+    return 1.0 if u >= 1 else 1 - 2 ** (-10 * u)
+
+
+def callout_anchors(rect: tuple[float, float, float, float], w: int) -> list[tuple[Any, ...]]:
+    """P9: 画像の左上・右上・右下の順に、画像の縁から外へ伸ばす線（始点・終点・語の揃え）。"""
+    x0, y0, x1, y1 = rect
+    ln = 0.08 * w
+    d = ln / math.sqrt(2)
+    return [
+        ((x0, y0), (x0 - d, y0 - d), "rs"),  # 左上: 語は線の先の左
+        ((x1, y0), (x1 + d, y0 - d), "ls"),
+        ((x1, y1), (x1 + d, y1 + d), "lt"),
+    ]
+
+
+def callout_layer(
+    size: tuple[int, int],
+    rect: tuple[float, float, float, float],
+    words: list[str],
+    shown: list[int | None],
+    color: str,
+    ink: str,
+    font: str | None,
+) -> Any:
+    """P9 の 1 枚。shown[k] は k 番目の特長の、出てからのフレーム数（None はまだ）。
+    線は 2px・型の main、語は画面の高さの 4.5%（T10 で下からせり上がる）。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    w, h = size
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    px = max(10, round(0.045 * h))
+    f = ImageFont.truetype(font, px) if font else ImageFont.load_default(px)
+    lw = max(1, round(2 * h / 1080))
+    for k, (word, (p0, p1, anchor)) in enumerate(
+        zip(words, callout_anchors(rect, w), strict=False)
+    ):
+        t = shown[k] if k < len(shown) else None
+        if t is None:
+            continue
+        u = _cubic_out((t + 1) / P9_LINE)
+        end = (p0[0] + (p1[0] - p0[0]) * u, p0[1] + (p1[1] - p0[1]) * u)
+        d.line([p0, end], fill=(*_rgb(color), 255), width=lw)
+        tt = t - P9_LINE
+        if tt < 0:
+            continue
+        e = _expo_out((tt + 1) / P9_TEXT)
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        ImageDraw.Draw(layer).text(
+            (p1[0], p1[1] + (1 - e) * px * 1.2), word, font=f, fill=(*_rgb(ink), 255),
+            anchor=anchor, stroke_width=max(1, px // 14), stroke_fill=(0, 0, 0, 160),
+        )  # fmt: skip
+        # 行の高さで切り抜く（マスクの下からせり上がる）
+        top = p1[1] - px * 1.3 if anchor.endswith("s") else p1[1]
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).rectangle((0, top, w, top + px * 1.3), fill=255)
+        from PIL import ImageChops
+
+        layer.putalpha(ImageChops.multiply(layer.getchannel("A"), mask))
+        im.alpha_composite(layer)
+    return im

@@ -1652,3 +1652,37 @@ async def test_before_after_slider(dclient, media_dir):
     mov = imgs[1]
     assert names[mov["asset_id"]]["kind"] == "video" and mov["end_frame"] - mov["start_frame"] == 45
     assert imgs[0]["end_frame"] == imgs[1]["start_frame"] == imgs[2]["start_frame"] - 45
+
+
+async def test_product_feature_callouts(dclient, media_dir):
+    """統合版 P9: 商品紹介の画像の区間で features があれば、画像の角から線と語を 1 つずつ出す。"""
+    from PIL import Image
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "新しいリュックを紹介します。"},
+        {"speaker": "A", "text": "軽くて水に強く、長く使えます。"},
+        {"speaker": "A", "text": "通勤にもぴったりです。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {1: {"features": ["軽量", "防水", "長持ち"]}})
+    src = media_dir / "bag_p9.png"
+    Image.new("RGB", (400, 400), (90, 90, 120)).save(src)
+    a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 1, "to_line": 3, "asset_id": a["id"]}],
+    }
+    await c.put(f"/projects/{pid}/design", json={"purpose": "product"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {x["id"]: x["name"] for x in tl["assets"]}
+    call = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・特長の線"),
+        key=lambda x: x["start_frame"],
+    )
+    # 3 つの語: それぞれ「描く動き → 止め絵」
+    assert len(call) == 6 and all(names[x["asset_id"]] == "特長の引き出し線（P9）" for x in call)
+    assert all(a_["end_frame"] <= b_["start_frame"] for a_, b_ in zip(call, call[1:], strict=False))
