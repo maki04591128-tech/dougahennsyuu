@@ -588,6 +588,8 @@ class DirectionService:
         self.timeline = timeline
         self.titles = titles
         self.ffmpeg = ffmpeg
+        # 統合版 N16: 書類の画像を読む OCR（起動時に画面録画と同じものを差す。無ければ使わない）
+        self.ocr_source: Any = lambda: None
 
     async def _podcast_waves(
         self, p: Project, script_id: str, total: int, work: Path
@@ -1416,6 +1418,60 @@ class DirectionService:
             cid = add(fig_t, b.id, mid + n_mov, end - mid - n_mov, role="image", transform=tf)
             animate(cid, end - mid - n_mov, None)
         del im1
+
+    async def _document(
+        self, project_id: str, img: AssetRead, said: str
+    ) -> tuple[AssetRead, list[Keyframe]] | None:
+        """統合版 N16: OCR の文字数が 120 字以上の画像（書類・記事）で、発話の語と一致する行が
+        あれば、その行に T37 のマーカー（accent・不透明度 40%・文字の高さの 45%）、他の行を
+        不透明度 55% にした画と、その行が中央に来るよう 1.00→1.25 に 24f で寄るカメラのキー。"""
+        from PIL import Image, ImageDraw
+
+        from video_automation.services.direction import slides as sl
+
+        engine = self.ocr_source()
+        if engine is None or not said.strip():
+            return None
+        path = self.settings.data_dir / img.path
+        try:
+            (res,) = await asyncio.to_thread(engine.read, [path])
+        except Exception:  # noqa: BLE001 - 読めなければ普通の画像のまま
+            return None
+        if len(res.text.replace(" ", "")) < 120:
+            return None
+        j = sl.best_line(res, sl.tokens(said))
+        if j is None:
+            return None
+        prof = await self.design.profile_for(project_id) if self.design else None
+        accent = prof.palette.accent if prof else "#FFD966"
+
+        def make() -> Any:
+            im = Image.open(path).convert("RGBA")
+            sx, sy = im.size[0] / max(1, res.width), im.size[1] / max(1, res.height)
+            lay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+            d = ImageDraw.Draw(lay)
+            for k, ln in enumerate(res.lines):
+                x, y, bw, bh = ln.box
+                box = (x * sx, y * sy, (x + bw) * sx, (y + bh) * sy)
+                if k == j:
+                    top = box[3] - (box[3] - box[1]) * 0.45
+                    r, g, b = _hex_rgb(accent)
+                    d.rectangle((box[0], top, box[2], box[3]), fill=(r, g, b, round(255 * 0.4)))
+                else:
+                    bg = sl.background(im, (box[0], box[1], box[2] - box[0], box[3] - box[1]))
+                    d.rectangle(box, fill=(*bg, round(255 * 0.45)))
+            im.alpha_composite(lay)
+            return im
+
+        out = await asyncio.to_thread(make)
+        a = await self._png(project_id, out, f"書類の強調（N16）{img.name[:20]}")
+        x, y, bw, bh = res.lines[j].box
+        px, py = sl.pan_for((x + bw / 2) / res.width, (y + bh / 2) / res.height)
+        keys = [
+            Keyframe(frame=0, zoom=1.0, pan_x=0.0, pan_y=0.0, easing=Easing.CUBIC_IN_OUT),
+            Keyframe(frame=24, zoom=sl.ZOOM, pan_x=px, pan_y=py),
+        ]
+        return a, keys
 
     async def _photo_card(
         self, project_id: str, img: AssetRead, caption: str, h: int, box: float
@@ -2866,7 +2922,13 @@ class DirectionService:
             else:  # IMAGE
                 img = assets[s.asset_id or ""]  # 置けるものだけ mains に残している
                 cap = img.caption  # 見た目を合わせた画は別の素材になるので、先に取っておく
-                if req.match_look and prof is not None:
+                doc_keys: list[Keyframe] | None = None
+                if prof is not None and prof.purpose in (Purpose.DOCUMENTARY, Purpose.NEWS):
+                    said_ = " ".join(x.text for x in lines if start <= x.start < end)
+                    got_doc = await self._document(p.id, img, said_)
+                    if got_doc is not None:  # 書類は見た目を揃えない（文字の色が変わる）
+                        img, doc_keys = got_doc
+                if req.match_look and doc_keys is None and prof is not None:
                     img = await self._matched_image(p.id, img, prof, assets)
                 use(Component.IMAGE)
                 box = min(zone_h, main_w)
@@ -2885,6 +2947,8 @@ class DirectionService:
                 )
                 if photo:  # 統合版 N17: 白い縁と一言を付けた写真にする
                     img = await self._photo_card(p.id, img, cap or "", h, box)
+                if doc_keys is not None:  # 統合版 N16: 書類の一致した行に寄って印を付ける
+                    box = 0.70
                 cid = add(
                     fig_t,
                     img.id,
@@ -2894,7 +2958,11 @@ class DirectionService:
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
                 dx = parallax_dx(img, box) if prof is not None else 0.0
-                if photo and length > 12:
+                if doc_keys is not None:
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=doc_keys))
+                    )
+                elif photo and length > 12:
                     # 統合版 N17: 回転 −3°（次は ＋2°、以後交互）、上から y −6%→0・
                     # scale 1.08→1.00 を 12f（easeOutCubic）
                     n_photo += 1

@@ -298,6 +298,8 @@ async def build_container(
     from video_automation.services.build.service import BuildService
 
     container.build = BuildService(container)
+    # 統合版 N16: 書類の画像の OCR は画面録画と同じ読み取り（テストで差し替えられるよう毎回引く）
+    container.direction.ocr_source = lambda: container.screencast.ocr
     from video_automation.services.rendering.thumbnail_service import ThumbnailService
 
     container.thumbnails = ThumbnailService(settings, timeline, render, design, titles, llm)

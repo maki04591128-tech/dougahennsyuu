@@ -1855,3 +1855,42 @@ async def test_text_only_scene_hides_subtitles(dclient, tmp_path):
     a0, b0 = hide[0][0] / 30, hide[0][1] / 30
     cues = [(x.start_frame, x.end_frame) for x in await c.app.state.container.subtitles.cues(sid)]
     assert starts and not [t for t in starts if a0 <= t < b0 - 0.05], (hide, cues)
+
+
+async def test_document_highlight_in_news(dclient, media_dir):
+    """統合版 N16: 120 字以上の書類の画像は、話した語と一致する行に印を付けて寄る。"""
+    from PIL import Image
+
+    from video_automation.integrations.ocr.engine import FakeOcr, OcrLine, OcrResult, OcrWord
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "発表された資料を見てみましょう。"},
+        {"speaker": "A", "text": "売上高は前年より増えました。"},
+        {"speaker": "A", "text": "詳しくは後ほどお伝えします。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    src = media_dir / "doc_n16.png"
+    Image.new("RGB", (800, 600), (250, 250, 250)).save(src)
+    a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    stem = a["path"].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    rows = ["第3四半期の決算の概要について" * 2, "売上高は前年同期比で増加しました" * 2,
+            "営業利益は横ばいでした" * 3, "今後の見通しについては変更ありません" * 2]  # fmt: skip
+    res = OcrResult(800, 600, [OcrLine([OcrWord(t, 40, 60 + 120 * i, 700, 40)])
+                               for i, t in enumerate(rows)])  # fmt: skip
+    c.app.state.container.screencast.ocr = FakeOcr({stem: res})
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 2, "to_line": 3, "asset_id": a["id"]}],
+    }
+    await c.put(f"/projects/{pid}/design", json={"purpose": "news"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    roles = await c.app.state.container.design.clip_roles(pid)
+    clip = next(x for x in tl["clips"] if roles.get(x["id"]) == "image")
+    names = {x["id"]: x["name"] for x in tl["assets"]}
+    assert names[clip["asset_id"]].startswith("書類の強調（N16）")
+    keys = clip["animation"]["keyframes"]
+    assert keys[-1]["zoom"] == 1.25 and keys[-1]["frame"] == 24 and keys[-1]["pan_y"] < 0
+    assert clip["transform"]["scale"] == 0.7
