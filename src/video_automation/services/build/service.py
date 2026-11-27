@@ -17,6 +17,8 @@ from uuid import uuid4
 
 from video_automation.app.logging import get_logger
 from video_automation.database.models import Project
+from video_automation.schemas.animation import ClipAnimation, Easing, Keyframe
+from video_automation.schemas.asset_source import MusicGenerateRequest
 from video_automation.schemas.build import (
     BuildChange,
     BuildCharacter,
@@ -54,18 +56,27 @@ from video_automation.schemas.timeline import (
     AssetKind,
     AssetRead,
     Batch,
+    ClipTransform,
+    CommandOrigin,
     CommandRequest,
     DeleteClip,
+    FitMode,
+    MoveTrack,
     RenderProfileName,
     RenderRequest,
     RenderStatus,
+    SetClipAnimation,
     TrackKind,
 )
 from video_automation.schemas.voice import ReadingCheckRequest
-from video_automation.services.build import audio_bed, recording_reader
+from video_automation.services.build import audio_bed, bgm_prompts, recording_reader
 from video_automation.services.design.profiles import PROFILES
+from video_automation.services.direction import mv_shots as mv
 from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction.service import native_transform
+from video_automation.services.rendering import sync as sync_audio
+from video_automation.services.rendering.beats import detect_file
+from video_automation.services.rendering.lyrics import sections as lyric_sections
 from video_automation.services.transcribe.service import TranscribeRequest
 
 if TYPE_CHECKING:
@@ -129,6 +140,8 @@ MV_STEPS = [
     ("check", "デザインを検査する"),
     ("render", "書き出す"),
 ]
+MV_IMAGE_NAME = "MVの絵: "  # 構成で取り込んだ MV のショットの絵（統合版 V1）
+MV_SHOT_TRACK = "MV・ショット"
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
 # 録画を置く枠（画面比）: 上 100px は見出しの帯、下は字幕。立ち絵があれば左右に各 300px 空ける
@@ -193,6 +206,20 @@ def purpose_structure(purpose: Purpose, portrait: bool) -> str:
     elif purpose == Purpose.TRAILER:
         parts.append(pp.TRAILER_STRUCTURE)
     return "\n".join(parts)
+
+
+def _bar_png(out: Path, w: int, h: int, bar: int, side: str) -> None:
+    """V10 の黒帯（画面の大きさの透過 PNG。上か下に帯）。"""
+    from PIL import Image
+
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    im.paste((0, 0, 0, 255), (0, 0, w, bar) if side == "top" else (0, h - bar, w, h))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    im.save(out)
+
+
+async def _no_progress(_x: float) -> None:
+    return None
 
 
 def skipped_notes(skipped: list[str]) -> list[str]:
@@ -382,6 +409,14 @@ class BuildService:
                 notes.append(
                     "歌詞が無いので、歌声を文字起こしして字幕にします（聞き取りの誤りが出ることがあります）"
                 )
+        if music_path is not None and req.image.strip():  # 統合版 V1: MV のショットの絵
+            img_path = self._allowed_file(req.image.strip(), "絵")
+            await c.timeline.import_asset(
+                AssetImportRequest(
+                    project_id=pid, path=str(img_path), name=f"{MV_IMAGE_NAME}{img_path.name}"
+                )
+            )
+            notes.append("絵から 8 種のショットを作り、曲の拍に合わせて切り替えます")
         if rec_path is not None:
             await c.timeline.import_asset(
                 AssetImportRequest(
@@ -975,6 +1010,13 @@ class BuildService:
             DirectionApplyRequest(script_id=sid, plan=plan, text_scale=text_scale)
         )
         notes += skipped_notes(list(getattr(res, "skipped", []) or []))
+        image = await self._asset(project_id, MV_IMAGE_NAME, AssetKind.IMAGE)
+        if image is not None:
+            try:
+                notes += await self._mv_shots(project_id, sid, song, image)
+            except Exception as exc:  # noqa: BLE001 - ショットが作れなくても書き出す
+                log.warning("mv_shots_failed", error=type(exc).__name__)
+                notes.append(f"MV のショットを作れませんでした（{type(exc).__name__}）")
         await at("check")
         rreq = RenderRequest(
             project_id=project_id,
@@ -983,6 +1025,159 @@ class BuildService:
             profile=await self._render_profile(project_id),
         )
         return await self._check_and_render(rreq, at, notes, progress)
+
+    async def _mv_shots(
+        self, project_id: str, sid: str, song: AssetRead, image: AssetRead
+    ) -> list[str]:
+        """統合版 V1・V2・V8: 1 枚の絵から 8 種のショットを作り、拍に合わせて並べる。"""
+        c = self.c
+        tl = await c.timeline.get_timeline(project_id)
+        fps = tl.fps_num / tl.fps_den
+        w, h = tl.width, tl.height
+        song_path = c.settings.data_dir / song.path
+        bt = await detect_file(c.ffmpeg, song_path)
+        if bt.confidence < 0.2 or len(bt.times) < 8:
+            return ["曲の拍がはっきりしないので、MV のショットは作りませんでした"]
+        cues = [x for x in await c.subtitles.cues(sid) if x.start_frame is not None]
+        if not cues:
+            return []
+        secs = lyric_sections([x.text for x in cues])
+        spans = mv.line_spans(
+            [(x.start_frame or 0) / fps for x in cues],
+            [(x.end_frame or x.start_frame or 0) / fps for x in cues],
+            secs,
+            4 * 60.0 / max(1.0, bt.bpm),
+        )
+        total_sec = song.duration_sec or tl.duration_frames / fps
+        cuts = mv.plan_cuts(bt.times, spans, total_sec, fps)
+        wave_ = await sync_audio.load(c.ffmpeg, song_path)
+        peaks = sync_audio.hits(wave_, sync_audio.SR, fps, bt.times).peaks
+        cuts = mv.insert_flashes(cuts, peaks, fps)
+        if not cuts:
+            return []
+        genre = (await c.design.get(project_id)).genre or "pop"
+        main, ink = mv.V12_MAIN.get(genre, mv.V12_MAIN["pop"])
+        work = c.settings.data_dir / "projects" / project_id / "assets"
+        src = c.settings.data_dir / image.path
+        made: dict[tuple[str, int], AssetRead] = {}
+        n_flash = 0
+        cmds: list[Any] = []
+        tracks = {t.name: t for t in tl.tracks}
+        if MV_SHOT_TRACK in tracks:
+            tid = tracks[MV_SHOT_TRACK].id
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == tid]
+        else:
+            tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=MV_SHOT_TRACK, track_id=tid))
+            names = [t.name for t in tl.tracks]
+            at_ = names.index("演出・背景") + 1 if "演出・背景" in names else 0
+            cmds.append(MoveTrack(track_id=tid, index=at_))
+        for cut in cuts:
+            k = 0
+            if cut.shot == "flash":
+                k, n_flash = n_flash % 2, n_flash + 1
+            key = (cut.shot, k)
+            if key not in made:
+                out = work / f"mv_{cut.shot}_{k}_{uuid4().hex[:6]}.png"
+                await asyncio.to_thread(mv.save_shot, out, src, cut.shot, w, h, main, ink, k)
+                made[key] = AssetRead.model_validate(
+                    await c.timeline.register_generated(
+                        project_id, out, AssetKind.IMAGE, "build", f"MV の{mv.SHOT_LABEL[cut.shot]}"
+                    )
+                )
+            cid = str(uuid4())
+            n = cut.end - cut.start
+            cmds.append(
+                AddClip(
+                    track_id=tid,
+                    asset_id=made[key].id,
+                    start_frame=cut.start,
+                    duration_frames=n,
+                    clip_id=cid,
+                    transform=ClipTransform(fit=FitMode.FILL),
+                )
+            )
+            cam = mv.camera(cut.shot, n, fps)
+            if cam:
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=cam)))
+        # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
+        await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
+        await c.timeline.submit(
+            project_id,
+            CommandRequest(
+                command=Batch(commands=cmds), origin=CommandOrigin.USER, description="MV のショット"
+            ),
+        )
+        await c.design.record(
+            project_id, "mv_shots", {"used": {"beat_cut": len(cuts)}, "cuts": len(cuts)}
+        )
+        return [
+            f"絵から {len(made)} 種のショットを作り、"
+            f"拍に合わせて {len(cuts)} カットに切り替えました"
+        ]
+
+    async def _letterbox(
+        self,
+        project_id: str,
+        tl: Any,
+        spans: list[tuple[float, float, str]],
+        total_sec: float,
+        work: Path,
+        cmds: list[Any],
+    ) -> None:
+        c = self.c
+        w, h = tl.width, tl.height
+        fps = tl.fps_num / tl.fps_den
+        bar = mv.letterbox_bar(w, h)
+        boxes = mv.letterbox_spans(spans, total_sec) if bar > 0 and w > h else []
+        if not boxes:
+            return
+        bars = {}
+        for side in ("top", "bottom"):
+            out = work / f"mv_bar_{side}_{uuid4().hex[:6]}.png"
+            await asyncio.to_thread(_bar_png, out, w, h, bar, side)
+            bars[side] = AssetRead.model_validate(
+                await c.timeline.register_generated(
+                    project_id, out, AssetKind.IMAGE, "build", "MV の黒帯"
+                )
+            )
+        tracks = {t.name: t for t in tl.tracks}
+        if "MV・黒帯" in tracks:
+            bid = tracks["MV・黒帯"].id
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == bid]
+        else:
+            bid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name="MV・黒帯", track_id=bid))
+            cmds.append(MoveTrack(track_id=bid, index=1000))
+        lf = mv.LETTERBOX_FRAMES
+        for a0, a1 in boxes:
+            f0, f1 = round(a0 * fps), round(a1 * fps)
+            if f1 - f0 < 2 * lf:
+                continue
+            for side, sign in (("top", -1), ("bottom", 1)):
+                cid = str(uuid4())
+                cmds.append(
+                    AddClip(
+                        track_id=bid,
+                        asset_id=bars[side].id,
+                        start_frame=f0,
+                        duration_frames=f1 - f0 + lf,
+                        clip_id=cid,
+                        transform=ClipTransform(fit=FitMode.FILL),
+                    )
+                )
+                off = sign * bar / h
+                keys = [
+                    Keyframe(frame=f1 - f0, y=0.0, easing=Easing.EXPO_OUT),
+                    Keyframe(frame=f1 - f0 + lf - 1, y=off),
+                ]
+                if f0 > 0:  # 途中から閉じる（落ちサビ）
+                    keys = [
+                        Keyframe(frame=0, y=off, easing=Easing.EXPO_OUT),
+                        Keyframe(frame=lf, y=0.0),
+                        *keys,
+                    ]
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
 
     async def _render_profile(self, project_id: str) -> RenderProfileName:
         """プロジェクトの向きに合う書き出しの大きさ（実機: 縦型ショートが 1920×1080 で書き出され、
@@ -1125,6 +1320,38 @@ class BuildService:
                 )
             except Exception as exc:  # noqa: BLE001 - 使えないときは自動の BGM にする
                 log.warning("series_bgm_failed", error=type(exc).__name__)
+        spec = bgm_prompts.bgm_spec(purpose)
+        if bgm is None and spec is not None and c.music is not None:
+            # 統合版 Q5: 用途ごとの caption と BPM で、ACE-Step に BGM を作らせる。
+            # 動かないとき・失敗したときは、自動の和音にする
+            try:
+                if (await c.music.status()).available:
+                    caption, bpm = spec
+                    length = bgm_prompts.cut_length(total / fps, bpm)
+                    made = await c.music.generate(
+                        MusicGenerateRequest(
+                            project_id=project_id,
+                            prompt=caption,
+                            bpm=bpm,
+                            duration_sec=min(600.0, max(10.0, length + bgm_prompts.EXTRA_SEC)),
+                            instrumental=True,
+                        ),
+                        _no_progress,
+                    )
+                    if made:
+                        bgm = await register(
+                            await audio_bed.make_bgm_from(
+                                c.ffmpeg,
+                                c.settings.data_dir / made[0].path,
+                                work / f"bgm_{uuid4().hex[:8]}.wav",
+                                length,
+                                speech,
+                                fade_sec=bgm_prompts.FADE_SEC,
+                            ),
+                            f"BGM（生成: {caption[:40]}・{bpm}BPM）",
+                        )
+            except Exception as exc:  # noqa: BLE001 - 作れなくても和音で続ける
+                log.warning("bgm_generate_failed", error=type(exc).__name__)
         if bgm is None:
             bgm = await register(
                 await audio_bed.make_bgm(

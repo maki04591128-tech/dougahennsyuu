@@ -30,6 +30,8 @@ class BuildRequest(BaseModel):
     # 分かっていれば歌詞（1 行 1 字幕。利用者が持っている歌詞を貼る）
     music: str = Field(default="", max_length=1000)
     lyrics: str = Field(default="", max_length=20000)
+    # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
+    image: str = Field(default="", max_length=1000)
     # ゲーム実況の掛け合い: play_lines があると、1 人目（実況・解説役、既定「Claude」）のセリフを
     # 時刻つきで固定し、2 人目（質問・ガヤ役、既定「Qwen」）のセリフをローカル LLM に作らせる。
     # 声は characters（VOICEVOX の話者名、[1 人目, 2 人目]）。空なら四国めたん・ずんだもん

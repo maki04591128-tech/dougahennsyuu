@@ -188,7 +188,14 @@ def eevee_scene(name, length, samples=16):
 
 
 # ------------------------------------------------------------ 部品: 1 文字ずつ弾む文字
-def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=None, y=0.0):
+STEP = int(A.get("stepped") or 0)  # 統合版 M5: コマ打ち（文字の動きを n フレームごとに）
+LYRIC_FONT = A.get("lyric_font") or ""  # 統合版 M7: ジャンルの書体
+LYRIC_TEXTURE = A.get("lyric_texture") or ""  # 統合版 M7: ジャンルの質感
+
+
+def kinetic_text_scene(
+    name, text, size, color, length, delay=2, dur=12, out_at=None, y=0.0, font_path="", texture=""
+):
     sc = eevee_scene(name, length)
     ob = bpy.data.objects.new(name, bpy.data.meshes.new(name))
     sc.collection.objects.link(ob)
@@ -206,7 +213,9 @@ def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=
             s2c.inputs[k].default_value = v
         except Exception:  # noqa: BLE001
             aligned = False
-    if FONT:
+    if font_path:
+        s2c.inputs["Font"].default_value = bpy.data.fonts.load(font_path, check_existing=True)
+    elif FONT:
         s2c.inputs["Font"].default_value = font()
     idx, tm = N.new("GeometryNodeInputIndex"), N.new("GeometryNodeInputSceneTime")
 
@@ -223,9 +232,12 @@ def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=
                 L.new(v, m.inputs[i])
         return m.outputs[0]
 
+    frame = tm.outputs["Frame"]
+    if STEP > 1:  # 統合版 M5: 時刻を STEP フレームごとに止める（カメラには付けない）
+        frame = math_node("MULTIPLY", math_node("FLOOR", math_node("DIVIDE", frame, STEP)), STEP)
     t_in = math_node(
         "DIVIDE",
-        math_node("SUBTRACT", tm.outputs["Frame"], math_node("MULTIPLY", idx.outputs[0], delay)),
+        math_node("SUBTRACT", frame, math_node("MULTIPLY", idx.outputs[0], delay)),
         dur,
         True,
     )
@@ -241,7 +253,7 @@ def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=
     if out_at:
         t_out = math_node(
             "DIVIDE",
-            math_node("SUBTRACT", tm.outputs["Frame"], math_node("ADD", idx.outputs[0], out_at)),
+            math_node("SUBTRACT", frame, math_node("ADD", idx.outputs[0], out_at)),
             8,
             True,
         )
@@ -284,12 +296,26 @@ def kinetic_text_scene(name, text, size, color, length, delay=2, dur=12, out_at=
     b = mat.node_tree.nodes["Principled BSDF"]
     b.inputs["Base Color"].default_value = (*color, 1)
     b.inputs["Emission Color"].default_value = (*color, 1)
-    b.inputs["Emission Strength"].default_value = 1.0
+    # 統合版 M7: glow は発光を強く、それ以外の質感は今は影だけ（halftone 等は未対応）
+    b.inputs["Emission Strength"].default_value = 3.0 if texture == "glow" else 1.0
     setm.inputs["Material"].default_value = mat
     ob.modifiers.new("GN", "NODES").node_group = tr
     ob.location.y = y
     if not aligned:
         ob.location.x = -len(text) * size * 0.5
+    if texture == "shadow":  # 右下へ文字の大きさの 4% ずらした暗い影
+        sh = bpy.data.objects.new(name + "_shadow", ob.data)
+        sc.collection.objects.link(sh)
+        smat = bpy.data.materials.new(name + "_shadow")
+        sb = smat.node_tree.nodes["Principled BSDF"]
+        sb.inputs["Base Color"].default_value = (0.02, 0.02, 0.03, 1)
+        sb.inputs["Emission Strength"].default_value = 0.0
+        stree = tr.copy()
+        for nd in stree.nodes:
+            if nd.bl_idname == "GeometryNodeSetMaterial":
+                nd.inputs["Material"].default_value = smat
+        sh.modifiers.new("GN", "NODES").node_group = stree
+        sh.location = (ob.location.x + size * 0.04, y - size * 0.04, -0.01)
     return sc
 
 
@@ -616,17 +642,12 @@ def main():
             return hits
         punch = se.strips.new_effect("punch", "ADJUSTMENT", 26, 1, length=end)
         k = punch.transform.scale_x
-        rnd = random.Random(3)
         for f in hits:
             for p_, v in ((f - 1, k), (f, k * 1.06), (f + 8, k)):
                 kt(punch, "scale_x", p_, v)
                 kt(punch, "scale_y", p_, v)
-            for j, ff in enumerate(range(f, f + 13, 2)):
-                g = 1 - j / 7
-                kt(punch, "offset_x", ff, rnd.uniform(-10, 10) * g * U)
-                kt(punch, "offset_y", ff, rnd.uniform(-7, 7) * g * U)
-                kt(punch, "rotation", ff, math.radians(rnd.uniform(-0.5, 0.5) * g))
-            for prop in ("offset_x", "offset_y", "rotation"):
+            for prop in ("offset_x", "offset_y"):
+                kt(punch, prop, f, 0)
                 kt(punch, prop, f + 14, 0)
             if on("glitch"):
                 rg = se.strips.new_effect(f"rgb{f}", "ADJUSTMENT", 27, f, length=3)
@@ -654,6 +675,22 @@ def main():
                 kp_(fl, "blend_alpha", f, float(P.get("flash_alpha", 0.06)))
                 kp_(fl, "blend_alpha", f + 6, 0.0)
                 use("flash")
+        # 統合版 E5: 揺れは F-Curve の Noise モディファイア（Replace・Scale 2.0・Strength 0.02 の
+        # 画面比 = ±0.01・Restrict Frame Range の Blend Out 6f）。打った所の 14f だけ
+        bag = channelbag(sc)
+        for fc in bag.fcurves if bag is not None else []:
+            if "punch" not in fc.data_path or not fc.data_path.endswith(("offset_x", "offset_y")):
+                continue
+            span = W if fc.data_path.endswith("offset_x") else H
+            for j, f in enumerate(hits):
+                mod = fc.modifiers.new("NOISE")
+                mod.blend_type = "REPLACE"
+                mod.scale = 2.0
+                mod.strength = 0.02 * span
+                mod.phase = 7.0 * j + (0 if fc.data_path.endswith("offset_x") else 3.0)
+                mod.use_restricted_range = True
+                mod.frame_start, mod.frame_end = f, f + 14
+                mod.blend_out = 6.0
         use("shake_punch", len(hits))
         return hits
 
@@ -726,6 +763,9 @@ def main():
             size = min(1.2, 11.5 / max(1, longest)) * (0.85 if W < H else 1.0)
             y, col = spots[i % len(spots)]
             y *= H / W if W > H else 0.6
+            sec = c.get("section") or ""
+            if sec in ("verse", "drop"):  # 統合版 M3: A メロは中央（落ちサビの縦書きは未対応）
+                y = 0.0
             # 行ごとに別の場面にして縦に並べる（複数行の文字列は中央に揃わないため）
             for r, row in enumerate(rows):
                 ry = y + ((len(rows) - 1) / 2 - r) * size * 1.4
@@ -739,8 +779,15 @@ def main():
                     dur=10,
                     out_at=max(8, length - 14),
                     y=ry,
+                    font_path=LYRIC_FONT,
+                    texture=LYRIC_TEXTURE,
                 )
                 ksc.eevee.taa_render_samples = 8
+                if sec in ("chorus", "chorus_first"):  # 統合版 M3: サビは斜め（−8°）
+                    for ob_ in ksc.objects:
+                        ob_.rotation_euler.z = math.radians(-8.0)
+                REPORT.setdefault("sections", {}).setdefault(sec or "none", 0)
+                REPORT["sections"][sec or "none"] += 1
                 center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
                 st = se.strips.new_scene(f"lyric{i}_{r}", ksc, 44 + (i % 3) * 2 + r % 2, f0 + r * 3)
                 set_duration(st, length - r * 3)

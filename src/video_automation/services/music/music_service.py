@@ -37,7 +37,7 @@ from video_automation.services.timeline.timeline_service import (
 
 log = get_logger("music")
 
-INSTRUMENTAL_LYRICS = "[Instrumental]"
+INSTRUMENTAL_LYRICS = "[intro]\n[inst]\n[outro]"  # 統合版 Q5: 歌なし
 
 
 class MusicService:
