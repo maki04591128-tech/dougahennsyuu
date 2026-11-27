@@ -314,7 +314,14 @@ def test_rich_direction_lyrics_sections_and_noise_shake(tmp_path):
         check=True,
     )
     cues = [
-        {"segment": "a", "text": "夢の中へ", "start_frame": 2, "end_frame": 30, "section": "verse"},
+        {
+            "segment": "a",
+            "text": "夢の中へ",
+            "start_frame": 2,
+            "end_frame": 30,
+            "section": "verse",
+            "motion": ["zoom", "breathe", "shrink"],
+        },
         {
             "segment": "b",
             "text": "100%の光",
@@ -359,4 +366,30 @@ def test_rich_direction_lyrics_sections_and_noise_shake(tmp_path):
     assert rep["parts"]["lyrics"]["ok"], r.stderr[-2000:]
     assert rep["parts"]["punch"]["ok"], r.stderr[-2000:]
     assert rep["sections"] == {"verse": 1, "chorus": 1}
+    assert rep["motion"] == {"zoom": 1, "breathe": 1, "shrink": 1}  # V5 の改訂
     assert rep["used"]["shake_punch"] == 1
+
+
+def test_lyric_motion_table():
+    """V5 の改訂: 上の行ほど優先して、行ごとの入り・待機・出を 1 つに決める。"""
+    from video_automation.services.rendering import lyrics
+
+    v = ["朝が来る", "窓を開けた", "風が吹いて", "君を思うよ！"]
+    c = ["夢の中へ", "光を追って", "涙を越えて", "明日へ行こう"]
+    txt = (
+        v
+        + ["空を見上げ", "声がする"]
+        + c
+        + ["もう一度", "はじまりの歌"]
+        + c
+        + ["さよならさよなら", "ラララ〜"]
+    )
+    s = lyrics.sections(txt)
+    m = lyrics.lyric_motion(txt, s, "ballad")
+    assert m[0] == ("zoom", "breathe", "blur_out")  # A メロ・バラードの待機は呼吸
+    assert m[3] == ("shake", "static", "flicker")  # 「！」で終わる行
+    assert m[4] == ("stretch", "breathe", "stretch_out") and m[5][0] == "curve"  # B メロ
+    assert m[6][0] == "circle" and m[9][0] == "gather"  # 最初のサビの 1 行目・最後の行
+    assert m[12][0] == "slam"  # ラストサビの 1 行目
+    assert m[16][0] == "stack" and m[17][0] == "track"  # くり返す語・アウトロの最後
+    assert lyrics.lyric_motion(["あ", "い"], ["verse"] * 2, "rock")[0][1] == "static"

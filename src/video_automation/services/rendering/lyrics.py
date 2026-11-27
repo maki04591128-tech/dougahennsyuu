@@ -102,3 +102,83 @@ def particle_spans(text: str) -> list[tuple[int, int]]:
 
 def genre_style(genre: str | None) -> tuple[str, str, str]:
     return GENRE_STYLE.get(genre or DEFAULT_GENRE, GENRE_STYLE[DEFAULT_GENRE])
+
+
+# ---------------- V5 の改訂（歌詞の行 → 入り・待機・出。上の行ほど優先） ----------------
+
+GENRE_HOLD = {  # ジャンルの待機
+    "ballad": "breathe",  # 呼吸: scale 1.000→1.015→1.000、周期 3.2 秒
+    "citypop": "drift",  # 漂う: 右へ画面の幅の 1%／秒
+    "rock": "static",
+    "edm": "pulse",  # 拍で脈打つ: 拍ごとに 1.00→1.08→1.00、6f
+    "vocaloid": "glitch",  # 2 秒ごとに 2f、x ±4px
+    "idol": "wave",  # T8 波打つ
+    "pop": "sway",  # 揺れ: 周期 2 秒・±8px
+}
+
+
+def _dup_word(text: str) -> bool:
+    words = [w for w in re.split(r"[\s、。！？!?…〜ー・「」]+", text) if len(w) >= 2]
+    return any(a == b for a, b in zip(words, words[1:], strict=False)) or bool(
+        re.search(r"(.{2,})\1", _norm(text))
+    )
+
+
+def lyric_motion(
+    texts: list[str], secs: list[str], genre: str | None
+) -> list[tuple[str, str, str]]:
+    """各行の (入り, 待機, 出)。段階5c の「V5 の改訂」の表（上の行ほど優先）。"""
+    hold = GENRE_HOLD.get(genre or DEFAULT_GENRE, "sway")
+    n = len(texts)
+    chorus_idx = [i for i, s in enumerate(secs) if s in ("chorus", "chorus_first")]
+    blocks: list[list[int]] = []
+    for i in chorus_idx:
+        if blocks and i == blocks[-1][-1] + 1:
+            blocks[-1].append(i)
+        else:
+            blocks.append([i])
+    last_chorus = blocks[-1] if blocks else []
+    second_first = blocks[1][0] if len(blocks) >= 2 else -1
+    first_first = blocks[0][0] if blocks else -1
+    same_len_pair = next(
+        (i for i in range(1, n) if len(_norm(texts[i])) == len(_norm(texts[i - 1])) > 0), -1
+    )
+    out = []
+    for i, (t, s) in enumerate(zip(texts, secs, strict=True)):
+        tt = t.strip()
+        prev_s = secs[i - 1] if i else ""
+        nxt_s = secs[i + 1] if i + 1 < n else ""
+        if last_chorus and i == last_chorus[0] and len(blocks) >= 2:
+            m = ("slam", hold, "scatter")  # ラストサビの 1 行目: T17 → T18
+        elif i == n - 1 and s not in ("chorus", "chorus_first"):
+            m = ("track", "outline_light", "fall")  # アウトロの最後の行: T7 → T19 → T21
+        elif i == same_len_pair:
+            m = ("morph", hold, "shrink")  # 前の行と字数が同じ（最初の 1 組）
+        elif _dup_word(tt):
+            m = ("stack", hold, "rise_out")
+        elif tt.endswith(("！", "!")):
+            m = ("shake", "static", "flicker")
+        elif tt.endswith(("〜", "ー", "～")):
+            m = ("fade_up", "wave", "fade")
+        elif last_chorus and i == last_chorus[-1] and len(blocks) >= 2:
+            m = ("neon", "outline_light", "flicker")
+        elif i == second_first:
+            m = ("glitch_in", hold, "glitch_out")
+        elif i == first_first:
+            m = ("circle", hold, "spin_out")
+        elif s in ("chorus", "chorus_first") and nxt_s not in ("chorus", "chorus_first"):
+            m = ("gather", hold, "dissolve")
+        elif s in ("chorus", "chorus_first"):
+            m = ("bounce", hold, "shrink")
+        elif s == "verse" and prev_s == "interlude":
+            m = ("warp_in", hold, "warp_out")
+        elif s == "bridge" and nxt_s != "bridge":
+            m = ("curve", hold, "curve_out")
+        elif s == "bridge":
+            m = ("stretch", hold, "stretch_out")
+        elif s == "drop":
+            m = ("tilt3d", "static", "fall_back")
+        else:
+            m = ("zoom", hold, "blur_out")  # A メロ
+        out.append(m)
+    return out

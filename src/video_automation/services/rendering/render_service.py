@@ -57,6 +57,7 @@ from video_automation.services.rendering.lyrics import (
     DEFAULT_GENRE,
     GENRE_LABEL,
     genre_style,
+    lyric_motion,
     particle_spans,
 )
 from video_automation.services.rendering.lyrics import sections as lyric_sections
@@ -1027,8 +1028,10 @@ class RenderService:
             except Exception as exc:  # noqa: BLE001 - 音量が取れなくても置き方は決められる
                 log.info("lyric_rms_failed", error=str(exc)[:200])
             secs = lyric_sections([c["text"] for c in cues], rms)
-            for cue_, s_ in zip(cues, secs, strict=True):
+            motions = lyric_motion([c["text"] for c in cues], secs, genre)
+            for cue_, s_, mo_ in zip(cues, secs, motions, strict=True):
                 cue_["section"] = s_
+                cue_["motion"] = list(mo_)
                 if s_ == "bridge":
                     cue_["small"] = particle_spans(cue_["text"])
             fam, weight, texture = genre_style(genre)
