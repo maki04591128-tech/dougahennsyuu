@@ -103,11 +103,25 @@ class TitleCardService:
         if req.animation_sec:
             return req.animation_sec
         n = len(req.text.replace("\n", ""))
+        one_line = "\n" not in req.text and n > 1
+        f = 1 / 30
+        per_char = {  # 統合版 T16（30fps のフレーム数。title_card.py の entrance_frames と同じ）
+            "decode": (2 * (n - 1) + 1) * f,
+            "flip3d": (2 * (n - 1) + 10) * f,
+            "mask_rise": (2 * (n - 1) + 10) * f,
+            "stroke": 6 * n * f,
+            "tracking": 18 * f,
+            # 統合版 T6: カーソルが表示の終わりまで点滅するので、表示の全体を描く
+            "typewriter": req.duration_sec,
+        }
+        if req.animation in per_char and one_line:
+            return per_char[req.animation]
         return {
             # 統合版 B4: pop 12f、slide 16f（30fps）
             "pop": 0.4,
             "slide": 16 / 30,
             "zoom": 0.45,
+            "slam": 16 * f,  # 統合版 T17: 4f＋着地 6f＋残像
             "typewriter": min(max(n * 0.07, 0.3), 3.0) + 0.1,
             "bounce": min(max(n * 0.05, 0.2), 2.0) + 0.45,
         }.get(req.animation, 0.0)

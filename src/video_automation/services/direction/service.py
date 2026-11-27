@@ -240,6 +240,43 @@ class _Line:
     end: int
 
 
+# 統合版 T16: 用途ごとの題名の入り（MV・リリックは V5 の曲名のまま。1 文字ずつの入りは、
+# 改行の無い KINETIC_TITLE_MAX 字以下の題名だけ。それ以外は pop）
+TITLE_ENTRANCE: dict[Purpose, str] = {
+    Purpose.SUBTITLE: "fade",
+    Purpose.INTERVIEW: "mask_rise",
+    Purpose.DOCUMENTARY: "typewriter",
+    Purpose.STORY: "stroke",
+    Purpose.PODCAST: "fade",
+    Purpose.EXPLAINER: "pop",
+    Purpose.LECTURE: "stroke",
+    Purpose.TUTORIAL: "typewriter",
+    Purpose.RECIPE: "pop",
+    Purpose.NEWS: "mask_rise",
+    Purpose.CORPORATE: "tracking",
+    Purpose.SHORT: "slam",
+    Purpose.GAME: "decode",
+    Purpose.VLOG: "slide",
+    Purpose.RANKING: "flip3d",
+    Purpose.PRODUCT: "tracking",
+    Purpose.PROMO: "tracking",
+    Purpose.EVENT: "slide",
+    Purpose.KIDS: "stroke",
+    Purpose.TRAILER: "decode",
+}
+PER_CHAR_TITLES = {"typewriter", "decode", "tracking", "flip3d", "mask_rise", "stroke"}
+
+
+def title_entrance(prof: DesignProfile | None, title: str, kinetic: bool) -> str:
+    """題名の入り（統合版 T16）。"""
+    if prof is None or prof.purpose not in TITLE_ENTRANCE:
+        return "bounce" if kinetic else "pop"
+    a = TITLE_ENTRANCE[prof.purpose]
+    if a in PER_CHAR_TITLES and ("\n" in title or len(title) > KINETIC_TITLE_MAX):
+        return "pop"
+    return a
+
+
 KINETIC_TITLE_MAX = 16  # 1 文字ずつ動かす題名の文字数の上限（長いと読み終わる前に消える）
 _NUM = re.compile(r"[0-9０-９]")
 
@@ -1027,7 +1064,7 @@ class DirectionService:
                     project_id=p.id,
                     text=plan.title[:100],
                     duration_sec=dur,
-                    animation="bounce" if kinetic else "pop",
+                    animation=title_entrance(prof, plan.title, kinetic),  # type: ignore[arg-type]
                     # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
                     fade_out_sec=0.0,
                     # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
