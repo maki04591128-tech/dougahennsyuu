@@ -1080,6 +1080,9 @@ def main():
     r.ffmpeg.audio_mixrate = 48000
     r.use_sequencer = True
     r.filepath = str(OUT)
+    if A.get("plan_only"):  # テスト用: 場面と動きを組むだけで書き出さない
+        REPORT["total_sec"] = round(time.perf_counter() - t0, 1)
+        return
     t1 = time.perf_counter()
     bpy.ops.render.render(animation=True)
     REPORT["render_sec"] = round(time.perf_counter() - t1, 1)

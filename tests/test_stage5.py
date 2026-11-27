@@ -751,6 +751,7 @@ def test_rich_direction_more_lyric_motions(tmp_path):
         "colors": {"base": "#000000", "main": "#3366CC", "accent": "#FFCC00", "text": "#FFFFFF"},
         "lyric_font": "",
         "lyric_texture": "shadow",
+        "plan_only": True,
     }
     (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
     script = Path(__file__).resolve().parents[1] / (
