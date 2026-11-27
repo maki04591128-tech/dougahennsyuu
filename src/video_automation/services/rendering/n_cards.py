@@ -339,7 +339,7 @@ def venn(w: int, h: int, a: str, b: str, both: str, font: str | None, c1: str, c
     im.alpha_composite(lay)
     d = ImageDraw.Draw(im)
     f = _font(font, round(h * 0.05))
-    st = {"stroke_width": max(1, round(h / 400)), "stroke_fill": (0, 0, 0, 180)}
+    st: dict[str, Any] = {"stroke_width": max(1, round(h / 400)), "stroke_fill": (0, 0, 0, 180)}
     d.text((cx - off - r * 1.05, cy), a, font=f, fill=(*_rgb(ink), 255), anchor="rm", **st)
     d.text((cx + off + r * 1.05, cy), b, font=f, fill=(*_rgb(ink), 255), anchor="lm", **st)
     if both:
