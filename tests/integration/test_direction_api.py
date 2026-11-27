@@ -708,6 +708,11 @@ async def test_ranking_numbers_board_and_first_place_silence(dclient):
         )
     assert all(x["animation"]["preset"] for x in nums)
     boards = by.get("rank_board", [])
+    for b in boards:  # ボードの間はカードを出さない（同時に消えない）
+        assert not any(
+            x["track_id"] == fig and x["start_frame"] < b["start_frame"] < x["end_frame"]
+            for x in tl["clips"]
+        )
     for b in boards:
         assert not any(
             n["start_frame"] < b["end_frame"] and b["start_frame"] < n["end_frame"] for n in nums
