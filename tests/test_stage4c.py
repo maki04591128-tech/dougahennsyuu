@@ -247,6 +247,10 @@ def test_ranks_skip_preface_and_strip_endings():
             "第1位は東京・東京スカイツリーなのよ！",
         ]
     )
+    assert (
+        pp.ranks(["第2位は大阪です", "第1位は沖縄、青い海とサンゴ礁が広がるリゾート地よ"])[1].name
+        == "沖縄"
+    )
     assert [(r.line, r.number, r.name) for r in rs] == [
         (1, 11, "長野県・松本城"),
         (2, 10, "北海道・小樽運河"),

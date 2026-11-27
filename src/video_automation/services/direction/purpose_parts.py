@@ -140,6 +140,9 @@ def ranks(texts: list[str]) -> list[Rank]:
             continue
         rest = re.sub(r"^[はがの、:：！!\s]+", "", t[m.end() :])
         name = re.split(r"[。！？!?]", rest, maxsplit=1)[0].strip()
+        head = name.split("、", 1)[0]
+        if len(head) >= 2:  # 「沖縄、青い海とサンゴ礁が…」は読点の前が名前
+            name = head
         # 文末の言い方（です・なのだ・なの・だよ など）を外す。キャラクターの口調が付くため
         name = re.sub(r"(?:でした|です|なのだ|なのよ|なの|だよ|だね|だわ|だ|よ|ね|わ)+$", "", name)
         name = name.rstrip("、, ")
