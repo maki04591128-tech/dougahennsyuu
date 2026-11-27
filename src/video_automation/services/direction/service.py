@@ -97,6 +97,7 @@ from video_automation.services.direction.plan import (
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering import flower as fl
 from video_automation.services.rendering import t_extras as tx
+from video_automation.services.rendering import text_scenes as tscn
 from video_automation.services.rendering.card import card_layout
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
 from video_automation.services.rendering.lower_third import draw_lower_third
@@ -213,6 +214,7 @@ CARD_MARK_TRACK = "演出・項目の印"  # 統合版 I1・N15
 CALLOUT_TRACK = "演出・特長の線"  # 統合版 P9
 MAP_TRACK = "演出・地図"  # 統合版 J1〜J3
 STRIKE_TRACK = "演出・取り消し"  # 統合版 T36・T46
+TEXT_SCENE_TRACK = "演出・文字だけの場面"  # 統合版 T30〜T34
 J_PURPOSES = {Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.EXPLAINER}
 TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
 TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
@@ -258,6 +260,7 @@ EXTRA_TRACKS = (
     CALLOUT_TRACK,
     MAP_TRACK,
     STRIKE_TRACK,
+    TEXT_SCENE_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
     STEP_TRACK,
@@ -1149,6 +1152,54 @@ class DirectionService:
             tf = native_transform(cw, ch, w, h, cx=0.5, cy=top + ch * k / 2 / h)
             cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=ln.start,
                                 duration_frames=n, clip_id=str(uuid4()), transform=tf))  # fmt: skip
+
+    async def _text_scenes(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        windows: list[tuple[Any, int, int]],
+        shown: list[tuple[int, int]],
+        title_end: int,
+        total: int,
+        cmds: list[Any],
+        lane: Any,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+    ) -> list[tuple[int, int]]:
+        """統合版 T30・T32・T33・T34。文字だけの場面の区間を返す（字幕・強調テロップを出さない）。
+        T31（会社紹介の 3D の字組みを飛ぶカメラ）は作らない。"""
+        from video_automation.services.build.bgm_prompts import BGM
+
+        kind = tscn.KIND[prof.purpose.value]
+        busy = [*shown, (0, title_end)]
+        rows = [(x.start, x.end, x.text) for x in lines]
+        chapters = [st for s_, st, _en in windows if s_.kind in (ShotKind.CARD, ShotKind.CHART)]
+        secs = tscn.pick_sections(rows, busy, total, fps, prof.purpose.value, chapters)
+        if not secs:
+            return []
+        spec = BGM.get(prof.purpose)
+        bpm = float(spec[1]) if spec else 120.0
+        script = "".join(x.text for x in lines)
+        track = lane(TEXT_SCENE_TRACK)
+        out: list[tuple[int, int]] = []
+        for i, j in secs:
+            # 次の発話の頭まで（字幕は声より少し長く出るので、その分も覆う）
+            nxt = lines[j].start if j < len(lines) else lines[j - 1].end
+            start, end = lines[i].start, min(total, max(lines[j - 1].end, nxt))
+            ph = [p_ for x in lines[i:j] for p_ in tscn.phrases(x.text, x.start, x.end)]
+            if not ph or end - start < round(fps):
+                continue
+            gen = tscn.frames(kind, ph, start, end - start, w, h, font, prof.palette, fps, bpm,
+                              script)  # fmt: skip
+            a = await self._overlay(project_id, gen, f"文字だけの場面（{kind}）", fps)
+            cmds.append(AddClip(track_id=track, asset_id=a.id, start_frame=start,
+                                duration_frames=end - start, clip_id=str(uuid4()),
+                                transform=ClipTransform(fit=FitMode.FIT)))  # fmt: skip
+            out.append((start, end))
+        return out
 
     async def _flower(
         self,
@@ -2888,6 +2939,15 @@ class DirectionService:
                     )  # fmt: skip
                 shown.append((start, end))
 
+        # 統合版 T30・T32・T33・T34: 素材の無い 3 秒以上の台詞の区間を文字だけの場面にする
+        no_subs: list[tuple[int, int]] = []
+        if prof is not None and prof.purpose.value in tscn.KIND:
+            no_subs = await self._text_scenes(
+                p.id, prof, lines, windows, shown, title_end, total, cmds, lane, fps, w, h,
+                self.titles.font_path(heading_font),
+            )  # fmt: skip
+            shown += no_subs
+
         # 統合版 J1〜J3: LLM が place を付けた発話の間、図の枠に地図（図・カードの無い所だけ）
         if prof is not None and prof.purpose in J_PURPOSES:
             skipped += await self._maps(
@@ -2904,6 +2964,8 @@ class DirectionService:
         for s in kws:
             start = max(lines[s.from_line - 1].start + frames(0.15), title_end)
             end = lines[(s.to_line or s.from_line) - 1].end
+            if any(a_ < end and start < b_ for a_, b_ in no_subs):
+                continue  # 文字だけの場面では強調テロップを出さない
             if spans and spans[-1][2] > start:
                 prev = spans[-1]
                 spans[-1] = (prev[0], prev[1], start)
@@ -3376,6 +3438,13 @@ class DirectionService:
             for name in EXTRA_TRACKS:
                 if name in track and name not in BEHIND_TITLE:
                     cmds.append(MoveTrack(track_id=track[name], index=1000))
+        if prof is not None and lines:
+            from video_automation.services.rendering import h_cards as hc_
+
+            if prof.purpose == Purpose.STORY:  # H6: 中間字幕のカードの文の字幕は出さない
+                no_subs += [(x.start, x.end) for x in lines if hc_.is_intertitle(x.text)]
+            if prof.purpose in (Purpose.TRAILER, Purpose.STORY):  # T44: 最初の台詞
+                no_subs.append((lines[0].start, lines[0].end))
         res = await self.timeline.submit(
             p.id,
             CommandRequest(
@@ -3411,6 +3480,8 @@ class DirectionService:
                     for s, start, _end in windows
                     if s.kind in (ShotKind.CARD, ShotKind.CHART) and (s.heading or "").strip()
                 ],
+                # 字幕を出さない区間（文字だけの場面 T30〜T34・中間字幕 H6・奥へ流れる文字 T44）
+                "no_subtitles": [[a_, b_] for a_, b_ in no_subs],
             }
             await self.design.record(
                 p.id,

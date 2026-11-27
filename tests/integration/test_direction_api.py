@@ -1820,3 +1820,38 @@ async def test_not_phrase_strike_and_retype(dclient):
             names[x["asset_id"]] for x in tl["clips"] if tracks[x["track_id"]] == "演出・取り消し"
         ]
         assert got == [name], purpose
+
+
+async def test_text_only_scene_hides_subtitles(dclient, tmp_path):
+    """統合版 T32: PR で素材の無い 3 秒以上の区間は一語ずつの場面にし、その間の字幕を出さない。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "新しい靴が出ました。とても軽くて歩きやすいです。"},
+        {"speaker": "A", "text": "雨の日も安心して履けます。"},
+        {"speaker": "A", "text": "ぜひお店で試してください。"},
+    ] * 4
+    pid, sid = await _ready_script(c, lines)
+    tl0 = (await c.get(f"/projects/{pid}/timeline")).json()
+    assert tl0["duration_frames"] > 300, tl0["duration_frames"]
+    await c.put(f"/projects/{pid}/design", json={"purpose": "promo"})
+    plan = {"title": "", "subtitle": "", "shots": []}
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    sc = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・文字だけの場面"]
+    assert sc and all(names[x["asset_id"]] == "文字だけの場面（T32）" for x in sc)
+    hide = (await c.app.state.container.design.outline(pid))["no_subtitles"]
+    assert hide and hide[0][0] == sc[0]["start_frame"]
+    ass = (
+        await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "t.ass")
+    ).read_text("utf-8-sig")
+
+    def sec(t):
+        h_, m_, s_ = t.split(":")
+        return int(h_) * 3600 + int(m_) * 60 + float(s_)
+
+    starts = [sec(ln.split(",")[1]) for ln in ass.splitlines() if ln.startswith("Dialogue:")]
+    a0, b0 = hide[0][0] / 30, hide[0][1] / 30
+    cues = [(x.start_frame, x.end_frame) for x in await c.app.state.container.subtitles.cues(sid)]
+    assert starts and not [t for t in starts if a0 <= t < b0 - 0.05], (hide, cues)

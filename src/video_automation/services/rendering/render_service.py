@@ -398,6 +398,9 @@ class RenderService:
             p = await s.get(Project, script.project_id)
             assert p is not None
         kept = [c for c in cues if (c.end_frame or 0) > offset_frames]
+        if self.design is not None:  # 演出で字幕を出さない区間（統合版 T30〜T34・H6・T44）
+            hide = (await self.design.outline(p.id)).get("no_subtitles") or []
+            kept = [c for c in kept if not any(a <= (c.start_frame or 0) < b for a, b in hide)]
         rows = [
             (
                 max(0, (c.start_frame or 0) - offset_frames),
