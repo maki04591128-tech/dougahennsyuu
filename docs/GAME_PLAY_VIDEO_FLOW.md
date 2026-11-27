@@ -71,8 +71,18 @@
 | G6 | プレイ記録を残す道具 | 録画の開始時刻からの経過秒で記録を書く道具が無い | `wakuwakuPlay` に `play_record_start` / `play_mark` / `play_record_stop` を足す（gameyou 側） |
 | G7 | サムネイル | 作り方が未定 | このツールの題名カード（Blender）でプレイ画面の 1 枚＋題字 |
 
-## 4. 本人に決めてもらうこと
-- Q1 台本を書くのは誰か（Claude 本人 / ローカル LLM / Claude の下書きをローカル LLM が整える）
-- Q2 録画の方法（OBS / FFmpeg）
-- Q3 YouTube への上げ方（API で非公開に上げて本人が公開 / Claude が Chrome で YouTube Studio から上げる / 本人が上げる）
-- Q4 話し手の組み合わせ（gameyou の台本は「実況者と Claude の掛け合い」。両方 VOICEVOX の声にするか）
+## 4. 決まったこと（本人 2026-11-27）
+| 問い | 答え | この流れでの形 |
+|---|---|---|
+| Q1 台本を書く者 | 「Claudeが書く」 | 遊んだ Claude がプレイ記録から自分の台詞を書く |
+| Q2 録画 | 「OBS」 | OBS＋obs-websocket で開始・停止し、映像とゲームの音を録る（G1 = A） |
+| Q3 投稿 | 「APIで非公開に上げる」 | `tools/youtube_upload.py`。公開は本人が Studio で。1 本目で非公開に固定されないか確かめる |
+| Q4 話し手 | 「voicevox2人の掛け合いで実況及び機能解説役のclaudeと質問兼ガヤのQwenでやり取りしてほしいです」 | VOICEVOX の 2 人。Claude 役（実況・機能の解説）の台詞は Claude が書き、Qwen 役（質問・ガヤ）の台詞はローカル LLM の Qwen が書く。台本の作り方は「片側入力」（`USER_ONE_SIDE`: Claude の台詞を固定し、相手役を `generate_counterpart_dialogue` で作らせる） |
+
+## 5. 次に作るもの（順）
+1. G6＋G1: OBS の録画の開始・停止とプレイ記録の印（`play_record_start` / `play_mark` / `play_record_stop`、gameyou の `wakuwakuPlay`）
+2. G2＋G3: 台詞ごとの録画時刻で声を置き、見どころだけ切り出して詰める（このツールの「動画をつくる」）。
+   片側入力（Claude の台詞は固定・Qwen が相手役）を「動画をつくる」から使えるようにする
+3. G5: このツールの MCP を Claude デスクトップアプリに登録する
+4. G7: サムネイル
+5. 1 本通しで作って非公開で上げ、確かめる
