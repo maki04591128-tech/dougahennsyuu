@@ -1214,3 +1214,8 @@ async def test_year_roll_in_documentary(dclient):
     got = [names[x["asset_id"]] for x in ys]
     assert got == ["年号（T43）1964", "年号が回る（T43）2021", "年号（T43）2021"]
     assert ys[0]["transform"]["x"] > 0.3 and ys[0]["transform"]["y"] < -0.3  # 右上
+    # 統合版 N4: 年が 3 つ以上なら、最後の文で年表
+    lines.append({"speaker": "A", "text": "2030年にはまた新しい計画があります。"})
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "documentary")
+    assert "年表（N4）" in {a["name"] for a in tl["assets"]}

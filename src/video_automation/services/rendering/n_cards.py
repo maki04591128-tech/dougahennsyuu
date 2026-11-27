@@ -268,3 +268,28 @@ def quote_card(w: int, h: int, text: str, speaker: str, font: str | None, accent
         d.text((w * 0.85, top + lh * len(rows) + h * 0.04), f"— {speaker}", font=fs,
                fill=(*_rgb(ink), 230), anchor="rm")  # fmt: skip
     return im
+
+
+def timeline(w: int, h: int, items: list[tuple[str, str]], font: str | None, main: str,
+             accent: str, ink: str) -> Any:  # fmt: skip
+    """N4 年表: 横線に年を等間隔に並べ、各年の点（直径 16px）と、下に一言。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    k = h / 1080
+    y = h * 0.5
+    x0, x1 = w * 0.1, w * 0.9
+    d.line([(x0, y), (x1, y)], fill=(*_rgb(main), 255), width=max(2, round(4 * k)))
+    n = len(items)
+    fy, fl = _font(font, round(h * 0.06)), _font(font, round(h * 0.035))
+    for i, (year, label) in enumerate(items):
+        x = x0 + (x1 - x0) * (i + 0.5) / n
+        r = 8 * k
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(*_rgb(accent), 255))
+        d.text((x, y - h * 0.06), year, font=fy, fill=(*_rgb(ink), 255), anchor="mm",
+               stroke_width=max(1, round(2 * k)), stroke_fill=(0, 0, 0, 160))  # fmt: skip
+        d.text((x, y + h * 0.06), label[: max(2, int((x1 - x0) / n / (h * 0.035)))], font=fl,
+               fill=(*_rgb(ink), 255), anchor="mm", stroke_width=max(1, round(2 * k)),
+               stroke_fill=(0, 0, 0, 160))  # fmt: skip
+    return im

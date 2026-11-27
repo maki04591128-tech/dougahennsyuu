@@ -1173,6 +1173,22 @@ class DirectionService:
                         keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
                                 Keyframe(frame=min(10, nx - st - 1), opacity=1.0)]  # fmt: skip
                     put(a_, st, nx - st, keys)
+        if pv in (Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE):
+            # N4 年表: 年が 3 つ以上出たら、最後の文で並べる（章の区切りが無いので動画全体で 1 つ）
+            from video_automation.services.rendering import numbers as nb
+
+            ys = [(nb.find_year(x.text), x) for x in lines]
+            ys = [(y_, x) for y_, x in ys if y_]
+            if len({y_ for y_, _x in ys}) >= 3:
+                items = [(y_, nc.first_phrase(x.text.split("年", 1)[-1] or x.text, 6))
+                         for y_, x in ys][:8]  # fmt: skip
+                last = lines[-1]
+                end = min(total, last.end + one_sec)
+                if free(last.start, end):
+                    img = await asyncio.to_thread(nc.timeline, w, h, items, font, pal.main,
+                                                  pal.accent, ink)  # fmt: skip
+                    a_ = await self._png(project_id, img, "年表（N4）")
+                    put(a_, last.start, end - last.start, fade(end - last.start))
         if used:
             notes.append("図解（N1・N7・N8・N11）は、出ている間も字幕を出しています")
         return notes
