@@ -54,3 +54,21 @@ def test_ball_events_jump_over_phrases():
     ys = [float(e.split("\\pos(")[1].split(",")[1].split(")")[0]) for e in ev]
     # 跳んでいる間は着く位置より上（y が小さい）
     assert min(ys) < max(ys) - 54 * 0.5
+
+
+def test_marker_on_last_sentence():
+    """統合版 T37: 印を付けた字幕だけに、箱の型（Marker）で下の 45% を左から右へ伸ばす。"""
+    from fractions import Fraction
+
+    from video_automation.schemas.design import Purpose
+    from video_automation.services.design.profiles import PROFILES
+    from video_automation.services.subtitle.formats import build_ass
+    from video_automation.services.subtitle.subtitle_service import style_from_profile
+
+    st = style_from_profile(PROFILES[Purpose.LECTURE])
+    cues = [(0, 60, "A", "はじめの文"), (60, 120, "A", "まとめの文です")]
+    s = build_ass(cues, Fraction(30), 1280, 720, st, markers={1}, marker_color="#FFD966")
+    assert "Style: Marker," in s and ",0,3," in s.split("Style: Marker,")[1].splitlines()[0]
+    marks = [ln for ln in s.splitlines() if ",Marker," in ln and ln.startswith("Dialogue:")]
+    assert len(marks) == 1 and "まとめの文です" in marks[0] and "\\t(" in marks[0]
+    assert "Style: Marker," not in build_ass(cues, Fraction(30), 1280, 720, st)

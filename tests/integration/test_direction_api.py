@@ -1894,3 +1894,22 @@ async def test_document_highlight_in_news(dclient, media_dir):
     keys = clip["animation"]["keyframes"]
     assert keys[-1]["zoom"] == 1.25 and keys[-1]["frame"] == 24 and keys[-1]["pan_y"] < 0
     assert clip["transform"]["scale"] == 0.7
+
+
+async def test_lecture_marker_on_last_subtitle(dclient, tmp_path):
+    """統合版 T37: 講義の焼き込みの字幕で、章の最後の文（章が無ければ最後の文）にマーカー。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    await c.put(f"/projects/{pid}/design", json={"purpose": "lecture"})
+    plan = {"title": "", "subtitle": "", "shots": []}
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    ass = (
+        await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "m.ass")
+    ).read_text("utf-8-sig")
+    marks = [ln for ln in ass.splitlines() if ",Marker," in ln and ln.startswith("Dialogue:")]
+    assert marks
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    ass = (
+        await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "n.ass")
+    ).read_text("utf-8-sig")
+    assert ",Marker," not in ass

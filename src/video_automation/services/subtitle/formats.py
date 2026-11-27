@@ -198,6 +198,8 @@ def build_ass(
     ruby: dict[int, list[tuple[int, int, int, str]]] | None = None,
     emotions: dict[int, str] | None = None,
     ball_color: str | None = None,
+    markers: set[int] | None = None,
+    marker_color: str | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
 
@@ -282,6 +284,7 @@ def build_ass(
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         *styles,
+        *([marker_style(style, width, height, marker_color)] if markers and marker_color else []),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -373,6 +376,11 @@ def build_ass(
                 lines += _ruby_events(
                     rb, text, t0, t1, st_name, name, fade, size, width, height, mv
                 )
+        if markers and k_cue in markers and marker_color and bottom and not rb:  # 統合版 T37
+            lines += _marker_events(
+                text, start, end, fps, style.name, name, size, width, height, mv, marker_color,
+                ENTRANCE_IN_F,
+            )  # fmt: skip
         if ball_color and bottom and style.mode != "lyric" and not rb:  # 統合版 T51
             lines += _ball_events(
                 text, start, end, fps, st_name, name, size, width, height, mv, ball_color
@@ -501,6 +509,64 @@ def _ruby_events(
 # 統合版 T51 弾むボールの歌詞（子ども向けの字幕）: 直径は文字の高さの 35%・accent の玉が、
 # 話している文節の上へ、前の文節から放物線（高さは文字の高さの 80%）で跳ぶ。着地は文節の頭
 BALL_RATIO, BALL_ARC, BALL_JUMP = 0.35, 0.80, 8
+
+
+# 統合版 T37 マーカーで引く（講義・操作説明の各章の最後の文の字幕）: 字幕の後ろに accent・
+# 不透明度 40%・高さは文字の高さの 45% の帯を、文字の下端に揃えて置き、字幕の入りが終わってから
+# 左から右へ 10f（easeInOutCubic）で伸ばす
+MARKER_ALPHA, MARKER_H, MARKER_F = 0.40, 0.45, 10
+ENTRANCE_IN_F = 4  # 字幕の入りの長さ（3 節の入りの最大の目安）
+
+
+def _marker_events(
+    text: str,
+    start: int,
+    end: int,
+    fps: Fraction,
+    st_name: str,
+    name: str,
+    size: int,
+    width: int,
+    height: int,
+    mv: int,
+    color: str,
+    delay: int,
+) -> list[str]:
+    """マーカーの帯は「Marker」の型（BorderStyle 3 の箱）で同じ文字を書いて作る（箱が文字の幅に
+    合う）。文字は透明にし、箱の下の 45% だけを残すよう切り抜き、切り抜きを左から右へ広げる。"""
+    rows = text.split("\n")
+    n = len(rows)
+    lh = size * LINE_HEIGHT
+    t0, t1 = ass_time(frame_to_seconds(start, fps)), ass_time(frame_to_seconds(end, fps))
+    ms0 = round(float(frame_to_seconds(delay, fps)) * 1000)
+    ms1 = round(float(frame_to_seconds(delay + MARKER_F, fps)) * 1000)
+    tw = max(text_width(r, size) for r in rows)
+    x0, x1 = round(width / 2 - tw / 2 - size), round(width / 2 + tw / 2 + size)
+    out = []
+    for li in range(n):
+        y1 = round(height - mv - (n - 1 - li) * lh)  # その行の箱の下端
+        y0 = round(y1 - size * MARKER_H)
+        out.append(
+            f"Dialogue: 0,{t0},{t1},Marker,{name},0,0,0,,"
+            f"{{\\1a&HFF&\\clip({x0},{y0},{x0},{y1})"
+            f"\\t({ms0},{ms1},0.6,\\clip({x0},{y0},{x1},{y1}))}}"
+            + "\\N".join(_ass_escape(r) for r in rows)
+        )
+    return out
+
+
+def marker_style(st: SubtitleStyle, width: int, height: int, color: str) -> str:
+    """T37 の帯の型（BorderStyle 3 の箱。箱の色は accent・不透明度 40%）。"""
+    size = _font_size(st, width, height)
+    mv = round(height * st.margin_v_ratio)
+    mh = round(width * st.margin_h_ratio)
+    a = f"{round(255 * (1 - MARKER_ALPHA)):02X}"
+    box = "&H" + a + ass_color(color)[4:]
+    return (
+        f"Style: Marker,{st.font_name},{size},&HFF000000,&H000000FF,{box},{box},"
+        f"0,0,0,0,100,100,{tracking(size)},0,3,{max(1.0, size * 0.04):.1f},0,"
+        f"{st.alignment},{mh},{mh},{mv},1"
+    )
 
 
 def _ball_path(r: float) -> str:

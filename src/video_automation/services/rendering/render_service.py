@@ -421,6 +421,17 @@ class RenderService:
             style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
         prof = await self.design.profile_for(p.id) if self.design is not None else None
         ball = prof.palette.accent if prof is not None and prof.purpose.value == "kids" else None
+        marks: set[int] = set()
+        if prof is not None and prof.purpose.value in ("lecture", "tutorial") and kept:
+            # 統合版 T37: 各章の最後の文の字幕（章の区切りは演出の記録の章の頭）
+            heads = sorted(
+                int(c[0]) for c in (await self.design.outline(p.id)).get("chapters") or [] if c
+            ) if self.design is not None else []  # fmt: skip
+            bounds = [b - offset_frames for b in heads if b - offset_frames > 0]
+            for b in [*bounds, 10**9]:
+                last = max((i for i, r in enumerate(rows) if r[0] < b), default=None)
+                if last is not None:
+                    marks.add(last)
         content = build_ass(
             rows,
             Fraction(p.fps_num, p.fps_den),
@@ -436,6 +447,8 @@ class RenderService:
             ruby={i: rb[c.id] for i, c in enumerate(kept) if c.id in rb},
             emotions=await self._emotions(p.id, script_id, kept),
             ball_color=ball,  # 統合版 T51（子ども向け）
+            markers=marks,  # 統合版 T37（講義・操作説明）
+            marker_color=prof.palette.accent if prof is not None else None,
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out
