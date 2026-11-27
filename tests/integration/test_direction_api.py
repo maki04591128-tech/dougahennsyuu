@@ -1085,3 +1085,19 @@ async def test_cut_transitions_by_purpose(dclient):
                              lambda n: "cut")  # fmt: skip
     (an,) = [x for x in cmds if isinstance(x, SetClipAnimation)]
     assert an.clip_id == "y" and an.transition.type == "whip" and an.transition.duration_frames == 6
+
+
+async def test_effects_by_purpose(dclient):
+    """統合版 X1（イベントの題名の後の紙吹雪）・X2（商品紹介の題名のきらめき）・X5（予告編の煙）。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    for purpose, name in (
+        ("event", "紙吹雪（X1）"),
+        ("product", "きらめき（X2）"),
+        ("trailer", "煙（X5）"),
+    ):
+        tl, _ = await _apply(c, pid, sid, purpose)
+        tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+        names = {a["id"]: a["name"] for a in tl["assets"]}
+        fx = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・効果"]
+        assert fx and names[fx[0]["asset_id"]] == name, purpose

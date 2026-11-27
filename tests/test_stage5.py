@@ -669,3 +669,16 @@ def test_cut_transition_filters_and_overlays():
     assert full.getextrema()[0] == 255  # 下の画が替わるフレームは全面を覆う
     assert len(tz.light_leak(64, 36)) == 12 and len(tz.glitch(64, 36, [], 1)) == 6
     assert tz.pick_cuts([10, 600, 1300, 1900, 1950], 30, 3000, "explainer") == [10, 1900]
+
+
+def test_effect_frames():
+    """統合版 X1〜X3・X5・X6 の長さと、透明で終わること。"""
+    from video_automation.services.direction import effects as fx
+
+    c = fx.confetti(96, 54, ["#ff0000", "#00ff00"])
+    assert len(c) == 45 and c[-1].getchannel("A").getextrema()[1] == 0  # 45f で消える
+    s = fx.sparkle(20)
+    assert len(s) == 10 and s[0].getchannel("A").getextrema()[1] == 0
+    assert len(fx.focus_lines(96, 54)) == 6
+    sm, em = fx.smoke(96, 54), fx.embers(96, 54)
+    assert len(sm) == len(em) == 150

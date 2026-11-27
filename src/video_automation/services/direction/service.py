@@ -199,8 +199,11 @@ PART_TRACK, STEP_TRACK = "演出・部品", "演出・手順"  # 統合版 P4・
 SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合版 Q4
 WAVE_TRACK = "演出・波形"  # 統合版 P2
 CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
+FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 EXTRA_TRACKS = (
     CUT_TRACK,
+    FX_TRACK,
+    EMBER_TRACK,
     ITEM_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
@@ -243,6 +246,7 @@ class _Line:
     text: str
     start: int
     end: int
+    emotion: str = ""
 
 
 # 統合版 T16: 用途ごとの題名の入り（MV・リリックは V5 の曲名のまま。1 文字ずつの入りは、
@@ -580,7 +584,10 @@ class DirectionService:
                 .scalars()
                 .all()
             )
-        lines = [_Line(x.speaker or "", x.text, x.start_frame or 0, x.end_frame or 0) for x in segs]
+        lines = [
+            _Line(x.speaker or "", x.text, x.start_frame or 0, x.end_frame or 0, x.emotion or "")
+            for x in segs
+        ]
         return p, sc, lines
 
     async def _has_tachie(self, script_id: str) -> bool:
@@ -823,6 +830,112 @@ class DirectionService:
             project_id, out, AssetKind.IMAGE, "pillow", f"背景（{style}）"
         )
         return AssetRead.model_validate(a)
+
+    async def _overlay(
+        self, project_id: str, frames_: list[Any], name: str, fps: float
+    ) -> AssetRead:
+        """透過の画の列を 1 本の動画（PNG の mov）にして素材にする（最後に透明の 1 枚を足す）。"""
+        from PIL import Image
+
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        work = out_dir / f"ov_{uuid4().hex[:8]}"
+        work.mkdir(parents=True, exist_ok=True)
+        blank = Image.new("RGBA", frames_[0].size, (0, 0, 0, 0))
+        for i, fr in enumerate([*frames_, blank]):
+            await asyncio.to_thread(fr.save, work / f"{i:04d}.png")
+        mov = work.with_suffix(".mov")
+        await self.ffmpeg.run(
+            ["-y", "-framerate", f"{fps:.6f}", "-i", str(work / "%04d.png"),
+             "-c:v", "png", "-pix_fmt", "rgba", str(mov)]
+        )  # fmt: skip
+        await asyncio.to_thread(shutil.rmtree, work, True)
+        row = await self.timeline.register_generated(
+            project_id, mov, AssetKind.VIDEO, "pillow", name
+        )
+        return AssetRead.model_validate(row)
+
+    async def _effects(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        t_at: int,
+        title_end: int,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+    ) -> None:
+        """統合版 X1（イベント）・X2（商品紹介・PR）・X3（驚きの発話）・X5・X6（予告編）。"""
+        from video_automation.services.direction import effects as fx
+
+        pv = prof.purpose
+        placed: list[tuple[int, int]] = []
+
+        async def put(frames_: list[Any], name: str, at: int, n: int, **kw: Any) -> None:
+            if at < 0 or n <= 0 or any(a < at + n and at < b for a, b in placed):
+                return  # 同じトラックで重ねない
+            a = await self._overlay(project_id, frames_, name, fps)
+            cmds.append(
+                AddClip(
+                    track_id=lane(FX_TRACK), asset_id=a.id, start_frame=at,
+                    duration_frames=n, clip_id=str(uuid4()), **kw,
+                )
+            )  # fmt: skip
+            placed.append((at, at + n))
+
+        if pv == Purpose.EVENT and title_end > t_at:  # 題名の入り（slide 16f）の終わり
+            fr = await asyncio.to_thread(fx.confetti, w, h, prof.palette.chart)
+            await put(fr, "紙吹雪（X1）", t_at + 16, min(len(fr), total - t_at - 16))
+        if pv in (Purpose.PRODUCT, Purpose.PROMO) and title_end > t_at:
+            # 題名の右上（題名の箱の大きさは分からないので、中央の題名の右上のあたり）
+            size = max(8, round(h * 0.08 * 0.6))
+            fr = await asyncio.to_thread(fx.sparkle, size)
+            n = len(fr)
+            at = t_at + 18
+            if at + n <= title_end:
+                tf = ClipTransform(fit=FitMode.FIT, scale=round(2 * size / h, 4), x=0.28, y=-0.12)
+                await put(fr, "きらめき（X2）", at, n, transform=tf)
+        if pv in (Purpose.SHORT, Purpose.GAME):  # 驚きの発話の頭（1 秒に最大 1 回）
+            last = -(10**9)
+            fl: list[Any] = []
+            for ln in lines:
+                if ln.emotion == "surprise" and ln.start - last >= round(fps):
+                    fl = fl or await asyncio.to_thread(fx.focus_lines, w, h)
+                    await put(fl, "集中線（X3）", ln.start, len(fl))
+                    last = ln.start
+        if pv == Purpose.TRAILER:
+            if title_end > t_at:  # 題名の後ろの煙（5 秒で繰り返す。題名の間だけ）
+                fr = await asyncio.to_thread(fx.smoke, w, h)
+                a = await self._overlay(project_id, fr, "煙（X5）", fps)
+                pos = t_at
+                while pos < title_end:
+                    n = min(len(fr), title_end - pos)
+                    cmds.append(
+                        AddClip(track_id=lane(FX_TRACK), asset_id=a.id, start_frame=pos,
+                                duration_frames=n, clip_id=str(uuid4()))
+                    )  # fmt: skip
+                    placed.append((pos, pos + n))
+                    pos += n
+            durs = [max(1, x.end - x.start) / fps for x in lines]
+            act = pp.acts(durs) if lines else []
+            if 3 in act:  # 第 3 幕の全体に残り火
+                s3 = lines[act.index(3)].start
+                e3 = lines[-1].end
+                fr = await asyncio.to_thread(fx.embers, w, h)
+                a = await self._overlay(project_id, fr, "残り火（X6）", fps)
+                pos = s3
+                while pos < e3:
+                    n = min(len(fr), e3 - pos)
+                    if any(x < pos + n and pos < y for x, y in placed):
+                        break
+                    cmds.append(
+                        AddClip(track_id=lane(EMBER_TRACK), asset_id=a.id, start_frame=pos,
+                                duration_frames=n, clip_id=str(uuid4()))
+                    )  # fmt: skip
+                    pos += n
 
     async def _cut_transitions(
         self,
@@ -1818,6 +1931,12 @@ class DirectionService:
                         max_h=0.12,
                     ),
                 )
+        # 統合版 X1・X2・X3・X5・X6: 効果と粒
+        if prof is not None:
+            # 予告編の題名は台詞の後（t_at から tr_title フレーム）。他の用途は 0〜title_end
+            t_end = t_at + tr_title if tr_title else title_end
+            await self._effects(p.id, prof, lines, cmds, lane, t_at, t_end, total, fps, w, h)
+
         # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
         if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:
             skipped += await self._cut_transitions(p.id, prof, cmds, fig_t, total, fps, w, h, lane)
