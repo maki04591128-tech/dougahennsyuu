@@ -285,7 +285,7 @@ def shorten_animation(cmds: list[Any], clip_id: str | None, old_len: int, cut: i
     for k, c in enumerate(cmds):
         if not isinstance(c, SetClipAnimation) or c.clip_id != clip_id or c.animation is None:
             continue
-        keys = []
+        keys: list[Any] = []
         for kf in c.animation.keyframes:
             f = kf.frame if kf.frame < old_len / 2 else max(0, kf.frame - cut)
             if f < old_len - cut and (not keys or f > keys[-1].frame):

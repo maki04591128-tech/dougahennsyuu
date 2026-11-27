@@ -41,6 +41,7 @@ from video_automation.services.design.series import (
     apply_series,
     series_violations,
 )
+from video_automation.services.rendering.lyrics import GENRES
 
 
 class DesignError(Exception):
@@ -126,6 +127,7 @@ class DesignService:
                 purpose=Purpose(p.purpose) if p.purpose else None,
                 extras=[Component(x) for x in p.design_extras or []],
                 series_id=p.series_id,
+                genre=p.music_genre if p.music_genre in GENRES else None,  # type: ignore[arg-type]
             )
 
     async def set(self, project_id: str, design: ProjectDesign) -> ProjectDesign:
@@ -137,6 +139,8 @@ class DesignService:
                 if design.series_id and self.series is not None:
                     self.series.get(design.series_id)  # 無いシリーズは付けない
                 p.series_id = design.series_id or None
+            if design.genre is not None:
+                p.music_genre = design.genre
             await s.commit()
         return await self.get(project_id)
 
