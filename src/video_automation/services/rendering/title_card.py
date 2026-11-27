@@ -98,6 +98,12 @@ class TitleCardService:
                 raise TimelineNotFoundError(f"project {project_id}")
             return p.width, p.height, p.fps_num, p.fps_den
 
+    async def _look(self, project_id: str) -> str:
+        """統合版 Y1〜Y10: 利用者が選んだ見た目の型（無ければ ""）。"""
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            return (p.look or "") if p is not None else ""
+
     @staticmethod
     def animation_seconds(req: TitleCardRequest) -> float:
         if req.animation_sec:
@@ -465,6 +471,9 @@ class TitleCardService:
             )
         if layout.icon is not None and req.icon and req.only_item is None:
             await asyncio.to_thread(_paste_icon, out, req.icon, layout.icon, req.accent_color)
+        look = await self._look(req.project_id)
+        if look in Y_SURFACES:
+            await asyncio.to_thread(card_surface, out, Y_SURFACES[look], h, req.only_item)
         label = req.heading or (req.body[0] if req.body else "")
         asset = await self.timeline.register_generated(
             req.project_id, out, AssetKind.IMAGE, "ffmpeg", f"カード「{label[:20]}」"
@@ -482,4 +491,73 @@ def _paste_icon(path: Path, name: str, box: tuple[int, int, int], color: str) ->
     with Image.open(path) as im:
         card = im.convert("RGBA")
     card.alpha_composite(render_icon(name, size, color), (x, y))
+    card.save(path)
+
+
+# 統合版 Y1・Y2・Y3・Y8・Y9: 見た目の型ごとのカードの面の描き方
+Y_SURFACES = {"Y1": "chalk", "Y2": "blueprint", "Y3": "paper", "Y8": "glass", "Y9": "comic"}
+
+
+def card_surface(path: Path, kind: str, canvas_h: int, only_item: int | None = None) -> None:
+    """カードの PNG を、見た目の型の面にして同じファイルに書き戻す。
+
+    - chalk（Y1 黒板）: 線と文字の縁を、細かいノイズで欠けさせる（縁の 2px の画素の約 3 割を薄く）
+    - blueprint（Y2 青焼き）: 面を塗らず、外形を白の 2px の線だけに
+    - paper（Y3 紙の切り絵）: 右下へ画面の高さの 0.6% ずらした影（ぼかし 0.8%・不透明度 35%）
+    - glass（Y8 ガラス）: 面を白の不透明度 14% にし、白の縁 1px（不透明度 40%）。後ろのぼかしは
+      書き出しで重ねる画が無いので付けない
+    - comic（Y9 コミック）: 外形の外に #111111 の縁 6px（1080p）
+    only_item（項目だけの画）は面が無いので、comic・chalk だけ文字に掛ける。"""
+    import numpy as np
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter
+
+    with Image.open(path) as im:
+        card = im.convert("RGBA")
+    a = card.getchannel("A")
+    k = canvas_h / 1080
+    if kind == "chalk":
+        arr = np.asarray(a, dtype=np.float32)
+        edge = np.asarray(
+            ImageChops.subtract(a, a.filter(ImageFilter.MinFilter(5))), dtype=np.float32
+        )
+        rng = np.random.default_rng(7)
+        noise = rng.random(arr.shape) < 0.3
+        arr = np.where((edge > 0) & noise, arr * 0.25, arr)
+        card.putalpha(Image.fromarray(arr.astype(np.uint8), "L"))
+    elif kind in ("blueprint", "glass") and only_item is None:
+        box = a.getbbox()
+        if box is not None:
+            # 面（文字より薄い所）を作り直す: 文字は残し、面だけ置き換える
+            arr = np.asarray(card).copy()
+            al = arr[..., 3]
+            vals, cnt = np.unique(al[al > 0], return_counts=True)
+            panel = al == (vals[int(np.argmax(cnt))] if len(vals) else 0)  # 最も多い不透明度が面
+            fill = 0 if kind == "blueprint" else round(255 * 0.14)
+            arr[panel, :3] = 255
+            arr[panel, 3] = fill
+            card = Image.fromarray(arr, "RGBA")
+            x0, y0, x1, y1 = box
+            lw = max(1, round((2 if kind == "blueprint" else 1) * k))
+            col = (255, 255, 255, 255 if kind == "blueprint" else round(255 * 0.4))
+            ImageDraw.Draw(card).rectangle((x0, y0, x1 - 1, y1 - 1), outline=col, width=lw)
+    elif kind == "paper":
+        off, blur = max(1, round(canvas_h * 0.006)), max(1, round(canvas_h * 0.008))
+        pad = off + 2 * blur
+        out = Image.new("RGBA", (card.width + pad, card.height + pad), (0, 0, 0, 0))
+        sh = Image.new("L", out.size, 0)
+        sh.paste(a.point(lambda v: round(v * 0.35)), (off, off))
+        sh = sh.filter(ImageFilter.GaussianBlur(blur))
+        out.paste((0, 0, 0, 255), (0, 0), sh)
+        out.alpha_composite(card)
+        card = out
+    elif kind == "comic":
+        lw = max(1, round(6 * k))
+        pad = lw
+        big = Image.new("L", (card.width + 2 * pad, card.height + 2 * pad), 0)
+        big.paste(a.point(lambda v: 255 if v > 32 else 0), (pad, pad))
+        ring = big.filter(ImageFilter.MaxFilter(2 * lw + 1))
+        out = Image.new("RGBA", big.size, (0, 0, 0, 0))
+        out.paste((17, 17, 17, 255), (0, 0), ring)
+        out.alpha_composite(card, (pad, pad))
+        card = out
     card.save(path)
