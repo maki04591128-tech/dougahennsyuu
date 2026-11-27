@@ -102,10 +102,10 @@ from video_automation.services.direction.plan import (
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering import flower as fl
-from video_automation.services.rendering import numbers
+from video_automation.services.rendering import numbers, word_icon
 from video_automation.services.rendering import t_extras as tx
 from video_automation.services.rendering import text_scenes as tscn
-from video_automation.services.rendering.card import card_layout
+from video_automation.services.rendering.card import card_layout, text_width
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
 from video_automation.services.rendering.lower_third import draw_lower_third
 from video_automation.services.rendering.lower_third import schedule as lower_third_schedule
@@ -336,6 +336,9 @@ T38_SCALE = 1.15
 # 統合版 T35: 強調テロップの 2 桁以上の半角数字を回す用途
 T35_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE, Purpose.PRODUCT})
 _T35_NUM = re.compile(r"[0-9]{2,}")
+# 統合版 T28: 語が図に変わる用途と、強調テロップの入りの長さ（この後 12f 静止して変える）
+T28_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS})
+T28_ENTER = 10
 
 
 def t38_hit(line_text: str, phrase: str, query: dict[str, Any] | None, strike: bool = True) -> bool:
@@ -1216,6 +1219,41 @@ class DirectionService:
         a = await self._overlay(project_id, gen(), f"数字が回る（T35）「{text[:12]}」", fps)
         await asyncio.to_thread(shutil.rmtree, work, True)
         return a
+
+    async def _morph_card(
+        self,
+        project_id: str,
+        kreq: CardRequest,
+        still: AssetRead,
+        icon: str,
+        n: int,
+        fps: float,
+        w: int,
+        h: int,
+        main: str,
+    ) -> AssetRead:
+        """統合版 T28: 強調テロップのカードの文字を、入りの後 12f 静止してから図に変える画の列。"""
+        from PIL import Image
+
+        layout = card_layout(kreq, w, h)
+        if not layout.lines:
+            return still
+        x0 = min(ln.x for ln in layout.lines)
+        y0 = min(ln.y for ln in layout.lines)
+        x1 = max(ln.x + text_width(ln.text, ln.size) for ln in layout.lines)
+        y1 = max(ln.y + round(ln.size * 1.15) for ln in layout.lines)
+        size = max(ln.size for ln in layout.lines)
+        card = await asyncio.to_thread(
+            lambda: Image.open(self.settings.data_dir / still.path).convert("RGBA")
+        )
+        box = (round(x0), round(y0), min(card.width - 1, round(x1)), min(card.height - 1, y1))
+        gen = word_icon.card_morph_frames(
+            card, box, kreq.heading, icon, n, T28_ENTER, size,
+            self.titles.font_path(kreq.font), main,
+        )  # fmt: skip
+        return await self._overlay(
+            project_id, gen, f"語が図に変わる（T28）「{kreq.heading[:12]}」", fps
+        )
 
     async def _not_telops(
         self,
@@ -3194,6 +3232,14 @@ class DirectionService:
                 and numbers.find_year(s.text) is None
             ):  # 統合版 T35: 強調テロップの 2 桁以上の数字を回す
                 a = await self._roll_card(p.id, kreq, a, end - start, fps)
+            elif (
+                prof is not None
+                and prof.purpose in T28_PURPOSES
+                and (ic := word_icon.icon_for(s.text)) is not None
+                and end - start > T28_ENTER + word_icon.HOLD + word_icon.MORPH + 6
+            ):  # 統合版 T28: 強調テロップの語が図に変わる
+                a = await self._morph_card(p.id, kreq, a, ic, end - start, fps, w, h,
+                                           prof.palette.main)  # fmt: skip
             texts.append(text_use("keyword", kreq, a, w, h, sec(start), sec(end)))
             aw, ah = a.width or 1, a.height or 1
             # 右上に置く（左上は章の見出しの場所。layout-no-overlap の「補助」の枠）
