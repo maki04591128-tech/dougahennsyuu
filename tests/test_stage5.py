@@ -714,8 +714,8 @@ def test_rich_direction_more_lyric_motions(tmp_path):
 
     clean = tmp_path / "clean.mp4"
     subprocess.run(
-        [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=4:r=30", "-f",
-         "lavfi", "-i", "sine=d=4", "-shortest", "-pix_fmt", "yuv420p", str(clean)],
+        [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=5:r=30", "-f",
+         "lavfi", "-i", "sine=d=5", "-shortest", "-pix_fmt", "yuv420p", str(clean)],
         check=True,
     )  # fmt: skip
     motions = [
@@ -725,6 +725,7 @@ def test_rich_direction_more_lyric_motions(tmp_path):
         ["circle", "drift", "scatter"],
         ["warp_in", "breathe", "warp_out"],
         ["gather", "static", "fall"],
+        ["stack", "static", "rise_out"],  # 並べて動かす（同じ行を縦に 3 つ）
     ]
     cues = [
         {"segment": str(i), "text": "そら", "start_frame": 2 + 19 * i,

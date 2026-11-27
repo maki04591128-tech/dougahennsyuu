@@ -414,10 +414,26 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
             for f_, u in ((1, 0.0), (8, 0.5), (21, 1.0)):
                 _key(ob, "location", f_, x0 - 0.4 * W * PX * (1 - u), 0)
                 _key(ob, "location", f_, y0 + 0.08 * H * PX * math.sin(math.pi * u), 1)
+        elif entrance == "stack":  # 並べて動かす: 同じ行を縦に 3 つ、4f ずつ遅らせて上から落とす
+            hh = max(0.3, ob.dimensions.y) * 1.15
+            copies = [ob]
+            for _j in (1, 2):
+                cp = ob.copy()  # 形（データ）は共有する
+                cp.animation_data_clear()
+                sc.collection.objects.link(cp)
+                copies.append(cp)
+            # 上（1 つ目の写し）→ 中央（元の物体）→ 下（2 つ目の写し）の順に、4f ずつ遅らせる
+            for k, (cp, yj) in enumerate(
+                ((copies[1], y0 + hh), (copies[0], y0), (copies[2], y0 - hh))
+            ):
+                f0 = 1 + 4 * k
+                _key(cp, "location", 1, yj + 0.08 * H * PX, 1)
+                _key(cp, "location", f0, yj + 0.08 * H * PX, 1)
+                _key(cp, "location", f0 + 8, yj, 1)
         elif entrance == ent_a:
             pass  # ネオン（不透明度だけ）
         else:
-            entrance = "bounce"  # morph（T23）・stack・slam 以外の未対応は 1 文字ずつの弾み
+            entrance = "bounce"  # morph（T23）は未対応なので 1 文字ずつの弾み
         hold_end = max(12, out_at)
         if hold == "breathe":  # 呼吸: 1.000→1.015→1.000、周期 3.2 秒
             per = round(3.2 * FPS)
