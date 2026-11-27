@@ -31,6 +31,11 @@ def test_surfaces(tmp_path: Path) -> None:
     assert out["paper"].size[0] > 200 and out["paper"].getpixel((203, 80))[3] > 0  # 右下の影
     assert out["comic"].size == (212, 92) and out["comic"].getpixel((2, 40))[:3] == (17, 17, 17)
     assert out["chalk"].getpixel((100, 40)) == (255, 255, 255, 255)  # 中は欠けない
+    # Y9 の網点: 面の下 40% にだけ暗い点がある
+    cm = out["comic"]
+    top = {cm.getpixel((x, 10))[:3] for x in range(10, 200)}
+    low = {cm.getpixel((x, y))[:3] for x in range(10, 200) for y in range(60, 80)}
+    assert len(top) == 1 and min(sum(c) for c in low) < sum(next(iter(top))) - 10
     assert out["chalk"].tobytes() != Image.open(tmp_path / "blueprint.png").tobytes()
     for k in ("blueprint", "glass"):
         assert out[k].getpixel((100, 40)) == (255, 255, 255, 255)  # 文字は残す
