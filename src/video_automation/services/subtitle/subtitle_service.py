@@ -684,6 +684,52 @@ class SubtitleService:
         return out
 
     # ---------- 出力 (P4-05 / P4-06 / P4-07) ----------
+    async def translate_export(self, req: Any, llm: Any) -> SubtitleExportResult:
+        """統合版 W5: 字幕を訳し、1 行 42 字・下が長い 2 行で、別の SRT（`<台本>.<言語>.srt`）に。
+
+        読む速さが 1 秒 20 字（子ども向けは 17 字）を超える字幕は知らせる。"""
+        from video_automation.schemas.design import Purpose
+        from video_automation.services.subtitle import translate as tr
+
+        async with self.db.session_factory() as s:
+            script, project = await self._project_of(s, req.script_id)
+            fps = fps_of(project)
+        cues = await self.cues(req.script_id)
+        if not cues:
+            raise SubtitleStateError("generate subtitles first")
+        if any(c.start_frame is None or c.end_frame is None for c in cues):
+            raise SubtitleStateError("synchronize subtitles first")
+        texts = await tr.translate(llm, [c.text.replace("\n", " ") for c in cues], req.language)
+        kids = False
+        if self.design is not None:
+            kids = (await self.design.get(project.id)).purpose == Purpose.KIDS
+        limit = tr.CPS_KIDS if kids else tr.CPS_MAX
+        rows, slow = [], []
+        for c, t in zip(cues, texts, strict=True):
+            line = tr.wrap(t, tr.LINE_MAX[req.language])
+            a, b = c.start_frame or 0, c.end_frame or 0
+            if tr.reading_speed(line, float((b - a) / fps)) > limit:
+                slow.append(c.index)
+            rows.append((a, b, c.speaker, line))
+        content = build_srt(rows, fps)
+        out_dir = self.settings.data_dir / "projects" / project.id / "subtitles"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path: Path = out_dir / f"{script.id}.{req.language}.srt"
+        path.write_text(content, encoding="utf-8-sig", newline="")
+        warnings = []
+        if slow:
+            warnings.append(
+                f"訳した字幕 {len(slow)} 枚が 1 秒 {limit:g} 字を超えています"
+                f"（{', '.join(str(i) for i in slow[:10])}{' ほか' if len(slow) > 10 else ''}）"
+            )
+        return SubtitleExportResult(
+            format=SubtitleFormat.SRT,
+            path=path.relative_to(self.settings.data_dir).as_posix(),
+            content=content,
+            cue_count=len(cues),
+            warnings=warnings,
+        )
+
     async def export(self, req: SubtitleExportRequest) -> SubtitleExportResult:
         async with self.db.session_factory() as s:
             script, project = await self._project_of(s, req.script_id)

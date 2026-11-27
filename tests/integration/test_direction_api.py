@@ -1017,3 +1017,30 @@ async def test_kids_background_is_liquid(dclient):
     log_ = Path(c.app.state.container.settings.blender_path).parent / "calls.jsonl"
     calls = [json.loads(x) for x in log_.read_text("utf-8").splitlines()]
     assert [x["style"] for x in calls if x["script"] == "motion_bg"][-1] == "liquid"
+
+
+async def test_translated_subtitles_written_separately(dclient):
+    """統合版 W5: 訳した字幕は別の SRT に。速すぎる字幕は知らせる。"""
+    from types import SimpleNamespace
+
+    from video_automation.schemas.subtitle import SubtitleTranslateRequest
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    container = c.app.state.container
+    n = len(await container.subtitles.cues(sid))
+
+    class Stub:
+        async def complete_json(self, task, msgs, schema, **kw):
+            import json as j
+
+            lines = j.loads(msgs[-1].content)["lines"]
+            text = "This sentence is quite long so that the reader may not keep up with it at all"
+            return SimpleNamespace(data={"lines": ["Hi."] + [text] * (len(lines) - 1)})
+
+    res = await container.subtitles.translate_export(
+        SubtitleTranslateRequest(script_id=sid), Stub()
+    )
+    assert res.path.endswith(f"{sid}.en.srt") and res.cue_count == n
+    assert "Hi." in res.content and res.warnings and "20" in res.warnings[0]
+    assert all(len(x) <= 42 for x in res.content.splitlines())

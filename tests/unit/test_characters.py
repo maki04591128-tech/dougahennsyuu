@@ -180,3 +180,37 @@ def test_safe_foot_x_keeps_moving_tachie_inside_the_screen():
     assert x - 420 / 2 * 1.03 - char_h * MOTION_MARGIN >= 0
     # ただし中央の絵に重なるほどは寄せない
     assert safe_foot_x(W, 2000, char_h, 0.115) == W * 0.3
+
+
+def test_acting_nod_on_strongest_phrase_and_blink_before() -> None:
+    """統合版 Q8: 強い句の頭で振幅 50% のうなずき（1 文に 1 回）、疑問の台詞は頭の 5f 前にまばたき。"""
+    from video_automation.schemas.voice import AudioQuery
+    from video_automation.services.voice.timing import strongest_phrase_sec
+
+    def mora(p: float) -> dict:
+        return {"text": "ア", "vowel": "a", "vowel_length": 0.1, "pitch": p}
+
+    q = AudioQuery.model_validate(
+        {
+            "accent_phrases": [
+                {"moras": [mora(5.5), mora(5.6)], "accent": 1},
+                {"moras": [mora(5.4), mora(6.1), mora(5.8)], "accent": 2},
+                {"moras": [mora(5.2)], "accent": 1},
+            ],
+            "prePhonemeLength": 0.1,
+        }
+    )
+    assert strongest_phrase_sec(q) == 0.3  # 2 つ目の句（0.1 + 0.2 秒）
+    lines = [
+        Line("A", "これはペンなのだ", 30, 90, accent=9),
+        Line("A", "これで合っているかな？", 120, 180, accent=3),
+        Line("A", "完成なのだ！", 200, 260, accent=6),
+    ]
+    sch = plan("A", lines, 30.0)
+    soft = [e.start for e in sch.events if e.kind == "nod_soft"]
+    assert soft == [39, 123]  # 結論の台詞は身振りにうなずきがあるので足さない
+    assert sch.blinks == [115, 195]  # 疑問・結論の 5f 前
+    an = Animator(sch, 30.0)
+    phases = [an.state(f).blink_phase for f in range(0, 260)]
+    assert phases[115:119] == [0, 1, 2, 3]
+    assert motion.GESTURES["nod_soft"][1][1]["dy"] == motion.GESTURES["nod"][1][1]["dy"] / 2

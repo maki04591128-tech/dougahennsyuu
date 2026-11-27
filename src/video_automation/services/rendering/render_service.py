@@ -246,6 +246,25 @@ def credit_card_ass(
 BLUR_ROLES = ("image",)  # 統合版 E4: 読ませる文字の無いクリップの役割
 
 
+class _Timer:
+    """統合版 W4: 書き出しの処理ごとの時間（秒）。品質検査の報告に出す。"""
+
+    def __init__(self) -> None:
+        import time
+
+        self._now = time.perf_counter
+        self._t0 = self._last = self._now()
+        self.laps: dict[str, float] = {}
+
+    def lap(self, name: str) -> None:
+        t = self._now()
+        self.laps[name] = round(self.laps.get(name, 0.0) + t - self._last, 2)
+        self._last = t
+
+    def done(self) -> dict[str, float]:
+        return {**self.laps, "total": round(self._now() - self._t0, 2)}
+
+
 class RenderService:
     def __init__(
         self,
@@ -938,25 +957,38 @@ class RenderService:
                 return
         await self.characters.apply(req.script_id)
 
+    @staticmethod
+    def _profile(req: RenderRequest) -> Any:
+        """書き出しの大きさ。統合版 W4 の下書きは解像度 50%（偶数に丸める）。"""
+        prof = RENDER_PROFILES[req.profile]
+        if not req.draft:
+            return prof
+        return prof.model_copy(
+            update={"width": prof.width // 4 * 2, "height": prof.height // 4 * 2}
+        )
+
     async def _render(
         self, render_id: str, req: RenderRequest, progress: ProgressFn
     ) -> dict[str, Any]:
-        prof = RENDER_PROFILES[req.profile]
+        prof = self._profile(req)
+        tm = _Timer()
         encoder = await self._encoder(req.encoder)
         out_dir = self.settings.data_dir / "projects" / req.project_id / "renders"
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = out_dir / f"{stamp}_{prof.name.value}.mp4"
+        tag = f"{prof.name.value}{'_draft' if req.draft else ''}"
+        out = out_dir / f"{stamp}_{tag}.mp4"
         # 同じ秒に 2 本書き出すと同じ名前になり、互いのファイルを壊していた。名前を先に押さえる
         try:
             out.open("x").close()
         except FileExistsError:
-            out = out_dir / f"{stamp}_{prof.name.value}_{render_id[:8]}.mp4"
+            out = out_dir / f"{stamp}_{tag}_{render_id[:8]}.mp4"
         await self._set(render_id, status=RenderStatus.RENDERING.value, encoder=encoder)
         await self._tachie(req)
+        tm.lap("tachie")
         rich = await self.rich_plan(req)
         if rich is not None:
-            return await self._render_rich(render_id, req, rich, out, encoder, progress)
+            return await self._render_rich(render_id, req, rich, out, encoder, progress, tm)
         ass = None
         subs: list[str] = []
         if req.script_id:
@@ -985,11 +1017,17 @@ class RenderService:
             end_frame=req.end_frame,
             ass_path=ass,
             loudnorm=req.loudnorm,
-            finish=await self._finish(req.project_id, prof.width, prof.height),
-            blur=await self._blur_clips(req.project_id),
+            # 統合版 W4: 下書きは仕上げ（グレイン・グロー）・モーションブラーを省く
+            finish="" if req.draft else await self._finish(req.project_id, prof.width, prof.height),
+            blur=None if req.draft else await self._blur_clips(req.project_id),
         )
+        tm.lap("prepare")
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
-        warnings = plan.warnings + await self._flash_guard(out, req.project_id)
+        tm.lap("ffmpeg")
+        warnings = plan.warnings + (
+            [] if req.draft else await self._flash_guard(out, req.project_id)
+        )
+        tm.lap("flash_check")
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
@@ -1010,6 +1048,8 @@ class RenderService:
             "subtitle_paths": subs,
             "credits_path": credits_path,
             "warnings": warnings,
+            "draft": req.draft,
+            "timings": tm.done(),
         }
 
     async def _blur_clips(self, project_id: str) -> set[str]:
@@ -1035,10 +1075,12 @@ class RenderService:
         out: Path,
         encoder: str,
         progress: ProgressFn,
+        tm: "_Timer | None" = None,
     ) -> dict[str, Any]:
         """字幕なしで書き出す → Blender で画面演出 → 字幕を焼き込む（字幕は演出で動かない）。"""
         assert self.blender is not None and self.design is not None
-        prof = RENDER_PROFILES[req.profile]
+        prof = self._profile(req)
+        tm = tm or _Timer()
         r0 = req.start_frame or 0
         clean = out.with_suffix(".clean.mp4").resolve()
         rich_out = out.with_suffix(".rich.mp4").resolve()
@@ -1059,11 +1101,12 @@ class RenderService:
             start_frame=req.start_frame,
             end_frame=req.end_frame,
             loudnorm=req.loudnorm,
-            blur=await self._blur_clips(req.project_id),
+            blur=None if req.draft else await self._blur_clips(req.project_id),
         )
         await self.ffmpeg.run(
             plan.args, total_sec=plan.duration_sec, progress=part_progress(0.0, 0.25)
         )
+        tm.lap("ffmpeg_clean")
         async with self.db.session_factory() as s:
             p = await s.get(Project, req.project_id)
             assert p is not None
@@ -1201,9 +1244,11 @@ class RenderService:
                         "text": pal.text,
                     },
                     **rich.args(),
+                    "draft": req.draft,  # 統合版 W4: サンプル数 1
                 },
                 timeout=timeout,
             )
+            tm.lap("blender")
         except BlenderError as exc:
             raise CommandError(f"画面演出の書き出しに失敗しました: {exc}") from exc
         if not rich_out.is_file():
@@ -1231,7 +1276,7 @@ class RenderService:
                     subs.append(r.path)
         info0 = await self.ffmpeg.probe(rich_out)
         args = ["-i", str(rich_out)]
-        fin = await self._finish(req.project_id, prof.width, prof.height)
+        fin = "" if req.draft else await self._finish(req.project_id, prof.width, prof.height)
         vf = [fin] if fin else []
         if ass is not None:
             vf.append(f"ass='{filter_path(ass)}'{self._fontsdir()}")
@@ -1246,7 +1291,11 @@ class RenderService:
         )
         for f in (clean, rich_out):
             f.unlink(missing_ok=True)
-        warnings = plan.warnings + await self._flash_guard(out, req.project_id)
+        tm.lap("ffmpeg_finish")
+        warnings = plan.warnings + (
+            [] if req.draft else await self._flash_guard(out, req.project_id)
+        )
+        tm.lap("flash_check")
         credits_path = await self._credits(req, out, encoder)
         info = await self.ffmpeg.probe(out)
         rel = out.relative_to(self.settings.data_dir).as_posix()
@@ -1281,6 +1330,8 @@ class RenderService:
                 "notes": rich.notes,
                 "render_sec": res.get("render_sec"),
             },
+            "draft": req.draft,
+            "timings": tm.done(),
         }
 
     async def _credits(self, req: RenderRequest, out: Path, encoder: str) -> str | None:

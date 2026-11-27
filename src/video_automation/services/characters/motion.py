@@ -87,6 +87,14 @@ GESTURES: dict[str, list[Key]] = {
         (15, {"dy": 0.007, "sy": -0.01, "rot": 0.5}, "out"),
         (22, {}, "inout"),
     ],
+    # 統合版 Q8: 振幅 50% のうなずき（強い句の頭）
+    "nod_soft": [
+        (0, {}, "inout"),
+        (5, {"dy": 0.005, "sy": -0.007, "rot": 0.4}, "out"),
+        (10, {"dy": -0.001, "sy": 0.002}, "inout"),
+        (15, {"dy": 0.0035, "sy": -0.005, "rot": 0.25}, "out"),
+        (22, {}, "inout"),
+    ],
     # 驚いて後ろへ（中央から離れる）
     "jump_back": [
         (0, {}, "inout"),
@@ -157,6 +165,7 @@ class Line:
     start: int
     end: int
     levels: list[int] | None = None  # 口の開き（0/1/2）。start からのフレームごと
+    accent: int | None = None  # 統合版 Q8: アクセントの最も強い句の頭（start からのフレーム）
 
 
 @dataclass
@@ -174,6 +183,7 @@ class Schedule:
     events: list[Event] = field(default_factory=list)
     mouth: dict[int, int] = field(default_factory=dict)  # フレーム → 口の開き
     speaking: list[tuple[int, int]] = field(default_factory=list)
+    blinks: list[int] = field(default_factory=list)  # 統合版 Q8: 台詞に合わせたまばたきの始まり
 
 
 def plan(name: str, lines: list[Line], fps: float, seed: int = 0) -> Schedule:
@@ -190,6 +200,12 @@ def plan(name: str, lines: list[Line], fps: float, seed: int = 0) -> Schedule:
         sch.spans.append((ln.start, end, beat.expression, beat.pose))
         sch.speaking.append((ln.start, ln.end))
         g0 = ln.start + round(0.1 * fps)
+        # 統合版 Q8: アクセントの最も強い句の頭で、振幅 50% のうなずき（1 文に 1 回。
+        # 身振りにうなずきがある文は足さない）。疑問・驚き・結論の台詞は頭の 5f 前にまばたき
+        if ln.accent is not None and "nod" not in beat.gestures:
+            sch.events.append(Event("nod_soft", ln.start + ln.accent))
+        if beat.pose in ("think", "oops", "confident") and beat.expression != "troubled":
+            sch.blinks.append(max(0, ln.start - round(5 * fps / 30)))
         for g in beat.gestures:
             if g in SUSTAIN:
                 sch.events.append(Event(g, g0, max(g0 + 1, ln.end)))
@@ -266,6 +282,11 @@ class Animator:
             if r % 6 == 0:  # たまに 2 回続けて
                 out.update({f + 6 + i: i for i in range(BLINK_FRAMES)})
             f += round((2.4 + (r % 1000) / 1000 * 3.0) * self.fps)
+        for b in self.sch.blinks:  # 統合版 Q8: 台詞に合わせたまばたき（近い自然なまばたきは消す）
+            for g in [x for x, ph in out.items() if ph == 0 and abs(x - b) < 12]:
+                for i in range(BLINK_FRAMES):
+                    out.pop(g + i, None)
+            out.update({b + i: i for i in range(BLINK_FRAMES)})
         return out
 
     def _span(self, f: int) -> tuple[str, str]:

@@ -375,6 +375,9 @@ class RenderRequest(BaseModel):
     rich_direction: RichLevel = RichLevel.AUTO
     credits: CreditsMode = CreditsMode.TEXT
     credits_sec: float = Field(default=5.0, ge=2.0, le=20.0)  # 終わりの画面の長さ
+    # 統合版 W4: 下書き（解像度 50%・Blender のサンプル 1・仕上げ・モーションブラー・
+    # 点滅の検査を省く）。配置（位置・時刻）は本番と同じ
+    draft: bool = False
 
     @model_validator(mode="after")
     def _range(self) -> "RenderRequest":

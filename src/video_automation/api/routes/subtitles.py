@@ -17,6 +17,7 @@ from video_automation.schemas.subtitle import (
     SubtitleGenerateRequest,
     SubtitleStyle,
     SubtitleSyncRequest,
+    SubtitleTranslateRequest,
 )
 
 scripts = APIRouter(prefix="/scripts", tags=["scripts"])
@@ -70,6 +71,12 @@ async def list_cues(script_id: str, c: AppContainer = Depends(get_container)):
 @router.post("/export", response_model=SubtitleExportResult)
 async def export(body: SubtitleExportRequest, c: AppContainer = Depends(get_container)):
     return await c.subtitles.export(body)
+
+
+@router.post("/translate", response_model=SubtitleExportResult)
+async def translate(body: SubtitleTranslateRequest, c: AppContainer = Depends(get_container)):
+    """統合版 W5: 字幕を訳して、別の字幕ファイル（SRT）に書き出す（焼き込みの字幕は変えない）。"""
+    return await c.subtitles.translate_export(body, c.llm)
 
 
 @router.get("/style/{project_id}", response_model=SubtitleStyle)
