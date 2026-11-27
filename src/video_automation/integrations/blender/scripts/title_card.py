@@ -104,6 +104,45 @@ def gloss(mat, scene, w, h, vw, vh, pos_y, box_w, box_h, start, n):  # noqa: ANN
     scene.frame_end = max(scene.frame_end, start + n - 1)
 
 
+SUN_POS = (0.5, 0.9)  # 統合版 L3: Sun Beams の光源（画面の比）
+SUN_SIZE = 0.6
+SUN_EMIT = 1.8  # しきい値 1.0 を超える明るさにする（文字の面の発光の強さ）
+
+
+def sun_beams(scene, mat):  # noqa: ANN001
+    """統合版 L3: コンポジタの Glare（Sun Beams）で、文字から下へ光の筋を出す。
+
+    透過の書き出しなので、光の筋の明るさを不透明度にも足す（筋が背景の上に見えるように）。"""
+    emit = next(x for x in mat.node_tree.nodes if x.bl_idname == "ShaderNodeEmission")
+    emit.inputs["Strength"].default_value = SUN_EMIT
+    ng = bpy.data.node_groups.new("SunBeams", "CompositorNodeTree")
+    ng.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+    N, L = ng.nodes, ng.links
+    rl = N.new("CompositorNodeRLayers")
+    rl.scene = scene
+    g = N.new("CompositorNodeGlare")
+    g.inputs["Type"].default_value = "Sun Beams"
+    g.inputs["Threshold"].default_value = 1.0
+    g.inputs["Size"].default_value = SUN_SIZE
+    g.inputs["Sun Position"].default_value = SUN_POS
+    L.new(rl.outputs["Image"], g.inputs["Image"])
+    bw = N.new("CompositorNodeRGBToBW")
+    L.new(g.outputs["Glare"], bw.inputs[0])
+    mx = N.new("ShaderNodeMath")
+    mx.operation = "MAXIMUM"
+    mx.use_clamp = True
+    L.new(rl.outputs["Alpha"], mx.inputs[0])
+    L.new(bw.outputs[0], mx.inputs[1])
+    sa = N.new("CompositorNodeSetAlpha")
+    sa.inputs["Type"].default_value = "Replace Alpha"
+    L.new(g.outputs["Image"], sa.inputs["Image"])
+    L.new(mx.outputs[0], sa.inputs["Alpha"])
+    out = N.new("NodeGroupOutput")
+    L.new(sa.outputs[0], out.inputs[0])
+    scene.compositing_node_group = ng
+    scene.render.use_compositing = True
+
+
 def main() -> None:
     a = load_args()
     w, h, fps, frames = int(a["width"]), int(a["height"]), int(a["fps"]), int(a["frames"])
@@ -218,6 +257,9 @@ def main() -> None:
         main_obj = o
         box_w, box_h = dims.x * scale, dims.y * scale
     del main_obj
+
+    if a.get("sun_beams"):  # 統合版 L3（予告編の題名）
+        sun_beams(scene, mat)
 
     gloss_at = int(a.get("gloss_at") or 0)
     if gloss_at > 0:  # 統合版 L7: 斜めの白い帯（不透明度 40%・加算）が題名の上を 1 回通る

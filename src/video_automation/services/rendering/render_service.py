@@ -55,6 +55,7 @@ from video_automation.services.animation.render_anim import (
     ClipAnimFilters,
     clip_filters,
     defaults_only,
+    moving_element,
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
 from video_automation.services.rendering import sync as sync_audio
@@ -242,6 +243,9 @@ def credit_card_ass(
     )
 
 
+BLUR_ROLES = ("image",)  # 統合版 E4: 読ませる文字の無いクリップの役割
+
+
 class RenderService:
     def __init__(
         self,
@@ -426,6 +430,7 @@ class RenderService:
         fast: bool = False,
         single_frame: int | None = None,
         finish: str = "",
+        blur: set[str] | None = None,
     ) -> RenderPlan:
         async with self.db.session_factory() as s:
             p = await s.get(Project, project_id)
@@ -523,11 +528,16 @@ class RenderService:
                 ext[prev.id] = max(ext.get(prev.id, 0), d)
 
         used: dict[str, int] = {}
+        ghost: dict[str, int] = {}  # 統合版 E4: 残像の写しの入力
+        blur_ids = {c.id for c in visual if c.id in anims and moving_element(anims[c.id])} & set(
+            blur or ()
+        )
         span: dict[str, tuple[int, int, float, float]] = {}  # s0, s1, 実素材の秒, 静止で埋める秒
         for c in sorted(set(visual) | set(audible), key=lambda c: c.start_frame):
             s0, s1 = max(c.start_frame, r0), min(c.end_frame + ext.get(c.id, 0), r1)
             if s1 <= s0:
                 continue
+            last_input = len(inputs)
             a = assets[c.asset_id]
             src_path = str(self.timeline.asset_path(a))
             dur = sec(s1 - s0)
@@ -548,11 +558,14 @@ class RenderService:
             used[c.id] = n
             span[c.id] = (s0, s1, media, pad)
             n += 1
+            if c.id in blur_ids:  # 統合版 E4: 同じ素材をもう 1 つ開く（遅らせた写し）
+                inputs += inputs[last_input:]
+                ghost[c.id] = n
+                n += 1
 
-        for c in visual:
-            if c.id not in used:
-                continue
-            i = used[c.id]
+        def emit(c: Any, i: int, label: str, lag: float = 0.0, alpha: float = 1.0) -> None:
+            """クリップ c（入力 i）を重ねる。E4 の残像は lag 秒遅らせ alpha を掛けた写し。"""
+            nonlocal base
             s0, s1, _, pad = span[c.id]
             a = assets[c.asset_id]
             off = sec(s0 - r0)
@@ -564,7 +577,8 @@ class RenderService:
                 clip_filters(
                     anim,
                     fps=fps,
-                    k=sec(s0 - c.start_frame),
+                    # 残像は動きの時刻を lag 秒戻す（位置・拡大・回転は半フレーム前の姿）
+                    k=sec(s0 - c.start_frame) - lag,
                     off=off,
                     clip_sec=sec(c.end_frame - c.start_frame),
                     src_size=(a.width, a.height),
@@ -583,25 +597,32 @@ class RenderService:
                 fades.append(
                     f"fade=t=out:st={ff_seconds(st)}:d={ff_seconds(sec(out_frames))}:alpha=1"
                 )
-            if t.opacity < 1:
-                fades.append(f"colorchannelmixer=aa={t.opacity}")
+            if t.opacity * alpha < 1:
+                fades.append(f"colorchannelmixer=aa={t.opacity * alpha:g}")
             raw = [f"fps={fps_s}", "setpts=PTS-STARTPTS"]
             if pad > 0:
                 raw.append(f"tpad=stop_mode=clone:stop_duration={ff_seconds(pad)}")
             raw += af.pre
-            filters.append(f"[{i}:v]{','.join(raw)}[raw{i}]")
-            filters.append(_layout(t, width, height, f"raw{i}", f"lay{i}", i))
+            filters.append(f"[{i}:v]{','.join(raw)}[raw{label}]")
+            filters.append(_layout(t, width, height, f"raw{label}", f"lay{label}", i))
             chain = ",".join([*af.post, *fades, *af.resize, f"setpts=PTS+{ff_seconds(off)}/TB"])
-            filters.append(f"[lay{i}]{chain}[v{i}]")
+            filters.append(f"[lay{label}]{chain}[v{label}]")
             dx = f"+({af.dx})" if af.dx else ""
             dy = f"+({af.dy})" if af.dy else ""
             x = f"'(W-w)/2+({t.x}{dx})*W'"
             y = f"'(H-h)/2+({t.y}{dy})*H'"
             filters.append(
-                f"[{base}][v{i}]overlay=x={x}:y={y}:eof_action=pass:"
-                f"enable='between(t,{ff_seconds(off)},{ff_seconds(off + dur)})'[b{i}]"
+                f"[{base}][v{label}]overlay=x={x}:y={y}:eof_action=pass:"
+                f"enable='between(t,{ff_seconds(off)},{ff_seconds(off + dur)})'[b{label}]"
             )
-            base = f"b{i}"
+            base = f"b{label}"
+
+        for c in visual:
+            if c.id not in used:
+                continue
+            if c.id in ghost:  # 統合版 E4: 半フレーム前の姿を不透明度 50% で下に重ねる
+                emit(c, ghost[c.id], f"{ghost[c.id]}", lag=float(Fraction(1, 2) / fps), alpha=0.5)
+            emit(c, used[c.id], f"{used[c.id]}")
 
         for c in audible:
             if c.id not in used:
@@ -965,6 +986,7 @@ class RenderService:
             ass_path=ass,
             loudnorm=req.loudnorm,
             finish=await self._finish(req.project_id, prof.width, prof.height),
+            blur=await self._blur_clips(req.project_id),
         )
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
         warnings = plan.warnings + await self._flash_guard(out, req.project_id)
@@ -989,6 +1011,16 @@ class RenderService:
             "credits_path": credits_path,
             "warnings": warnings,
         }
+
+    async def _blur_clips(self, project_id: str) -> set[str]:
+        """統合版 E4: モーションブラーを付けるクリップ（型が使う用途の、文字の無い画像だけ）。"""
+        if self.design is None:
+            return set()
+        prof = await self.design.profile_for(project_id)
+        if prof is None or not prof.motion.motion_blur:
+            return set()
+        roles = await self.design.clip_roles(project_id)
+        return {cid for cid, r in roles.items() if r in BLUR_ROLES}
 
     async def _finish(self, project_id: str, width: int, height: int) -> str:
         """用途の型の仕上げ（統合版 M9・L4・L5・S7）のフィルター。型が無いときは付けない。"""
@@ -1027,6 +1059,7 @@ class RenderService:
             start_frame=req.start_frame,
             end_frame=req.end_frame,
             loudnorm=req.loudnorm,
+            blur=await self._blur_clips(req.project_id),
         )
         await self.ffmpeg.run(
             plan.args, total_sec=plan.duration_sec, progress=part_progress(0.0, 0.25)

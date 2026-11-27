@@ -187,3 +187,13 @@ def defaults_only(anim: ClipAnimation) -> bool:
     if anim.transition_in:
         return False
     return all(is_static(anim.track(p), PROPS[p][0]) for p in PROPS)
+
+
+def moving_element(anim: ClipAnimation) -> bool:
+    """統合版 E4: 要素の位置・拡大・回転が動くか（カメラのズーム・パンは含めない）。"""
+    return not (
+        is_static(anim.track("x"), 0.0)
+        and is_static(anim.track("y"), 0.0)
+        and is_static(anim.track("scale"), 1.0)
+        and is_static(anim.track("rotation"), 0.0)
+    ) or bool(anim.transition_in and anim.transition_in.type.value.startswith("slide"))

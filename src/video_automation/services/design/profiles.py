@@ -643,6 +643,13 @@ for _p, _cs in _FINISH.items():
         PROFILES[_p].components[_c] = ANY
 for _p in _GLOSS:
     PROFILES[_p].components[Component.GLOSS] = 1  # 題名に 1 回
+# 統合版 2.3: M6 リキッド（子ども向けの背景）
+PROFILES[Purpose.KIDS].components[Component.LIQUID] = ANY
+# 統合版 2.3: L3 光の筋（予告編の題名の 1 場面だけ）
+PROFILES[Purpose.TRAILER].components[Component.SUN_BEAMS] = 1
+# 統合版 2.3: M8 2.5D（朗読・物語、MV）
+for _p in (Purpose.STORY, Purpose.MV):
+    PROFILES[_p].components[Component.PARALLAX] = ANY
 
 
 def profile(purpose: Purpose) -> DesignProfile:
