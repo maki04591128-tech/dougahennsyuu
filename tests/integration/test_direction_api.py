@@ -263,6 +263,7 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         "purpose": None,
         "extras": [],
         "series_id": None,
+        "genre": None,
     }
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
@@ -804,3 +805,14 @@ async def test_kids_furigana_in_ass(dclient):
     await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
     ass2 = (await c.post("/subtitles/export", json={"script_id": sid, "format": "ass"})).json()
     assert "Dialogue: 3," not in ass2["content"]
+
+
+async def test_music_genre_setting(dclient):
+    """統合版 M7: 曲のジャンルを設定する（MV・リリックの歌詞の書体と質感）。"""
+    c = dclient
+    pid = (await c.post("/projects", json={"name": "G"})).json()["id"]
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "mv", "genre": "edm"})
+    assert r.status_code == 200 and r.json()["genre"] == "edm"
+    assert (await c.put(f"/projects/{pid}/design", json={"genre": "jazz"})).status_code == 422
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "mv"})
+    assert r.json()["genre"] == "edm"  # 省くと前の設定のまま

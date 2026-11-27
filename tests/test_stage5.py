@@ -251,3 +251,112 @@ def test_rich_direction_beat_pulse_uses_m1_and_kick(tmp_path):
     assert rep["parts"]["beat_pulse"]["ok"], r.stderr[-2000:]
     assert rep["used"]["beat_cut"] == 4  # 拍頭 3 + ピーク 1
     assert (tmp_path / "out.mp4").is_file()
+
+
+# ---------------- 歌詞の置き方（M3）・ジャンル（M7） ----------------
+
+
+def test_lyric_sections():
+    from video_automation.services.rendering import lyrics
+
+    v = ["朝が来る", "窓を開ける", "風が吹く", "君を思う"]
+    c = ["夢の中へ", "光を追って", "涙を越えて", "明日へ行こう"]
+    txt = v + ["空を見上げ", "声がする"] + c + v[:2] + ["もう一度", "はじまりの歌"] + c + ["間"] + c
+    s = lyrics.sections(txt)
+    assert s[:4] == ["verse"] * 4  # 2 行だけのくり返し（朝が来る・窓を開ける）はサビにしない
+    assert s[4:6] == ["bridge", "bridge"] and s[6] == "chorus_first"
+    assert s[7:10] == ["chorus"] * 3 and s[10:12] == ["verse", "verse"]
+    rms = [1.0] * len(txt)
+    for i in range(len(txt) - 4, len(txt)):
+        rms[i] = 0.2
+    assert lyrics.sections(txt, rms)[-4:] == ["drop"] * 4  # 静かな 2 回目以降のサビ
+    assert lyrics.sections(["a", "b", "c"]) == ["verse"] * 3
+    assert lyrics.particle_spans("夢の中へ光を追って") == [(1, 2), (3, 4), (5, 6)]
+    assert lyrics.genre_style(None) == ("M PLUS Rounded 1c", "Bold", "matte")
+    assert lyrics.genre_style("edm")[2] == "glow"
+
+
+def test_lyric_sections_load():
+    """負荷: 200 行の歌詞でも 1 秒以内。"""
+    from video_automation.services.rendering import lyrics
+
+    txt = [f"行{i % 37}" for i in range(200)]
+    t0 = time.perf_counter()
+    lyrics.sections(txt)
+    assert time.perf_counter() - t0 < 1.0
+
+
+@pytest.mark.skipif(not BPY or FFMPEG is None, reason="VA_BPY_PYTHON is not set")
+def test_rich_direction_lyrics_sections_and_noise_shake(tmp_path):
+    """Blender: サビは斜め・A メロは中央（M3）、影の質感（M7）、コマ打ち（M5）、揺れは Noise（E5）。"""
+    import json
+    from pathlib import Path
+
+    clean = tmp_path / "clean.mp4"
+    subprocess.run(
+        [
+            FFMPEG,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=320x180:d=3:r=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=d=3",
+            "-shortest",
+            "-pix_fmt",
+            "yuv420p",
+            str(clean),
+        ],
+        check=True,
+    )
+    cues = [
+        {"segment": "a", "text": "夢の中へ", "start_frame": 2, "end_frame": 30, "section": "verse"},
+        {
+            "segment": "b",
+            "text": "100%の光",
+            "start_frame": 35,
+            "end_frame": 80,
+            "section": "chorus",
+        },
+    ]
+    args = {
+        "clean_path": str(clean),
+        "out_path": str(tmp_path / "out.mp4"),
+        "result_path": str(tmp_path / "r.json"),
+        "font": "",
+        "width": 320,
+        "height": 180,
+        "fps_num": 30,
+        "fps_den": 1,
+        "title": "",
+        "catch": "",
+        "chapters": [],
+        "cues": cues,
+        "beats": [],
+        "parts": {"lyrics": True, "punch": True},
+        "params": {},
+        "limits": {},
+        "colors": {"base": "#000000", "main": "#3366CC", "accent": "#FFCC00", "text": "#FFFFFF"},
+        "stepped": 2,
+        "lyric_font": "",
+        "lyric_texture": "shadow",
+    }
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/rich_direction.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")],
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    rep = json.loads((tmp_path / "r.json").read_text())
+    assert rep["parts"]["lyrics"]["ok"], r.stderr[-2000:]
+    assert rep["parts"]["punch"]["ok"], r.stderr[-2000:]
+    assert rep["sections"] == {"verse": 1, "chorus": 1}
+    assert rep["used"]["shake_punch"] == 1

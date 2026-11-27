@@ -14,6 +14,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from sqlalchemy import select
 
 from video_automation.app.logging import get_logger
@@ -52,6 +53,13 @@ from video_automation.services.rendering import sync as sync_audio
 from video_automation.services.rendering.beats import detect_file
 from video_automation.services.rendering.finish import finish_chain
 from video_automation.services.rendering.flash_check import check_video
+from video_automation.services.rendering.lyrics import (
+    DEFAULT_GENRE,
+    GENRE_LABEL,
+    genre_style,
+    particle_spans,
+)
+from video_automation.services.rendering.lyrics import sections as lyric_sections
 from video_automation.services.rendering.rich import RichPlan, max_level, plan_rich
 from video_automation.services.subtitle.formats import ass_color, build_ass
 from video_automation.services.subtitle.subtitle_service import SubtitleService
@@ -990,6 +998,52 @@ class RenderService:
             rich.parts["intro"] = False
             rich.params["intro_frames"] = 0
             rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
+        lyric_args: dict[str, Any] = {}
+        if rich.parts.get("lyrics") and cues:
+            # 統合版 M3（セクションごとの置き方）・M7（ジャンルの書体と質感）・M5（コマ打ち）
+            genre = (await self.design.get(req.project_id)).genre
+            rms: list[float] | None = None
+            try:
+                wav = await sync_audio.load(self.ffmpeg, clean)
+                sr = sync_audio.SR
+                rms = [
+                    float(
+                        np.sqrt(
+                            np.mean(
+                                wav[
+                                    int(c["start_frame"] * fps_den / fps_num * sr) : max(
+                                        int(c["start_frame"] * fps_den / fps_num * sr) + 1,
+                                        int(c["end_frame"] * fps_den / fps_num * sr),
+                                    )
+                                ]
+                                ** 2
+                            )
+                            if len(wav)
+                            else 0.0
+                        )
+                    )
+                    for c in cues
+                ]
+            except Exception as exc:  # noqa: BLE001 - 音量が取れなくても置き方は決められる
+                log.info("lyric_rms_failed", error=str(exc)[:200])
+            secs = lyric_sections([c["text"] for c in cues], rms)
+            for cue_, s_ in zip(cues, secs, strict=True):
+                cue_["section"] = s_
+                if s_ == "bridge":
+                    cue_["small"] = particle_spans(cue_["text"])
+            fam, weight, texture = genre_style(genre)
+            gfont = (
+                self.font_for(f"{fam} {weight}") or self.font_for(fam) if self.font_for else None
+            )
+            lyric_args = {
+                "lyric_font": gfont or "",
+                "lyric_texture": texture,
+                "stepped": dprof.motion.stepped,
+            }
+            rich.notes.append(
+                f"歌詞はジャンル「{GENRE_LABEL[genre or DEFAULT_GENRE]}」の書体で、"
+                "サビ・B メロごとに置き方を変えました"
+            )
         beats: list[int] = []
         sync_args: dict[str, Any] = {}
         if rich.parts.get("beat_pulse"):
@@ -1041,6 +1095,7 @@ class RenderService:
                     "cues": cues,
                     "beats": beats,
                     **sync_args,
+                    **lyric_args,
                     "colors": {
                         "base": pal.base,
                         "main": pal.main,

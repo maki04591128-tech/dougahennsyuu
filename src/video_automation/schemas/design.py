@@ -5,6 +5,7 @@
 """
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -221,6 +222,8 @@ class ProjectDesign(BaseModel):
     # 混ぜる指示が明示されたときだけ使う、用途の型では使わない部品の例外
     extras: list[Component] = Field(default_factory=list, max_length=12)
     series_id: str | None = Field(default=None, max_length=36)  # 統合版 Q4: シリーズの設定
+    # 統合版 M3・M7: 曲のジャンル（MV・リリックの書体・質感）。None は未設定（ポップとして扱う）
+    genre: Literal["ballad", "citypop", "rock", "edm", "vocaloid", "idol", "pop"] | None = None
 
 
 SERIES_COLOR_KEYS = ("base", "base2", "surface", "main", "accent", "text", "text_muted")
