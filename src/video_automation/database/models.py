@@ -35,6 +35,7 @@ class Project(Base):
     series_id: Mapped[str | None] = mapped_column(String(36), nullable=True)  # 統合版 Q4
     music_genre: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 統合版 M3・M7
     hearing_aid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # 統合版 Q7
+    look: Mapped[str | None] = mapped_column(String(4), nullable=True)  # 統合版 Y1〜Y10
     # 演出で作った要素の記録（作った処理ごと。書き出し前の検査に使う）
     design_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

@@ -265,7 +265,15 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         "series_id": None,
         "genre": None,
         "hearing_aid": False,
+        "look": "",
     }
+    # 統合版 Y: 用途で選べない見た目の型は保存しない
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "lecture", "look": "Y5"})
+    assert r.json()["look"] == ""
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "lecture", "look": "Y1"})
+    assert r.json()["look"] == "Y1"
+    assert (await c.put(f"/projects/{pid}/design", json={"look": "Y99"})).status_code == 422
+    await c.put(f"/projects/{pid}/design", json={"purpose": None, "look": ""})
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
     ]

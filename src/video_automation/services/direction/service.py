@@ -1394,8 +1394,8 @@ class DirectionService:
             # N4 年表: 年が 3 つ以上出たら、最後の文で並べる（章の区切りが無いので動画全体で 1 つ）
             from video_automation.services.rendering import numbers as nb
 
-            ys = [(nb.find_year(x.text), x) for x in lines]
-            ys = [(y_, x) for y_, x in ys if y_]
+            ys0 = [(nb.find_year(x.text), x) for x in lines]
+            ys = [(y_, x) for y_, x in ys0 if y_]
             if len({y_ for y_, _x in ys}) >= 3:
                 items = [(y_, nc.first_phrase(x.text.split("年", 1)[-1] or x.text, 6))
                          for y_, x in ys][:8]  # fmt: skip
@@ -1613,6 +1613,11 @@ class DirectionService:
         from video_automation.services.rendering import backgrounds as rb
 
         style = PURPOSE_BACKGROUND[prof.purpose.value]
+        if prof.look:  # 統合版 Y: 見た目の型の背景
+            from video_automation.services.design.looks import LOOKS
+
+            lk = LOOKS.get(prof.look)
+            style = lk.background if lk and lk.background else style
         pal = prof.palette.model_dump()
         p = await self.timeline.get_timeline(project_id)
         fps = p.fps_num / p.fps_den

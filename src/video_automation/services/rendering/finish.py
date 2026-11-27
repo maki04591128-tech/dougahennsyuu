@@ -95,6 +95,30 @@ def paper(width: int, height: int, fps: float = 30.0) -> str:
     )
 
 
+def look_filter(name: str, width: int, height: int) -> str:
+    """統合版 Y の仕上げ。riso（Y4）・synth（Y5）・pixel（Y6）・film（Y7）。"""
+    k = height / 1080
+    if name == "riso":  # 版ずれ（各色を ±3px）と粒（不透明度 12%）
+        px = max(1, round(3 * k))
+        return f"rgbashift=rh={px}:bh=-{px}:edge=wrap,noise=alls=12:allf=t"
+    if name == "synth":  # 色収差（M9 の値）とグロー
+        return f"{aberration(width, height)},{glow(height)}"
+    if name == "pixel":  # 320×180 で描いてから最近傍で 6 倍。色は各チャンネル 4 段（64 色）に減らす
+        sw, sh = max(2, _even(width / 6)), max(2, _even(height / 6))
+        q = "lutrgb=r='floor(val/64)*85':g='floor(val/64)*85':b='floor(val/64)*85'"
+        return f"scale={sw}:{sh}:flags=neighbor,{q},scale={width}:{height}:flags=neighbor"
+    if name == "film":  # セピア（彩度 0 に #704214 を 18%）・グレイン 8%・周辺減光・±1px の揺れ
+        j = max(1, round(k))
+        return (
+            # #704214 を不透明度 18% で重ねる = 各チャンネル val × 0.82 ＋ 色 × 0.18
+            "hue=s=0,lutrgb=r='val*0.82+20.2':g='val*0.82+11.9':b='val*0.82+3.6',"
+            f"noise=alls=8:allf=t,vignette=PI/5,"
+            f"crop=iw-{2 * j}:ih-{2 * j}:{j}+{j}*sin(n*2.1):{j}+{j}*cos(n*1.7),"
+            f"scale={width}:{height}"
+        )
+    return ""
+
+
 def finish_chain(prof: DesignProfile | None, width: int, height: int) -> str:
     """映像に掛ける仕上げ（1 本のフィルターの連なり。ラベルは中で閉じる）。無ければ空。"""
     if prof is None:
@@ -111,7 +135,13 @@ def finish_chain(prof: DesignProfile | None, width: int, height: int) -> str:
         parts.append(aberration(width, height))
     else:
         parts.append(DITHER)
-    return ",".join(parts)
+    if prof.look:  # 統合版 Y1〜Y10 の仕上げ
+        from video_automation.services.design.looks import LOOKS
+
+        lk = LOOKS.get(prof.look)
+        if lk and lk.finish:
+            parts.append(look_filter(lk.finish, width, height))
+    return ",".join(p for p in parts if p)
 
 
 def applied(prof: DesignProfile | None) -> list[str]:

@@ -1490,14 +1490,14 @@ class BuildService:
         ch_spans = [(a0, b0) for a0, b0, s_ in spans if s_ in ("chorus", "chorus_first")]
         ch_texts = [x.text for x, (_a, _b, s_) in zip(cues, spans, strict=False)
                     if s_ in ("chorus", "chorus_first")]  # fmt: skip
-        key = av.key_char(ch_texts) if ch_spans else None
-        if key:
+        kc = av.key_char(ch_texts) if ch_spans else None
+        if kc:
             img = await asyncio.to_thread(
-                av.key_char_image, key, w, h, c.titles.font_path("Noto Sans CJK JP Black"), ink
+                av.key_char_image, kc, w, h, c.titles.font_path("Noto Sans CJK JP Black"), ink
             )
             p_ = work / f"t26_{uuid4().hex[:8]}.png"
             await asyncio.to_thread(img.save, p_)
-            a_ = await asset(p_, f"キーの一字（T26）「{key}」")
+            a_ = await asset(p_, f"キーの一字（T26）「{kc}」")
             key_tid = track(MV_KEY_TRACK, MV_SHOT_TRACK)
             # 続くサビの行は 1 つの区間にまとめる（同じトラックで重ねない）
             merged: list[list[float]] = []
