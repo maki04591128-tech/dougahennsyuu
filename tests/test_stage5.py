@@ -557,3 +557,128 @@ def test_liquid_background_loops(tmp_path):
     ]
     assert len(fr) == 6 and all((f[..., 3] > 0).mean() > 0.03 for f in fr)
     assert np.abs(fr[0] - fr[3]).mean() > 1  # 動いている
+
+
+def test_title_entrance_by_purpose():
+    """統合版 T16: 用途ごとの題名の入り。1 文字ずつの入りは改行の無い短い題名だけ。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import TitleCardRequest
+    from video_automation.services.design.profiles import PROFILES
+    from video_automation.services.direction.service import title_entrance
+    from video_automation.services.rendering.title_card import TitleCardService
+
+    want = {
+        Purpose.GAME: "decode",
+        Purpose.DOCUMENTARY: "typewriter",
+        Purpose.CORPORATE: "tracking",
+        Purpose.RANKING: "flip3d",
+        Purpose.NEWS: "mask_rise",
+        Purpose.SHORT: "slam",
+        Purpose.LECTURE: "stroke",
+        Purpose.VLOG: "slide",
+        Purpose.EXPLAINER: "pop",
+        Purpose.SUBTITLE: "fade",
+    }
+    for p, a in want.items():
+        assert title_entrance(PROFILES[p], "短い題名", False) == a
+    assert title_entrance(PROFILES[Purpose.GAME], "二行の\n題名", False) == "pop"
+    assert title_entrance(PROFILES[Purpose.GAME], "あ" * 30, False) == "pop"
+    assert title_entrance(PROFILES[Purpose.MV], "曲名", True) == "bounce"
+    req = TitleCardRequest(project_id="p", text="題名五文字", animation="decode", duration_sec=3)
+    assert abs(TitleCardService.animation_seconds(req) - 9 / 30) < 1e-9
+    req = req.model_copy(update={"animation": "typewriter"})
+    assert TitleCardService.animation_seconds(req) == 3  # カーソルが最後まで点滅する
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_entrances_render(tmp_path):
+    """統合版 T5・T6・T7・T9・T10・T17・T4: 入りの途中は欠け、終わりは全部の文字がそろう。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    ink = {}
+    for anim, frames in (("decode", 9), ("mask_rise", 16), ("tracking", 19), ("slam", 16)):
+        d = tmp_path / anim
+        (d / "out").mkdir(parents=True)
+        args = {
+            "text": "題名です",
+            "width": 320,
+            "height": 180,
+            "fps": 30,
+            "frames": frames,
+            "font_path": font if Path(font).is_file() else None,
+            "text_color": [1, 1, 1, 1],
+            "outline": False,
+            "outline_color": [0, 0, 0, 1],
+            "size": 1.0,
+            "position": "center",
+            "output_dir": str(d / "out"),
+            "animation": anim,
+            "result_path": str(d / "r.json"),
+            "samples": 1,
+        }
+        (d / "a.json").write_text(json.dumps(args), encoding="utf-8")
+        r = subprocess.run(
+            [BPY, str(script), "--", str(d / "a.json")], capture_output=True, text=True
+        )
+        assert r.returncode == 0, r.stderr[-2000:]
+        fs = sorted((d / "out").glob("frame_*.png"))
+        assert len(fs) == frames
+        alpha = [np.asarray(Image.open(f).convert("RGBA"))[..., 3].astype(float).sum() for f in fs]
+        ink[anim] = alpha
+    for anim in ("decode", "mask_rise", "tracking"):
+        a = ink[anim]
+        assert a[0] < a[-1] * 0.6, anim  # 最初は欠けている（隠れている・薄い）
+    # 叩きつける: 最初は 3 倍で画面からはみ出すほど大きく、着地後は元の大きさ
+    assert ink["slam"][0] > ink["slam"][-1] * 2
+    assert abs(ink["decode"][-1] - ink["mask_rise"][-1]) < ink["decode"][-1] * 0.05
+
+
+def test_cut_transition_filters_and_overlays():
+    """統合版 E7・E8: 次のショットの入り。E6・E9・E10: 重ねる透過の動画。"""
+    from fractions import Fraction
+
+    from video_automation.schemas.animation import ClipAnimation, Transition, TransitionType
+    from video_automation.services.animation.render_anim import clip_filters
+    from video_automation.services.direction import transitions as tz
+
+    def f(t):
+        anim = ClipAnimation(transition_in=Transition(type=t, duration_frames=6))
+        return clip_filters(
+            anim, fps=Fraction(30), k=0.0, off=0.0, clip_sec=3.0, src_size=(640, 360),
+            canvas=(640, 360), is_image=True,
+        )  # fmt: skip
+
+    whip = f(TransitionType.WHIP)
+    assert whip.dx and not whip.post  # 右から飛び込む（不透明度は変えない）
+    punch = f(TransitionType.ZOOM_PUNCH)
+    assert any("0.7+0.3" in x for x in punch.resize) and not punch.post
+    fr = tz.shape_wipe(64, 36, ["#ff0000", "#00ff00", "#0000ff"])
+    assert len(fr) == tz.OVERLAY["E6"]
+    alpha = [im.getchannel("A").getextrema()[1] for im in fr]
+    assert alpha[0] == 0 and alpha[-1] == 0  # 始まりと終わりは透明
+    full = fr[tz.CUT_AT["E6"]].getchannel("A")
+    assert full.getextrema()[0] == 255  # 下の画が替わるフレームは全面を覆う
+    assert len(tz.light_leak(64, 36)) == 12 and len(tz.glitch(64, 36, [], 1)) == 6
+    assert tz.pick_cuts([10, 600, 1300, 1900, 1950], 30, 3000, "explainer") == [10, 1900]
+
+
+def test_effect_frames():
+    """統合版 X1〜X3・X5・X6 の長さと、透明で終わること。"""
+    from video_automation.services.direction import effects as fx
+
+    c = fx.confetti(96, 54, ["#ff0000", "#00ff00"])
+    assert len(c) == 45 and c[-1].getchannel("A").getextrema()[1] == 0  # 45f で消える
+    s = fx.sparkle(20)
+    assert len(s) == 10 and s[0].getchannel("A").getextrema()[1] == 0
+    assert len(fx.focus_lines(96, 54)) == 6
+    sm, em = fx.smoke(96, 54), fx.embers(96, 54)
+    assert len(sm) == len(em) == 150

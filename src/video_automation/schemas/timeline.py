@@ -429,7 +429,23 @@ class TitleCardRequest(BaseModel):
     text: str = Field(min_length=1, max_length=100)
     duration_sec: float = Field(default=2.0, gt=0, le=30)
     # P7-02: 文字アニメーション（typewriter / bounce は1文字ずつ。改行を含む文は全体で動かす）
-    animation: Literal["pop", "slide", "zoom", "typewriter", "bounce", "fade", "none"] = "pop"
+    # 統合版 T16: decode（T5）・tracking（T7）・flip3d（T9）・mask_rise（T10）・slam（T17）・
+    # stroke（T4）。typewriter は T6（2f ずらし・カーソルの点滅）
+    animation: Literal[
+        "pop",
+        "slide",
+        "zoom",
+        "typewriter",
+        "bounce",
+        "fade",
+        "none",
+        "decode",
+        "tracking",
+        "flip3d",
+        "mask_rise",
+        "slam",
+        "stroke",
+    ] = "pop"
     animation_sec: float | None = Field(default=None, gt=0, le=10)  # 動く部分の長さ（既定は種類別）
     fade_out_sec: float = Field(default=0.3, ge=0, le=5)
     text_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")

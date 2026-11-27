@@ -9,7 +9,7 @@ import math
 import subprocess
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +212,51 @@ def _paste_clip(canvas: Any, im: Any, x: int, y: int) -> None:
     canvas.alpha_composite(crop, (max(0, x), max(0, y)))
 
 
+ENTER_FRAMES, LAND_FRAMES = 10, 6  # 統合版 F2: 下から 10f、着地で縦 0.96→1.00 を 6f
+ENTER_RISE = 0.12  # 画面の高さに対する比
+GAZE_DEG, GAZE_DX, GAZE_FRAMES = 2.0, 0.005, 8  # 統合版 F4
+
+
+def entrance(f: int, fps: float) -> tuple[float, float]:
+    """統合版 F2: 最初の登場の (下へのずれ（画面の高さの比）, 縦の倍率)。"""
+    n_in = max(1, round(ENTER_FRAMES * fps / 30))
+    n_land = max(1, round(LAND_FRAMES * fps / 30))
+    if f < n_in:
+        u = f / n_in
+        return ENTER_RISE * (1 - u) ** 3, 1.0  # easeOutCubic
+    if f < n_in + n_land:
+        u = (f - n_in) / n_land
+        return 0.0, 0.96 + 0.04 * (1 - (1 - u) ** 3)
+    return 0.0, 1.0
+
+
+def gaze_curve(speaking: list[list[tuple[int, int]]], total: int, fps: float) -> list[list[float]]:
+    """統合版 F4: 2 人のとき、話していない方が話者へ向く度合い（0〜1、8f の easeInOutSine）。
+
+    話者が替わったら戻す。誰も話していない間は、最後に話した人の方を向いたまま。"""
+    import bisect
+
+    n = len(speaking)
+    out = [[0.0] * total for _ in range(n)]
+    if n != 2:
+        return out
+    starts = [sorted(s) for s in speaking]
+    cur = -1
+    g = [0.0, 0.0]
+    step = 1 / max(1, round(GAZE_FRAMES * fps / 30))
+    for f in range(total):
+        for k in range(2):
+            sp = starts[k]
+            i = bisect.bisect_right(sp, (f, 10**9)) - 1
+            if i >= 0 and sp[i][0] <= f < sp[i][1]:
+                cur = k
+        for k in range(2):
+            target = 1.0 if cur >= 0 and cur != k else 0.0
+            g[k] = min(target, g[k] + step) if g[k] < target else max(target, g[k] - step)
+            out[k][f] = 0.5 - 0.5 * math.cos(math.pi * g[k])
+    return out
+
+
 def render_overlay(
     casts: list[Cast],
     total_frames: int,
@@ -261,11 +306,22 @@ def render_overlay(
         stderr=subprocess.PIPE,
     )
     assert proc.stdin is not None
+    gaze = gaze_curve([c.schedule.speaking for c in casts], total_frames, fps)
     try:
         for f in range(total_frames):
             canvas = Image.new("RGBA", (W, band), (0, 0, 0, 0))
-            for c, comp, anim, toward, fx, fy in items:
+            for k, (c, comp, anim, toward, fx, fy) in enumerate(items):
                 st = anim.state(f, arms_of=c.pack.pose)
+                drop, squash = entrance(f, fps)  # 統合版 F2（最初の登場は動画の頭）
+                gz = gaze[k][f] if k < len(gaze) else 0.0  # 統合版 F4
+                if drop or squash != 1.0 or gz:
+                    st = replace(
+                        st,
+                        dy=st.dy + drop * H / char_h,
+                        sy=st.sy * squash,
+                        rot=st.rot + GAZE_DEG * gz,
+                        dx=st.dx + GAZE_DX * W * gz / char_h,
+                    )
                 im = comp.image(st)
                 # 立ち絵の大きさに合わせて縮小は済んでいる（Pack.size の高さ = char_h）
                 bright = 0.66 + 0.34 * st.speaking

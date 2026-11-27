@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import re
+import shutil
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -32,6 +33,8 @@ from video_automation.schemas.animation import (
     Easing,
     InfographicRequest,
     Keyframe,
+    Transition,
+    TransitionType,
 )
 from video_automation.schemas.design import Component, DesignProfile, Purpose
 from video_automation.schemas.direction import (
@@ -195,7 +198,24 @@ ITEM_TRACK, LOWER_THIRD_TRACK = "演出・項目", "演出・名前帯"
 PART_TRACK, STEP_TRACK = "演出・部品", "演出・手順"  # 統合版 P4・P5・P8
 SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合版 Q4
 WAVE_TRACK = "演出・波形"  # 統合版 P2
+CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
+FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
+CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
+CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
+DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
+N6_PURPOSES = {Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL}
+H1_PURPOSES = {
+    Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
+}  # fmt: skip
 EXTRA_TRACKS = (
+    CHAPTER_TRACK,
+    DIAGRAM_TRACK,
+    CLOSE_TRACK,
+    NEWS_TRACK,
+    TICKER_TRACK,
+    CUT_TRACK,
+    FX_TRACK,
+    EMBER_TRACK,
     ITEM_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
@@ -238,8 +258,56 @@ class _Line:
     text: str
     start: int
     end: int
+    emotion: str = ""
 
 
+# 統合版 T16: 用途ごとの題名の入り（MV・リリックは V5 の曲名のまま。1 文字ずつの入りは、
+# 改行の無い KINETIC_TITLE_MAX 字以下の題名だけ。それ以外は pop）
+TITLE_ENTRANCE: dict[Purpose, str] = {
+    Purpose.SUBTITLE: "fade",
+    Purpose.INTERVIEW: "mask_rise",
+    Purpose.DOCUMENTARY: "typewriter",
+    Purpose.STORY: "stroke",
+    Purpose.PODCAST: "fade",
+    Purpose.EXPLAINER: "pop",
+    Purpose.LECTURE: "stroke",
+    Purpose.TUTORIAL: "typewriter",
+    Purpose.RECIPE: "pop",
+    Purpose.NEWS: "mask_rise",
+    Purpose.CORPORATE: "tracking",
+    Purpose.SHORT: "slam",
+    Purpose.GAME: "decode",
+    Purpose.VLOG: "slide",
+    Purpose.RANKING: "flip3d",
+    Purpose.PRODUCT: "tracking",
+    Purpose.PROMO: "tracking",
+    Purpose.EVENT: "slide",
+    Purpose.KIDS: "stroke",
+    Purpose.TRAILER: "decode",
+}
+PER_CHAR_TITLES = {"typewriter", "decode", "tracking", "flip3d", "mask_rise", "stroke"}
+
+
+def title_entrance(prof: DesignProfile | None, title: str, kinetic: bool) -> str:
+    """題名の入り（統合版 T16）。"""
+    if prof is None or prof.purpose not in TITLE_ENTRANCE:
+        return "bounce" if kinetic else "pop"
+    a = TITLE_ENTRANCE[prof.purpose]
+    if a in PER_CHAR_TITLES and ("\n" in title or len(title) > KINETIC_TITLE_MAX):
+        return "pop"
+    return a
+
+
+from video_automation.services.direction import transitions as tz  # noqa: E402
+from video_automation.services.rendering.backgrounds import PURPOSE_BACKGROUND  # noqa: E402
+
+BACKGROUND_NAMES = {
+    "R1": "オーロラ", "R2": "星空", "R3": "点と線の網", "R4": "等高線", "R5": "点の格子の波紋",
+    "R6": "ボケの光", "R7": "メンフィス柄", "R8": "空と雲", "R9": "方眼", "R10": "紙",
+    "R11": "アウトランの格子", "R12": "集中線", "R13": "ギンガム柄", "R14": "走る細い線",
+    "R15": "斜めの帯", "R16": "メッシュグラデーション", "R17": "スタジオの床と光",
+    "R18": "ゆっくり落ちる紙吹雪",
+}  # fmt: skip
 KINETIC_TITLE_MAX = 16  # 1 文字ずつ動かす題名の文字数の上限（長いと読み終わる前に消える）
 _NUM = re.compile(r"[0-9０-９]")
 
@@ -528,7 +596,10 @@ class DirectionService:
                 .scalars()
                 .all()
             )
-        lines = [_Line(x.speaker or "", x.text, x.start_frame or 0, x.end_frame or 0) for x in segs]
+        lines = [
+            _Line(x.speaker or "", x.text, x.start_frame or 0, x.end_frame or 0, x.emotion or "")
+            for x in segs
+        ]
         return p, sc, lines
 
     async def _has_tachie(self, script_id: str) -> bool:
@@ -741,6 +812,11 @@ class DirectionService:
             c1 = "0x" + prof.palette.base2.lstrip("#")
             main, accent = prof.palette.main, prof.palette.accent
             style = f"{prof.purpose.value}"
+        if prof is not None and prof.purpose.value in PURPOSE_BACKGROUND:
+            try:  # 統合版 段階5d: 用途ごとの背景 R1〜R18
+                return await self._r_background(project_id, prof, w, h)
+            except Exception as exc:  # noqa: BLE001 - 今の背景で続ける
+                log.warning("r_background_failed", error=str(exc)[:300])
         moving = prof is None or prof.allows(Component.BACKGROUND_MOTION)
         if moving and self.titles.blender.available:
             loud = prof is not None and prof.purpose.value in FLOATING_BG_PURPOSES
@@ -766,6 +842,492 @@ class DirectionService:
             project_id, out, AssetKind.IMAGE, "pillow", f"背景（{style}）"
         )
         return AssetRead.model_validate(a)
+
+    async def _png(self, project_id: str, img: Any, name: str) -> AssetRead:
+        out = (
+            self.settings.data_dir / "projects" / project_id / "assets" / f"h_{uuid4().hex[:8]}.png"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(img.save, out)
+        row = await self.timeline.register_generated(
+            project_id, out, AssetKind.IMAGE, "pillow", name
+        )
+        return AssetRead.model_validate(row)
+
+    async def _h_cards(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        plan: DirectionPlan,
+        lines: list[Any],
+        chapters: list[tuple[int, str]],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+    ) -> list[str]:
+        """統合版 H1（章の題名）・H3（ニュース）・H4・H6（朗読・物語）・H5（締め）。"""
+        from video_automation.services.rendering import h_cards as hc
+
+        notes: list[str] = []
+        pv = prof.purpose
+
+        def anim(cid: str, keys: list[Keyframe]) -> None:
+            cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+
+        def clip(track: str, a: AssetRead, at: int, n: int, tf: ClipTransform) -> str:
+            cid = str(uuid4())
+            cmds.append(
+                AddClip(track_id=track, asset_id=a.id, start_frame=at, duration_frames=n,
+                        clip_id=cid, transform=tf)
+            )  # fmt: skip
+            return cid
+
+        if pv == Purpose.STORY:  # H6: 「その頃」「一方」… で始まる文に中間字幕のカード
+            mincho = self.titles.font_path("Zen Old Mincho") or font
+            last_end = -1
+            for ln in lines:
+                if not hc.is_intertitle(ln.text) or ln.start < last_end:
+                    continue
+                n = min(round(hc.intertitle_sec(ln.text) * fps), max(1, total - ln.start))
+                img = await asyncio.to_thread(hc.intertitle, w, h, ln.text.strip(), mincho)
+                a = await self._png(project_id, img, "中間字幕（H6）")
+                cid = clip(lane(CLOSE_TRACK), a, ln.start, n, ClipTransform(fit=FitMode.FIT))
+                d8 = min(8, n // 2)
+                anim(cid, [Keyframe(frame=0, opacity=0.0), Keyframe(frame=d8, opacity=1.0),
+                           Keyframe(frame=max(d8 + 1, n - 1 - d8), opacity=1.0),
+                           Keyframe(frame=max(d8 + 2, n - 1), opacity=0.0)])  # fmt: skip
+                last_end = ln.start + n
+            if last_end > 0:
+                notes.append("中間字幕のカード（H6）の間も、その文の字幕は出ています")
+            # H4: 最後にクレジットロール（終了画面のある用途では出さない）
+            names = list(dict.fromkeys(f"VOICEVOX:{ln.speaker}" for ln in lines if ln.speaker))
+            if names:
+                img = await asyncio.to_thread(hc.credits, w, h, names, font, ink)
+                roll, hold = hc.credit_frames(h, img.size[1], fps)
+                n = roll + hold
+                at = max(0, total - n)
+                if last_end <= at:
+                    a = await self._png(project_id, img, "クレジットロール（H4）")
+                    sh = img.size[1] / h
+                    tf = native_transform(w, img.size[1], w, h, cx=0.5, cy=0.5, max_w=1.0,
+                                          max_h=sh + 0.01)  # fmt: skip
+                    ln_ = min(n, total - at)
+                    y0, y1 = 0.5 + sh / 2, -sh / 2
+                    f1 = min(roll, ln_ - 1)  # クリップの中に収める（短いときは途中まで流す）
+                    y_end = y0 + (y1 - y0) * f1 / max(1, roll)
+                    cid = clip(lane(CLOSE_TRACK), a, at, ln_, tf)
+                    if f1 > 0:
+                        anim(cid, [Keyframe(frame=0, y=round(y0, 4), easing=Easing.LINEAR),
+                                   Keyframe(frame=f1, y=round(y_end, 4))])  # fmt: skip
+        toc_n = 0
+        if pv in N6_PURPOSES and len(chapters) >= 3:  # N6: 2 章目からの頭に目次（2.0 秒）
+            from video_automation.services.rendering import n_cards as nc
+
+            toc_n = round(2.0 * fps)
+            titles = [t for _a, t in chapters]
+            for k, (at, _t) in enumerate(chapters):
+                if k == 0 or at + toc_n > total:
+                    continue
+                img = await asyncio.to_thread(
+                    nc.toc, w, h, titles, k, font, prof.palette.accent, ink, prof.palette.surface
+                )
+                a = await self._png(project_id, img, "目次（N6）")
+                cid = clip(lane(CHAPTER_TRACK), a, at, toc_n, ClipTransform(fit=FitMode.FIT))
+                anim(cid, [Keyframe(frame=0, opacity=0.0), Keyframe(frame=6, opacity=1.0),
+                           Keyframe(frame=toc_n - 7, opacity=1.0),
+                           Keyframe(frame=toc_n - 1, opacity=0.0)])  # fmt: skip
+        if pv in H1_PURPOSES:  # H1: 2 章目からの頭に章の題名カード（2.5 秒、出は B4 の 6f）
+            n = round(2.5 * fps)
+            last = -1
+            for k, (at0, text) in enumerate([c_ for c_ in chapters if c_[0] > 0], start=2):
+                at = at0 + (toc_n if len(chapters) >= 3 else 0)  # N6 の後
+                if at < last or at + n > total:
+                    continue
+                img = await asyncio.to_thread(
+                    hc.chapter_card, w, h, k, text[:30], font, prof.palette.accent, ink
+                )
+                a = await self._png(project_id, img, f"章の題名（H1）「{text[:12]}」")
+                cid = clip(lane(CHAPTER_TRACK), a, at, n, ClipTransform(fit=FitMode.FIT))
+                anim(cid, [Keyframe(frame=0, opacity=0.0, y=0.02, easing=Easing.CUBIC_OUT),
+                           Keyframe(frame=12, opacity=1.0, y=0.0),
+                           Keyframe(frame=n - 7, opacity=1.0, scale=1.0, easing=Easing.CUBIC_IN),
+                           Keyframe(frame=n - 1, opacity=0.0, scale=0.96)])  # fmt: skip
+                last = at + n
+        if pv in (Purpose.PROMO, Purpose.EVENT) and plan.title:  # H5: 最後の 3 秒に締めのカード
+            n = round(3 * fps)
+            at = total - n
+            if at > 0:
+                t_ = await self.titles.create(
+                    TitleCardRequest(project_id=project_id, text=plan.title[:100],
+                                     duration_sec=n / fps, animation="slam", fade_out_sec=0.0,
+                                     text_color=ink, font=None)
+                )  # fmt: skip
+                clip(lane(CLOSE_TRACK), t_, at, n, ClipTransform())
+            notes.append(
+                "締めのカード（H5）のボタンと URL は、設定の項目がまだ無いため出していません"
+            )
+        if pv == Purpose.NEWS:  # H3: 下の見出しの帯（章で替える）とティッカー
+            heads = chapters or [(0, plan.title or "ニュース")]
+            if heads[0][0] > 0:
+                heads.insert(0, (0, plan.title or heads[0][1]))
+            band_t = lane(NEWS_TRACK)
+            for i, (at, text) in enumerate(heads):
+                end = heads[i + 1][0] if i + 1 < len(heads) else total
+                if end <= at:
+                    continue
+                img = await asyncio.to_thread(
+                    hc.news_band, w, h, text[:40], font, prof.palette.main
+                )
+                a = await self._png(project_id, img, "ニュースの帯（H3）")
+                tf = native_transform(w, img.size[1], w, h, cx=0.5, cy=0.835, max_w=1.0)
+                cid = clip(band_t, a, at, end - at, tf)
+                if i:  # 帯の中で上へ送って替える（8f）
+                    anim(cid, [Keyframe(frame=0, y=0.03, opacity=0.0, easing=Easing.CUBIC_OUT),
+                               Keyframe(frame=8, y=0.0, opacity=1.0)])  # fmt: skip
+            items = [t for _a, t in heads][:8]
+            strip, period = await asyncio.to_thread(hc.ticker_strip, w, h, items, font)
+            if period <= 1.4 * w:
+                a = await self._png(project_id, strip, "ティッカー（H3）")
+                pw = period / w
+                tf = native_transform(strip.size[0], strip.size[1], w, h, cx=pw, cy=0.905,
+                                      max_w=2 * pw + 0.01)  # fmt: skip
+                loop = max(1, round(pw / hc.TICKER_SPEED * fps))
+                tick_t = lane(TICKER_TRACK)
+                pos = 0
+                while pos < total:
+                    n = min(loop, total - pos)
+                    cid = clip(tick_t, a, pos, n, tf)
+                    if n > 1:  # 最後のフレームの位置（次のクリップは 0 から流し直す）
+                        x1 = round(-pw * (n - 1) / loop, 4)
+                        anim(cid, [Keyframe(frame=0, x=0.0, easing=Easing.LINEAR),
+                                   Keyframe(frame=n - 1, x=x1)])  # fmt: skip
+                    pos += n
+            notes.append(
+                "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
+            )
+        return notes
+
+    async def _n_cards(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+    ) -> list[str]:
+        """統合版 N1（手順）・N7（定義）・N8（正誤）・N11（引用）。1 本のトラックに重ねずに置く。"""
+        from video_automation.services.rendering import n_cards as nc
+
+        pv = prof.purpose
+        pal = prof.palette
+        used: list[tuple[int, int]] = []
+        notes: list[str] = []
+        one_sec = round(fps)
+
+        def free(a: int, b: int) -> bool:
+            return 0 <= a < b <= total and not any(x < b and a < y for x, y in used)
+
+        def put(a_: AssetRead, at: int, n: int, keys: list[Keyframe] | None) -> None:
+            cid = str(uuid4())
+            cmds.append(
+                AddClip(track_id=lane(DIAGRAM_TRACK), asset_id=a_.id, start_frame=at,
+                        duration_frames=n, clip_id=cid, transform=ClipTransform(fit=FitMode.FIT))
+            )  # fmt: skip
+            if keys:
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+            used.append((at, at + n))
+
+        def fade(n: int, slide: bool = False) -> list[Keyframe]:
+            """入り（B1 のスライド・16f）と出（6f）。"""
+            k0 = Keyframe(frame=0, opacity=0.0, x=-0.017 if slide else 0.0, easing=Easing.CUBIC_OUT)
+            f1 = min(16, n // 3)
+            return [
+                k0,
+                Keyframe(frame=f1, opacity=1.0, x=0.0),
+                Keyframe(frame=max(f1 + 1, n - 7), opacity=1.0, x=0.0, easing=Easing.CUBIC_IN),
+                Keyframe(frame=max(f1 + 2, n - 1), opacity=0.0, x=0.0),
+            ]
+
+        runs = (
+            nc.step_runs([x.text for x in lines])
+            if pv in (Purpose.EXPLAINER, Purpose.LECTURE)
+            else []
+        )
+        run_starts = sorted(lines[r[0]].start for r in runs)
+        for i, ln in enumerate(lines):
+            # 後に手順の流れ（N1）があるときは、その始まりまでで消す
+            nxt = next((x for x in run_starts if x > ln.start), total)
+            end = min(total, ln.end + one_sec, nxt)
+            if pv in (Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS) and (
+                d_ := nc.definition(ln.text)
+            ):  # N7
+                if free(ln.start, end):
+                    img = await asyncio.to_thread(nc.definition_card, w, h, d_[0], d_[1], font,
+                                                  pal.accent, ink, pal.surface)  # fmt: skip
+                    a_ = await self._png(project_id, img, f"用語の定義（N7）「{d_[0]}」")
+                    put(a_, ln.start, end - ln.start, fade(end - ln.start, slide=True))
+            elif pv == Purpose.EXPLAINER and i > 0 and nc.is_myth(ln.text):  # N8
+                st = lines[i - 1].start
+                if free(st, end) and ln.start - st >= 12:
+                    for show, a0, b0 in ((False, st, ln.start + 12), (True, ln.start + 12, end)):
+                        if b0 <= a0:
+                            continue
+                        img = await asyncio.to_thread(nc.myth_card, w, h, lines[i - 1].text,
+                                                      ln.text, font, pal.accent, show)  # fmt: skip
+                        a_ = await self._png(project_id, img, "正誤カード（N8）")
+                        put(a_, a0, b0 - a0, None)
+            elif pv in (Purpose.INTERVIEW, Purpose.DOCUMENTARY, Purpose.STORY) and (
+                q := nc.quote(ln.text)
+            ):  # N11
+                if free(ln.start, end):
+                    img = await asyncio.to_thread(nc.quote_card, w, h, q, ln.speaker, font,
+                                                  pal.accent, ink)  # fmt: skip
+                    a_ = await self._png(project_id, img, "引用カード（N11）")
+                    put(a_, ln.start, end - ln.start, fade(end - ln.start))
+        if runs:  # N1
+            for run in runs:
+                labels = [nc.first_phrase(lines[i].text) for i in run]
+                starts = [lines[i].start for i in run]
+                end = min(total, lines[run[-1]].end + one_sec)
+                if not free(starts[0], end):
+                    continue
+                for k, st in enumerate(starts):
+                    nx = starts[k + 1] if k + 1 < len(starts) else end
+                    if nx <= st:
+                        continue
+                    img = await asyncio.to_thread(nc.steps, w, h, labels, k + 1, font, pal.main,
+                                                  pal.accent, ink, pal.surface)  # fmt: skip
+                    a_ = await self._png(project_id, img, "手順の流れ（N1）")
+                    keys = None
+                    if k == len(starts) - 1 and nx - st > 10:
+                        keys = [Keyframe(frame=0, opacity=1.0),
+                                Keyframe(frame=nx - st - 7, opacity=1.0, easing=Easing.CUBIC_IN),
+                                Keyframe(frame=nx - st - 1, opacity=0.0)]  # fmt: skip
+                    elif k == 0:
+                        keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
+                                Keyframe(frame=min(10, nx - st - 1), opacity=1.0)]  # fmt: skip
+                    put(a_, st, nx - st, keys)
+        if used:
+            notes.append("図解（N1・N7・N8・N11）は、出ている間も字幕を出しています")
+        return notes
+
+    async def _overlay(
+        self, project_id: str, frames_: list[Any], name: str, fps: float
+    ) -> AssetRead:
+        """透過の画の列を 1 本の動画（PNG の mov）にして素材にする（最後に透明の 1 枚を足す）。"""
+        from PIL import Image
+
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        work = out_dir / f"ov_{uuid4().hex[:8]}"
+        work.mkdir(parents=True, exist_ok=True)
+        blank = Image.new("RGBA", frames_[0].size, (0, 0, 0, 0))
+        for i, fr in enumerate([*frames_, blank]):
+            await asyncio.to_thread(fr.save, work / f"{i:04d}.png")
+        mov = work.with_suffix(".mov")
+        await self.ffmpeg.run(
+            ["-y", "-framerate", f"{fps:.6f}", "-i", str(work / "%04d.png"),
+             "-c:v", "png", "-pix_fmt", "rgba", str(mov)]
+        )  # fmt: skip
+        await asyncio.to_thread(shutil.rmtree, work, True)
+        row = await self.timeline.register_generated(
+            project_id, mov, AssetKind.VIDEO, "pillow", name
+        )
+        return AssetRead.model_validate(row)
+
+    async def _effects(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        t_at: int,
+        title_end: int,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+    ) -> None:
+        """統合版 X1（イベント）・X2（商品紹介・PR）・X3（驚きの発話）・X5・X6（予告編）。"""
+        from video_automation.services.direction import effects as fx
+
+        pv = prof.purpose
+        placed: list[tuple[int, int]] = []
+
+        async def put(frames_: list[Any], name: str, at: int, n: int, **kw: Any) -> None:
+            if at < 0 or n <= 0 or any(a < at + n and at < b for a, b in placed):
+                return  # 同じトラックで重ねない
+            a = await self._overlay(project_id, frames_, name, fps)
+            cmds.append(
+                AddClip(
+                    track_id=lane(FX_TRACK), asset_id=a.id, start_frame=at,
+                    duration_frames=n, clip_id=str(uuid4()), **kw,
+                )
+            )  # fmt: skip
+            placed.append((at, at + n))
+
+        if pv == Purpose.EVENT and title_end > t_at:  # 題名の入り（slide 16f）の終わり
+            fr = await asyncio.to_thread(fx.confetti, w, h, prof.palette.chart)
+            await put(fr, "紙吹雪（X1）", t_at + 16, min(len(fr), total - t_at - 16))
+        if pv in (Purpose.PRODUCT, Purpose.PROMO) and title_end > t_at:
+            # 題名の右上（題名の箱の大きさは分からないので、中央の題名の右上のあたり）
+            size = max(8, round(h * 0.08 * 0.6))
+            fr = await asyncio.to_thread(fx.sparkle, size)
+            n = len(fr)
+            at = t_at + 18
+            if at + n <= title_end:
+                tf = ClipTransform(fit=FitMode.FIT, scale=round(2 * size / h, 4), x=0.28, y=-0.12)
+                await put(fr, "きらめき（X2）", at, n, transform=tf)
+        if pv in (Purpose.SHORT, Purpose.GAME):  # 驚きの発話の頭（1 秒に最大 1 回）
+            last = -(10**9)
+            fl: list[Any] = []
+            for ln in lines:
+                if ln.emotion == "surprise" and ln.start - last >= round(fps):
+                    fl = fl or await asyncio.to_thread(fx.focus_lines, w, h)
+                    await put(fl, "集中線（X3）", ln.start, len(fl))
+                    last = ln.start
+        if pv == Purpose.TRAILER:
+            if title_end > t_at:  # 題名の後ろの煙（5 秒で繰り返す。題名の間だけ）
+                fr = await asyncio.to_thread(fx.smoke, w, h)
+                a = await self._overlay(project_id, fr, "煙（X5）", fps)
+                pos = t_at
+                while pos < title_end:
+                    n = min(len(fr), title_end - pos)
+                    cmds.append(
+                        AddClip(track_id=lane(FX_TRACK), asset_id=a.id, start_frame=pos,
+                                duration_frames=n, clip_id=str(uuid4()))
+                    )  # fmt: skip
+                    placed.append((pos, pos + n))
+                    pos += n
+            durs = [max(1, x.end - x.start) / fps for x in lines]
+            act = pp.acts(durs) if lines else []
+            if 3 in act:  # 第 3 幕の全体に残り火
+                s3 = lines[act.index(3)].start
+                e3 = lines[-1].end
+                fr = await asyncio.to_thread(fx.embers, w, h)
+                a = await self._overlay(project_id, fr, "残り火（X6）", fps)
+                pos = s3
+                while pos < e3:
+                    n = min(len(fr), e3 - pos)
+                    if any(x < pos + n and pos < y for x, y in placed):
+                        break
+                    cmds.append(
+                        AddClip(track_id=lane(EMBER_TRACK), asset_id=a.id, start_frame=pos,
+                                duration_frames=n, clip_id=str(uuid4()))
+                    )  # fmt: skip
+                    pos += n
+
+    async def _cut_transitions(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        cmds: list[Any],
+        fig_t: str,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        lane: Any,
+    ) -> list[str]:
+        """統合版 E6〜E10。cmds の図のトラックのクリップの境目に切り替えを足す。"""
+        kind = tz.PURPOSE_TRANSITION[prof.purpose.value]
+        figs = [c for c in cmds if isinstance(c, AddClip) and c.track_id == fig_t]
+        ends = {c.start_frame + (c.duration_frames or 0) for c in figs}
+        heads = {c.start_frame: c for c in figs if c.start_frame in ends}
+        cuts = tz.pick_cuts(list(heads), fps, total, prof.purpose.value)
+        if not cuts:
+            return []
+        if kind in tz.ENTRANCE:
+            name, n = tz.ENTRANCE[kind]
+            for b in cuts:
+                cid = heads[b].clip_id
+                if cid:
+                    cmds.append(
+                        SetClipAnimation(
+                            clip_id=cid,
+                            transition=Transition(type=TransitionType(name), duration_frames=n),
+                        )
+                    )
+            return []
+        n, at = tz.OVERLAY[kind], tz.CUT_AT[kind]
+        pal = prof.palette
+        cols = [pal.main, pal.accent, pal.chart[1] if len(pal.chart) > 1 else pal.base2]
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tid = None
+        last_end = -1
+        for k, b in enumerate(cuts):
+            start = b - at
+            if start < 0 or start + n > total or start < last_end:
+                continue
+            frames_ = await asyncio.to_thread(tz.overlay_frames, kind, w, h, cols, k)
+            work = out_dir / f"cut_{kind}_{uuid4().hex[:8]}"
+            work.mkdir(parents=True, exist_ok=True)
+            # 最後に透明の 1 枚を足す（動画の長さの丸めで 1 フレーム足りなくならないように）
+            from PIL import Image
+
+            for i, fr in enumerate([*frames_, Image.new("RGBA", (w, h), (0, 0, 0, 0))]):
+                await asyncio.to_thread(fr.save, work / f"{i:03d}.png")
+            mov = work.with_suffix(".mov")
+            await self.ffmpeg.run(
+                ["-y", "-framerate", f"{fps:.6f}", "-i", str(work / "%03d.png"),
+                 "-c:v", "png", "-pix_fmt", "rgba", str(mov)]
+            )  # fmt: skip
+            await asyncio.to_thread(shutil.rmtree, work, True)
+            row = await self.timeline.register_generated(
+                project_id, mov, AssetKind.VIDEO, "pillow", f"切り替え（{kind}）"
+            )
+            tid = tid or lane(CUT_TRACK)
+            cmds.append(
+                AddClip(
+                    track_id=tid,
+                    asset_id=row.id,
+                    start_frame=start,
+                    duration_frames=n,
+                    clip_id=str(uuid4()),
+                )
+            )
+            last_end = start + n
+        return []
+
+    async def _r_background(
+        self, project_id: str, prof: DesignProfile, w: int, h: int
+    ) -> AssetRead:
+        """統合版 R1〜R18（24 秒で継ぎ目なく繰り返す動画。R10 は静止画）。
+        同じ設定なら作り直さない。"""
+        import hashlib
+
+        from video_automation.services.rendering import backgrounds as rb
+
+        style = PURPOSE_BACKGROUND[prof.purpose.value]
+        pal = prof.palette.model_dump()
+        p = await self.timeline.get_timeline(project_id)
+        fps = p.fps_num / p.fps_den
+        key = hashlib.sha1(f"{style}|{w}x{h}|{fps}|{sorted(pal.items())}".encode()).hexdigest()[:10]
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        out = out_dir / f"bg_{style}_{key}.mp4"
+        ff = self.ffmpeg.ffmpeg
+        if not ff:
+            raise CommandError("ffmpeg not found")
+        made = out.with_suffix(".png") if style in rb.STATIC else out
+        if not made.is_file():
+            made = await asyncio.to_thread(rb.render, ff, style, out, (w, h), fps, pal)
+        kind = AssetKind.IMAGE if made.suffix == ".png" else AssetKind.VIDEO
+        row = await self.timeline.register_generated(
+            project_id, made, kind, "pillow", f"背景（{style} {BACKGROUND_NAMES[style]}）"
+        )
+        return AssetRead.model_validate(row)
 
     async def apply(
         self, req: DirectionApplyRequest, origin: CommandOrigin = CommandOrigin.USER
@@ -990,7 +1552,8 @@ class DirectionService:
             use(Component.BACKGROUND_MOTION)
         else:
             cid = add(bg_t, bg.id, 0, bg_total, role="background")
-            if prof is None or prof.allows(Component.BACKGROUND_MOTION):
+            still = bg.name.startswith("背景（R10")  # 統合版 R10 紙: 動かさない
+            if not still and (prof is None or prof.allows(Component.BACKGROUND_MOTION)):
                 cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
                 use(Component.BACKGROUND_MOTION)
 
@@ -1027,7 +1590,7 @@ class DirectionService:
                     project_id=p.id,
                     text=plan.title[:100],
                     duration_sec=dur,
-                    animation="bounce" if kinetic else "pop",
+                    animation=title_entrance(prof, plan.title, kinetic),  # type: ignore[arg-type]
                     # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
                     fade_out_sec=0.0,
                     # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
@@ -1659,6 +2222,35 @@ class DirectionService:
                         max_h=0.12,
                     ),
                 )
+        # 統合版 X1・X2・X3・X5・X6: 効果と粒
+        if prof is not None:
+            # 予告編の題名は台詞の後（t_at から tr_title フレーム）。他の用途は 0〜title_end
+            t_end = t_at + tr_title if tr_title else title_end
+            await self._effects(p.id, prof, lines, cmds, lane, t_at, t_end, total, fps, w, h)
+
+        # 統合版 H3・H4・H6: ニュースの帯・クレジットロール・中間字幕のカード
+        if prof is not None:
+            chap = [
+                (start, (s.heading or "").strip())
+                for s, start, _end in windows
+                if s.kind in (ShotKind.CARD, ShotKind.CHART) and (s.heading or "").strip()
+            ]
+            font = self.titles.font_path(heading_font)
+            skipped += await self._h_cards(
+                p.id, prof, plan, lines, chap, cmds, lane, total, fps, w, h, font, ink
+            )
+
+        # 統合版 N1・N7・N8・N11: 台本の語だけで出せる図解
+        if prof is not None:
+            skipped += await self._n_cards(
+                p.id, prof, lines, cmds, lane, total, fps, w, h,
+                self.titles.font_path(heading_font), ink,
+            )  # fmt: skip
+
+        # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
+        if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:
+            skipped += await self._cut_transitions(p.id, prof, cmds, fig_t, total, fps, w, h, lane)
+
         if es:  # 終了画面（まとめの文字と、YouTube の要素を置く場所の目安の枠）
             out = (
                 Path(self.settings.data_dir)

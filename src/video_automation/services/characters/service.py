@@ -62,7 +62,7 @@ from video_automation.services.timeline.timeline_service import (
 log = get_logger("characters")
 TRACK = "立ち絵"
 TEXT_TRACK = "演出・文字"  # 演出の文字トラック（direction の TRACKS と同じ名前）
-OVERLAY_VERSION = 2  # 統合版 F1・Q8 でまばたき・うなずきが変わった
+OVERLAY_VERSION = 3  # 統合版 F1・Q8（まばたき・うなずき）、F2・F4（登場・視線）
 ProgressFn = Callable[[float], Awaitable[None]]
 
 

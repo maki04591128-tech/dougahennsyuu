@@ -105,8 +105,8 @@ async def test_title_card_animations_hold_fade_and_box(vclient):
     call = blender_calls(c.tmp)[-1]
     assert call["script"] == "title_card" and call["animation"] == "typewriter"
     assert call["position"] == "lower_third" and call["outline"] is True
-    # 動く部分（5文字×0.07+0.1秒 ≒ 14フレーム）だけ描画し、残りは最終フレームで延長
-    assert 10 <= call["frames"] <= 16
+    # 統合版 T6: カーソルが表示の終わりまで点滅するので、1 行なら全体（2 秒＝60 フレーム）を描く
+    assert call["frames"] == 60
     path = c.app.state.container.settings.data_dir / a["path"]
     info = frames_of(path)
     assert info["nb_read_frames"] == "60" and info["codec_name"] == "png"

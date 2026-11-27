@@ -5,6 +5,8 @@ args: text, width, height, fps, frames（動く部分のフレーム数。以降
       font_path, text_color[RGBA], outline_color[RGBA] / outline(bool), size(倍率),
       position("center"|"lower_third"|"top"), animation, output_dir, result_path
 animation: pop / slide / zoom / typewriter / bounce / fade / none
+  統合版 T16 の題名の入り: decode（T5）・typewriter（T6）・tracking（T7）・flip3d（T9）・
+  mask_rise（T10）・slam（T17＋T22 の残像）・stroke（T4。書き順のデータが無い文字の決まり）
   fade / none は1フレームだけ描画し、フェードは呼び出し側（FFmpeg）で付ける。
 結果の text_box は最終状態の文字の範囲（ピクセル、左上原点）。帯（背景板）の描画に使う。
 """
@@ -13,6 +15,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import math  # noqa: E402
+import random  # noqa: E402
 
 import bpy  # type: ignore[import-not-found]  # noqa: E402
 from _common import (  # noqa: E402
@@ -27,6 +32,8 @@ from _common import (  # noqa: E402
     write_result,
 )
 
+PER_CHAR = ("typewriter", "bounce", "decode", "tracking", "flip3d", "mask_rise", "stroke")
+CURSOR = "▍"
 GLOSS_ALPHA = 0.40
 GLOSS_SLOPE = 0.5  # 帯の傾き（画面の y が 1 上がると、帯の位置が 0.5 右へ）
 
@@ -143,6 +150,75 @@ def sun_beams(scene, mat):  # noqa: ANN001
     scene.render.use_compositing = True
 
 
+def fade_material(name, rgba):  # noqa: ANN001
+    """不透明度を動かせる発光のマテリアル（Mix の Fac = 不透明度）。"""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    emit = nt.nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value = rgba
+    tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    mix.name = "alpha"
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(tr.outputs[0], mix.inputs[1])
+    nt.links.new(emit.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs[0])
+    if hasattr(mat, "surface_render_method"):  # EEVEE Next: 少ないサンプルでも粒にならない
+        mat.surface_render_method = "BLENDED"
+    elif hasattr(mat, "blend_method"):
+        mat.blend_method = "BLEND"
+    return mat
+
+
+def key_alpha(mats, frame, value, interp="LINEAR"):  # noqa: ANN001
+    for m in mats:
+        sock = m.node_tree.nodes["alpha"].inputs[0]
+        sock.default_value = value
+        sock.keyframe_insert("default_value", frame=frame)
+        fc = None
+        ad = m.node_tree.animation_data
+        if ad and ad.action:
+            from bpy_extras import anim_utils
+
+            bag = anim_utils.action_get_channelbag_for_slot(ad.action, ad.action_slot)
+            fc = bag.fcurves if bag else []
+        for c in fc or []:
+            for kp in c.keyframe_points:
+                if int(round(kp.co.x)) == frame:
+                    kp.interpolation = interp
+
+
+def holdout_plane(name, x0, y0, x1, y1, z):  # noqa: ANN001
+    """この四角の後ろを透明にする（統合版 T10 のマスク）。"""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    ho = nt.nodes.new("ShaderNodeHoldout")
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(ho.outputs[0], out.inputs[0])
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata([(x0, y0, z), (x1, y0, z), (x1, y1, z), (x0, y1, z)], [], [(0, 1, 2, 3)])
+    mesh.materials.append(mat)
+    ob = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(ob)
+    return ob
+
+
+def entrance_frames(anim, n, fps=30):  # noqa: ANN001
+    """入りの長さ（フレーム）。呼び出し側の animation_seconds と同じ値。"""
+    return {
+        "decode": 2 * (n - 1) + 1,
+        "tracking": 18,
+        "flip3d": 2 * (n - 1) + 10,
+        "mask_rise": 2 * (n - 1) + 10,
+        "stroke": 6 * n,
+        "slam": 16,
+    }.get(anim, 0)
+
+
 def main() -> None:
     a = load_args()
     w, h, fps, frames = int(a["width"]), int(a["height"]), int(a["fps"]), int(a["frames"])
@@ -193,7 +269,7 @@ def main() -> None:
                     if back is not None:
                         kp.back = back
 
-    if anim in ("typewriter", "bounce") and len(text.replace("\n", "")) > 1 and "\n" not in text:
+    if anim in PER_CHAR and len(text.replace("\n", "")) > 1 and "\n" not in text:
         # 1文字ずつのオブジェクト。位置は先頭からの部分文字列の幅で決める
         widths = []
         for i in range(1, len(text) + 1):
@@ -202,14 +278,26 @@ def main() -> None:
             widths.append(o.dimensions.x)
             bpy.data.objects.remove(o, do_unlink=True)
         total = widths[-1]
-        stagger = max(1, round((end - 1) * 0.7 / max(len(text) - 1, 1)))
+        n = len(text)
+        line_h = dims.y * scale
+        rnd = random.Random(100)  # 統合版 T1: 乱数の種 = 行の番号 × 100 ＋ 文字の番号
+        tc, oc = a.get("text_color", [1, 1, 1, 1]), a.get("outline_color", [0, 0, 0, 1])
+        stagger = max(1, round((end - 1) * 0.7 / max(n - 1, 1)))
+        if anim == "typewriter":  # 統合版 T6: 2f ずらしでくっきり（1 秒 15 字）
+            stagger = 2
+        if anim == "mask_rise":  # 統合版 T10: 行の高さの四角の下を隠す
+            hb = line_h * 0.62
+            holdout_plane("mask", -vw, -vh * 2, vw, pos_y - hb, 1.0)
         for i, ch in enumerate(text):
             left = widths[i - 1] if i else 0.0
             cx = ((left + widths[i]) / 2 - total / 2) * scale
-            o = text_object(f"c{i}", ch, font, mat)
+            fades = anim in ("tracking", "stroke")
+            cm = fade_material(f"t{i}", tc) if fades else mat
+            om = fade_material(f"o{i}", oc) if fades else outline_mat
+            o = text_object(f"c{i}", ch, font, cm)
             o.parent = root
             if outline and ch.strip():
-                add_outline(o, outline_mat, ow)
+                add_outline(o, om, ow)
             start = 1 + i * stagger
             if anim == "typewriter":
                 # その文字の番が来たら1フレームで現れる（補間の種類に依らないよう、
@@ -219,6 +307,62 @@ def main() -> None:
                     key(o, "scale", start - 1, (0, 0, 0))
                 key(o, "scale", start, (scale,) * 3)
                 o.location = (cx, 0, 0)
+            elif anim == "decode":  # 統合版 T5: 確定の前の 6f は同じ行の文字を 2f ごとに差し替え
+                o.location = (cx, 0, 0)
+                start = 1 + 2 * i
+                if start > 1:
+                    key(o, "scale", 1, (0, 0, 0))
+                    key(o, "scale", start - 1, (0, 0, 0))
+                key(o, "scale", start, (scale,) * 3)
+                pool = [c for c in text if c.strip()] or [ch]
+                for j, f0 in enumerate(range(start - 6, start, 2)):
+                    if f0 + 1 < 1:
+                        continue
+                    alt = text_object(f"d{i}_{j}", rnd.choice(pool), font, mat)
+                    alt.parent = root
+                    alt.location = (cx, 0, 0)
+                    key(alt, "scale", 1, (0, 0, 0))
+                    if f0 > 1:
+                        key(alt, "scale", f0, (0, 0, 0))
+                    key(alt, "scale", max(1, f0 + 1), (scale,) * 3)
+                    key(alt, "scale", max(2, f0 + 3), (0, 0, 0))
+                    ease(alt, "scale", "CONSTANT", "AUTO")
+                ease(o, "scale", "CONSTANT", "AUTO")
+            elif anim == "tracking":  # 統合版 T7: 字間 +30%→0・不透明度 0→1、18f
+                o.scale = (scale,) * 3
+                key(o, "location", 1, (cx * 1.3, 0, 0))
+                key(o, "location", 19, (cx, 0, 0))
+                ease(o, "location", "CUBIC", "EASE_OUT")
+                key_alpha([cm, om], 1, 0.0)
+                key_alpha([cm, om], 19, 1.0)
+            elif anim == "flip3d":  # 統合版 T9: 下端を軸に X −90°→0、10f、2f ずらし
+                piv = bpy.data.objects.new(f"p{i}", None)
+                scene.collection.objects.link(piv)
+                piv.parent = root
+                piv.location = (cx, -line_h / 2, 0)
+                o.parent = piv
+                o.location = (0, line_h / 2, 0)
+                o.scale = (scale,) * 3
+                start = 1 + 2 * i
+                key(piv, "rotation_euler", 1, (math.radians(-90), 0, 0))
+                key(piv, "rotation_euler", start, (math.radians(-90), 0, 0))
+                key(piv, "rotation_euler", start + 10, (0, 0, 0))
+                ease(piv, "rotation_euler", "CUBIC", "EASE_OUT")
+            elif anim == "mask_rise":  # 統合版 T10: y −行の高さ→0、10f（easeOutExpo）
+                o.scale = (scale,) * 3
+                start = 1 + 2 * i
+                key(o, "location", 1, (cx, -line_h * 1.25, 0))
+                key(o, "location", start, (cx, -line_h * 1.25, 0))
+                key(o, "location", start + 10, (cx, 0, 0))
+                ease(o, "location", "EXPO", "EASE_OUT")
+            elif anim == "stroke":  # 統合版 T4（書き順のデータが無い文字）: 順に 0→1 を 4f
+                o.scale = (scale,) * 3
+                o.location = (cx, 0, 0)
+                f0 = 1 + 6 * i
+                key_alpha([cm, om], 1, 0.0)
+                if f0 > 1:
+                    key_alpha([cm, om], f0, 0.0)
+                key_alpha([cm, om], f0 + 4, 1.0)
             else:  # bounce: 上から落ちて弾む
                 o.scale = (scale,) * 3
                 drop = vh * 0.12
@@ -233,6 +377,23 @@ def main() -> None:
                 key(o, "location", min(end, start + max(3, round(fps * 0.4))), (cx, 0, 0))
                 key(o, "scale", 1, (0, 0, 0))
                 key(o, "scale", start, (scale,) * 3)
+        if anim == "typewriter":  # 統合版 T6: 最後の文字の後ろにカーソルを 15f 周期で点滅
+            # 左揃えにして、出した文字の右端（先頭からの幅）の少し右に置く
+            cur = text_object("cursor", CURSOR, font, mat, align="LEFT")
+            cur.parent = root
+            cur.scale = (scale,) * 3
+            for i in range(n):
+                f = 1 + i * stagger
+                cur.location = ((widths[i] - total / 2 + 0.06) * scale, 0, 0)
+                cur.keyframe_insert("location", frame=f)
+            last = 1 + (n - 1) * stagger
+            f, on = last, True
+            while f <= end:
+                key(cur, "scale", f, (scale if on else 0.0,) * 3)
+                f += 8 if on else 7
+                on = not on
+            ease(cur, "scale", "CONSTANT", "AUTO")
+            ease(cur, "location", "CONSTANT", "AUTO")
         main_obj = root
         box_w, box_h = total * scale, dims.y * scale
     else:
@@ -254,6 +415,23 @@ def main() -> None:
         elif anim == "zoom":
             key(o, "scale", 1, (scale * 1.6,) * 3)
             key(o, "scale", end, (scale,) * 3)
+        elif anim == "slam":
+            # 統合版 T17: 行全体を 3.0→1.0 に 4f（easeInCubic）、着地で 1.00→1.03→1.00（6f）
+            for f, v in ((1, 3.0), (5, 1.0), (8, 1.03), (11, 1.0)):
+                key(o, "scale", f, (scale * v,) * 3)
+            ease(o, "scale", "CUBIC", "EASE_IN")
+            # 統合版 T22: 2f・4f・6f 遅れの残像（不透明度 50%・30%・15%）
+            for d, al in ((2, 0.5), (4, 0.3), (6, 0.15)):
+                gm = fade_material(f"ghost{d}", a.get("text_color", [1, 1, 1, 1]))
+                g = text_object(f"ghost{d}", text, font, gm)
+                g.parent = root
+                g.location = (0, 0, -0.02 * d)
+                for f, v in ((1, 3.0), (1 + d, 3.0), (5 + d, 1.0)):
+                    key(g, "scale", f, (scale * v,) * 3)
+                ease(g, "scale", "CUBIC", "EASE_IN")
+                key_alpha([gm], 1, al)
+                key_alpha([gm], 5 + d, al)
+                key_alpha([gm], min(end, 7 + d), 0.0)
         main_obj = o
         box_w, box_h = dims.x * scale, dims.y * scale
     del main_obj
