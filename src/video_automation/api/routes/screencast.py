@@ -22,6 +22,8 @@ class ZoomRequest(BaseModel):
     keys: list[tuple[float, str]] = Field(default_factory=list, max_length=20000)
     speedup: bool = True  # 画面の変化も声も無い 2 秒以上の区間を 4 倍速にする
     blur_pii: bool = True  # メール・API キー・電話番号を OCR で見つけてぼかす
+    # 統合版 N14: クリックの前後にクリックの位置の外を暗くする（None は用途が操作説明のときだけ）
+    spotlight: bool | None = None
 
 
 @router.post("/zoom", response_model=JobRead, status_code=202)
@@ -39,6 +41,7 @@ async def zoom(project_id: str, body: ZoomRequest, c: AppContainer = Depends(get
             keys=body.keys,
             speedup=body.speedup,
             blur_pii=body.blur_pii,
+            spotlight=body.spotlight,
         )
         # 個人情報の一覧（伏せ字）・早送りの区間を付ける。利用者が確かめる
         return {**a.model_dump(mode="json"), "finish": c.screencast.reports.get(a.id, {})}

@@ -6,6 +6,7 @@
 - 早送り: 画面の変化も声も無い 2 秒以上の区間を 4 倍速にし「⏩ ×4」を出す
 - キー操作: 画面下の中央に 1.8 秒。1 秒に 4 回以上の連続入力（文字を打っている所）は出さない
 - カーソルの光: 半径 30px・不透明度 0.28
+- スポットライト（統合版 N14。操作説明）: クリックの 0.3 秒前から 1.2 秒間、クリックの位置の外を暗く
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any
 
 from video_automation.integrations.ocr.engine import OcrResult, union
 
@@ -257,3 +259,29 @@ def audio_filter(segs: list[tuple[float, float, int]]) -> str:
         labels.append(f"[a{i}]")
     parts.append("".join(labels) + f"concat=n={len(segs)}:v=0:a=1[aout]")
     return ";".join(parts)
+
+
+# 統合版 N14 スポットライト: クリックの 0.3 秒前から 1.2 秒間、半径は画面の高さの 18% の外を
+# 黒・不透明度 50% にする。入り・出は 6f
+SPOT_BEFORE, SPOT_SEC, SPOT_RADIUS, SPOT_DIM, SPOT_FADE = 0.3, 1.2, 0.18, 0.5, 6
+
+
+def spotlight_level(dt: float, fps: float) -> float:
+    """クリックからの秒 dt での暗さの割合（0〜1。入り・出の 6f は直線で）。"""
+    a = dt + SPOT_BEFORE
+    if a < 0 or a > SPOT_SEC:
+        return 0.0
+    fade = SPOT_FADE / fps
+    return min(1.0, a / fade, (SPOT_SEC - a) / fade)
+
+
+def spotlight(im: Any, x: float, y: float, level: float) -> Any:
+    """(x, y) を中心に半径 画面の高さ × 18% の外を暗くした画（RGB）。"""
+    from PIL import Image, ImageDraw
+
+    w, h = im.size
+    r = SPOT_RADIUS * h
+    mask = Image.new("L", (w, h), round(255 * SPOT_DIM * level))
+    ImageDraw.Draw(mask).ellipse([x - r, y - r, x + r, y + r], fill=0)
+    black = Image.new("RGB", (w, h), (0, 0, 0))
+    return Image.composite(black, im, mask)

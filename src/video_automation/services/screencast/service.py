@@ -22,7 +22,7 @@ from uuid import uuid4
 from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
-from video_automation.database.models import Asset
+from video_automation.database.models import Asset, Project
 from video_automation.integrations.ffmpeg.runner import FFmpeg
 from video_automation.integrations.ocr.engine import OcrEngine, OcrUnavailable, default_engine
 from video_automation.schemas.timeline import AssetKind, AssetRead
@@ -163,6 +163,7 @@ class Finish:
     keys: list[tuple[float, str]] = field(default_factory=list)
     cursor: list[tuple[float, float, float]] = field(default_factory=list)
     font: str | None = None
+    spotlight: bool = False  # 統合版 N14: クリックの前後に、クリックの位置の外を暗くする
 
     @property
     def fast(self) -> bool:
@@ -345,6 +346,13 @@ def render_zoom(
                 vw, vh = w / z, h / z
                 box = (cx - vw / 2, cy - vh / 2, cx + vw / 2, cy + vh / 2)
                 im = im.resize((w, h), Image.Resampling.BICUBIC, box=box)
+            if fx.spotlight:  # 統合版 N14（寄った後の画面に。クリックの位置を中心に）
+                lit = [(c, k) for c in clicks if (k := fin.spotlight_level(t - c.t, fps)) > 0]
+                if lit:
+                    c, k = max(lit, key=lambda x: x[1])
+                    px = (c.x - cx) * z + w / 2
+                    py = (c.y - cy) * z + h / 2
+                    im = fin.spotlight(im, px, py, k)
             # クリックの波紋（出力の座標へ写す）
             rip = [c for c in clicks if 0 <= t - c.t < RIPPLE_SEC]
             if rip:
@@ -422,6 +430,7 @@ class ScreencastService:
         keys: list[tuple[float, str]] | None = None,
         speedup: bool = True,
         blur_pii: bool = True,
+        spotlight: bool | None = None,
     ) -> AssetRead:
         """録画の素材から、操作している所へ寄った映像を作り、新しい素材として登録する。"""
         async with self.db.session_factory() as s:
@@ -449,6 +458,9 @@ class ScreencastService:
         fx, notes = await self._finish(
             ff, src, dur, info.has_audio, motion, cursor, keys, speedup, blur_pii
         )
+        if spotlight is None:  # 既定は用途が操作説明のときだけ（統合版 N14）
+            spotlight = await self._purpose(project_id) == "tutorial"
+        fx.spotlight = bool(spotlight and click_f)
         out_dir = self.settings.data_dir / "projects" / project_id / "screencast"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"{uuid4().hex[:12]}.mp4"
@@ -508,6 +520,11 @@ class ScreencastService:
             fast=len(rep["fast"]),
         )
         return res
+
+    async def _purpose(self, project_id: str) -> str | None:
+        async with self.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            return p.purpose if p is not None else None
 
     async def _finish(
         self,

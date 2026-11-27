@@ -91,3 +91,16 @@ def test_clip_camera_uses_subpixel_perspective_not_zoompan():
     )
     joined = ",".join(f.pre)
     assert "zoompan" not in joined and "perspective=" in joined and "eval=frame" in joined
+
+
+def test_spotlight_level_and_image():
+    """統合版 N14: 0.3 秒前から 1.2 秒間、入り・出は 6f。外だけを 50% 暗く。"""
+    from PIL import Image
+
+    from video_automation.services.screencast import finish as fin
+
+    assert fin.spotlight_level(-0.4, 30) == 0.0 and fin.spotlight_level(1.0, 30) == 0.0
+    assert fin.spotlight_level(-0.3 + 3 / 30, 30) == 0.5
+    assert fin.spotlight_level(0.2, 30) == 1.0
+    im = fin.spotlight(Image.new("RGB", (100, 50), (200, 200, 200)), 50, 25, 1.0)
+    assert im.getpixel((50, 25)) == (200, 200, 200) and im.getpixel((2, 2))[0] == 100

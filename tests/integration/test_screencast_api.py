@@ -108,3 +108,34 @@ async def test_zoom_finish_blurs_pii_and_speeds_up_still_silence(client, setting
     assert fin["fast"] and fin["fast"][0][1] - fin["fast"][0][0] >= 2.0
     assert out["duration_sec"] < 5.0  # 止まっていた所が 4 倍速
     assert out["has_audio"]
+
+
+def _pixel(path, t, x, y):
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", str(path), "-frames:v", "1",
+         "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        capture_output=True, check=True,
+    ).stdout  # fmt: skip
+    return raw[y * 320 + x]
+
+
+async def test_zoom_spotlight_dims_outside_the_click(client, settings):
+    """統合版 N14: クリックの 0.3 秒前から 1.2 秒間、クリックの位置の外を半分の明るさに。"""
+    src = settings.data_dir / "rec_gray.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0xC0C0C0:s=320x200:d=4:r=30",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True,
+    )  # fmt: skip
+    pid = (await client.post("/projects", json={"name": "S"})).json()["id"]
+    a = (await client.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    job = await client.post(
+        f"/projects/{pid}/screencast/zoom",
+        json={"asset_id": a["id"], "clicks": [[1.5, 160, 100]], "zoom": 1.0, "spotlight": True,
+              "speedup": False, "blur_pii": False},
+    )  # fmt: skip
+    done = await client.app.state.jobs.wait(job.json()["id"])
+    assert done.status == "SUCCEEDED", done.error
+    out = settings.data_dir / done.result["path"]
+    lit, dim, later = _pixel(out, 1.7, 160, 100), _pixel(out, 1.7, 5, 5), _pixel(out, 3.5, 5, 5)
+    assert lit > 170 and later > 170 and dim < 120, (lit, dim, later)
