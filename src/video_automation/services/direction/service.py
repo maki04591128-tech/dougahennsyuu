@@ -205,6 +205,20 @@ CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
 DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
 YEAR_TRACK = "演出・年号"  # 統合版 T43
 PLACE_TRACK = "演出・場所"  # 統合版 H2
+# 統合版 段階5d: LLM の chart の種類 → 図、用途 → 使ってよい図
+D_KIND = {
+    "number": "D6", "share": "D7", "progress": "D12", "bars": "D3", "race": "D5",
+    "pair": "D8", "radar": "D9", "flow": "D10", "funnel": "D11",
+}  # fmt: skip
+D_PURPOSES: dict[Purpose, set[str]] = {
+    Purpose.EXPLAINER: {"D3", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12"},
+    Purpose.LECTURE: {"D6", "D12"},
+    Purpose.NEWS: {"D5", "D7", "D8"},
+    Purpose.CORPORATE: {"D6", "D11", "D12"},
+    Purpose.PRODUCT: {"D6", "D9"},
+    Purpose.PROMO: {"D6"},
+    Purpose.RANKING: {"D5"},
+}
 T43_PURPOSES = {Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE}
 N6_PURPOSES = {Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL}
 H1_PURPOSES = {
@@ -1288,6 +1302,28 @@ class DirectionService:
                                                   ink, pal.surface)  # fmt: skip
                     put(await self._png(project_id, img, "クイズ（N10）"), ans.start,
                         q_end - ans.start, None)  # fmt: skip
+            ch_ = it.get("chart")
+            if isinstance(ch_, dict) and free(ln.start, end):
+                from video_automation.services.rendering import d_charts as dc
+
+                did = D_KIND.get(str(ch_.get("kind")))
+                if did and did in D_PURPOSES.get(pv, set()) and dc.valid(ch_):
+                    pal_d = pal.model_dump()
+                    if did == "D6":  # 大きな数字を回す（動画）→ 止まった後（静止画）
+                        cap = nc.first_phrase(ln.text)
+                        fr = await asyncio.to_thread(
+                            dc.number_frames, ch_, w, h, font, pal.accent, ink, cap
+                        )
+                        n_mov = min(len(fr), end - ln.start)
+                        put(await self._overlay(project_id, fr[:n_mov], "大きな数字（D6）", fps),
+                            ln.start, n_mov, None)  # fmt: skip
+                        if end - ln.start > n_mov:
+                            put(await self._png(project_id, fr[-1], "大きな数字（D6）"),
+                                ln.start + n_mov, end - ln.start - n_mov, None)  # fmt: skip
+                    else:
+                        img = await asyncio.to_thread(dc.draw, ch_, w, h, font, pal_d, ink)
+                        a_ = await self._png(project_id, img, f"図表（{did}）")
+                        put(a_, ln.start, end - ln.start, fade(end - ln.start))
             cp = it.get("compare")
             if pv == Purpose.PRODUCT and isinstance(cp, dict) and free(ln.start, end):
                 names_ = [str(x) for x in (cp.get("names") or [])][:2]

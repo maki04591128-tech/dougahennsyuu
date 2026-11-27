@@ -1324,3 +1324,29 @@ async def test_llm_items_parts(dclient):
                           ("product", "仕様の比較表（P11）"), ("explainer", "ベン図（N3）")):  # fmt: skip
         tl, _ = await _apply(c, pid, sid, purpose)
         assert name in {a["name"] for a in tl["assets"]}, purpose
+
+
+async def test_charts_from_llm_items(dclient):
+    """統合版 D6（大きな数字を回す）・D12（輪）: LLM の chart から図表。用途に無い図は出さない。"""
+    from video_automation.services.rendering import d_charts as dc
+
+    assert not dc.valid({"kind": "share", "labels": ["A"], "values": [100]})
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "来場者は1280万人でした。"},
+        {"speaker": "B", "text": "達成率は72パーセントです。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {
+        0: {"chart": {"kind": "number", "values": ["1280"], "unit": "万人"}},
+        1: {"chart": {"kind": "progress", "values": [72]}},
+    })  # fmt: skip
+    tl, _ = await _apply(c, pid, sid, "lecture")
+    assert "大きな数字（D6）" in {a["name"] for a in tl["assets"]}
+    # 前の図が出ている間（文の終わり＋1 秒）は次の図を重ねない。1 つ目を外すと D12 が出る
+    await _set_items(c, sid, {0: {}, 1: {"chart": {"kind": "progress", "values": [72]}}})
+    tl, _ = await _apply(c, pid, sid, "lecture")
+    assert "図表（D12）" in {a["name"] for a in tl["assets"]}
+    n12 = [a["name"] for a in tl["assets"]].count("図表（D12）")
+    tl, _ = await _apply(c, pid, sid, "promo")  # PR は D6 だけ（D12 は作らない）
+    assert [a["name"] for a in tl["assets"]].count("図表（D12）") == n12
