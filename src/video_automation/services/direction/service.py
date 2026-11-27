@@ -207,6 +207,7 @@ CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
 DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
 YEAR_TRACK = "演出・年号"  # 統合版 T43
 PLACE_TRACK = "演出・場所"  # 統合版 H2
+MARK_TRACK = "手描きの印"  # 統合版 N12・N13（スライドの上。build が置く）
 TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
 TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
 BEHIND_TITLE = (TITLE_BACK_TRACK, TITLE_BACK2_TRACK, TITLE_RING_TRACK)  # 立ち絵と題名の下に置く
@@ -1930,7 +1931,16 @@ class DirectionService:
         recording = rec_t is not None and any(c.track_id == rec_t.id for c in tl.clips)
         if tachie is not None or rec_t is not None:
             # 背景 → 画面録画 → 図・カード → 立ち絵 → 文字（後から足した背景で隠さない）
-            order = [rec_t.id if rec_t else None, fig_t, tachie.id if tachie else None, txt_t]
+            mark_t = next(
+                (t for t in tl.tracks if t.name == MARK_TRACK and t.kind == TrackKind.VIDEO), None
+            )
+            order = [
+                rec_t.id if rec_t else None,
+                mark_t.id if mark_t else None,
+                fig_t,
+                tachie.id if tachie else None,
+                txt_t,
+            ]
             for tid in order:
                 if tid is not None:
                     cmds.append(MoveTrack(track_id=tid, index=1000))

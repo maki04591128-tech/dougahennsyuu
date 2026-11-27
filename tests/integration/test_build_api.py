@@ -742,3 +742,10 @@ async def test_lecture_from_slides(bclient, fake, media_dir):
     # 固定費の文で 1 枚目の 2 行目へ寄る
     keys = clips[1]["animation"]["keyframes"]
     assert max(k.get("zoom") or 1 for k in keys) == 1.25
+    # 統合版 N12: 話している語を手描きの丸で囲む（スライドの上・同じカメラ）
+    marks = [x for x in tl["clips"] if x["track_id"] == tracks["手描きの印"]["id"]]
+    assert marks and all(assets[x["asset_id"]] == "手描きの丸（N12）" for x in marks)
+    order = [t["name"] for t in tl["tracks"]]
+    assert order.index("画面録画") < order.index("手描きの印")
+    fixed = next(x for x in marks if clips[1]["start_frame"] <= x["start_frame"])
+    assert max(k.get("zoom") or 1 for k in fixed["animation"]["keyframes"]) > 1.0

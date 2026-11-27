@@ -78,7 +78,7 @@ from video_automation.services.direction import mv_bake
 from video_automation.services.direction import mv_shots as mv
 from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction import slides as sl
-from video_automation.services.direction.service import native_transform
+from video_automation.services.direction.service import MARK_TRACK, native_transform
 from video_automation.services.rendering import sync as sync_audio
 from video_automation.services.rendering.beats import detect_file
 from video_automation.services.rendering.lyrics import sections as lyric_sections
@@ -1081,6 +1081,15 @@ class BuildService:
             # 画面録画と同じトラックに置く（演出は録画と同じく主役を隠さない）
             tid = str(uuid4())
             cmds.append(AddTrack(kind=TrackKind.VIDEO, name=RECORDING_TRACK, track_id=tid))
+        # 統合版 N12・N13: 話している語の手描きの丸・虫めがね（スライドの上のトラック）
+        mark_t = next((t for t in tl.tracks if t.name == MARK_TRACK), None)
+        if mark_t is not None:
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == mark_t.id]
+            mark_tid = mark_t.id
+        else:
+            mark_tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=MARK_TRACK, track_id=mark_tid))
+        marks = 0
         # 箇条書きを隠した画像（同じ状態は 1 枚にまとめる）
         made: dict[tuple[int, tuple[int, ...]], AssetRead] = {}
         zooms = 0
@@ -1118,13 +1127,107 @@ class BuildService:
             if keys:
                 zooms += 1
                 cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+            marks += await self._slide_marks(
+                project_id, sh, frames, toks, page_of, pages[sh.page], keys, fps,
+                c.settings.data_dir / src.path, mark_tid, cmds, (tl.width, tl.height),
+            )  # fmt: skip
         await c.timeline.submit(
             project_id,
             CommandRequest(command=Batch(commands=cmds), description="スライドを置く"),
         )
         notes = await self._small_tachie(project_id)
-        log.info("slides_placed", shots=len(shots), zooms=zooms)
+        log.info("slides_placed", shots=len(shots), zooms=zooms, marks=marks)
         return notes
+
+    async def _slide_marks(
+        self,
+        project_id: str,
+        sh: Any,
+        frames: list[tuple[int, int]],
+        toks: list[set[str]],
+        page_of: list[int],
+        res: Any,
+        keys: list[Keyframe],
+        fps: float,
+        slide_path: Path,
+        tid: str,
+        cmds: list[Any],
+        canvas: tuple[int, int],
+    ) -> int:
+        """統合版 N12・N13: その文が話している語を、スライドの上に手描きの丸（小さい語は虫めがね）で
+        示す。画はスライドと同じ縦横比で、スライドと同じ置き方・カメラで重ねる（寄っても合う）。"""
+        from PIL import Image
+
+        from video_automation.services.animation.motion import _values_at
+        from video_automation.services.rendering import n_marks as nm
+
+        if not res.width or not res.lines:
+            return 0
+        c = self.c
+        prof = await c.design.profile_for(project_id) if c.design else None
+        accent = (prof or PROFILES[Purpose.LECTURE]).palette.accent
+        cw, ch = canvas
+        k_fit = min(cw / res.width, ch / res.height)  # スライドの画素 → 出力の画素
+        scale = min(1.0, 960 / res.width)  # 重ねる画は幅 960px までに縮める
+        ow, oh = max(2, round(res.width * scale)), max(2, round(res.height * scale))
+        px_per_out = scale / k_fit
+        cam = ClipAnimation(keyframes=keys) if keys else None
+        ffps = Fraction(fps).limit_denominator(1001)
+        slide_img: Any = None
+        made = 0
+        for i, (f0, f1) in enumerate(frames):
+            if page_of[i] != sh.page or not (sh.start <= f0 < sh.end):
+                continue
+            box = sl.word_box(res, toks[i])
+            if box is None:
+                continue
+            n = min(f1, sh.end) - f0
+            if n < nm.N12_DRAW:
+                continue
+            bx, by, bw, bh = (v * scale for v in box)
+            small = box[3] * k_fit / ch < nm.N13_MIN
+            if small:
+                if slide_img is None:
+                    slide_img = await asyncio.to_thread(
+                        lambda: Image.open(slide_path).convert("RGBA").resize((ow, oh))
+                    )
+                lens = await asyncio.to_thread(
+                    nm.magnifier, slide_img, (bx, by, bw, bh), nm.N13_DIAM * ch * px_per_out,
+                    px_per_out,
+                )  # fmt: skip
+                gen = nm.magnifier_frames((ow, oh), lens, (bx, by, bw, bh), n)
+                name = "虫めがね（N13）"
+            else:
+                gen = nm.circle_frames((ow, oh), (bx, by, bw, bh), n, accent, px_per_out, i)
+                name = "手描きの丸（N12）"
+            a = await self._frames_mov(project_id, gen, fps, name)
+            cid = str(uuid4())
+            cmds.append(
+                AddClip(track_id=tid, asset_id=a.id, start_frame=f0, duration_frames=n,
+                        clip_id=cid, transform=ClipTransform(fit=FitMode.FIT))
+            )  # fmt: skip
+            if cam is not None:  # スライドのカメラの、この区間の値（2 フレームごと・直線でつなぐ）
+                sub: list[Keyframe] = []
+                prev: dict[str, float] | None = None
+                last_f = -1
+                for f in [*range(0, n, 2), n - 1]:
+                    v = _values_at(cam, f0 - sh.start + f, ffps)
+                    if prev is not None and v == prev:
+                        continue
+                    if prev is not None and last_f != f - 2 and f - 2 > sub[-1].frame:
+                        sub.append(Keyframe(frame=f - 2, easing=Easing.LINEAR, **prev))  # type: ignore[arg-type]
+                    sub.append(Keyframe(frame=f, easing=Easing.LINEAR, **v))  # type: ignore[arg-type]
+                    prev, last_f = v, f
+                if sub:
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=sub))
+                    )
+            made += 1
+        return made
+
+    async def _frames_mov(self, project_id: str, frames: Any, fps: float, name: str) -> AssetRead:
+        """透過の画の列（生成器でもよい）を PNG の mov にして素材にする（最後に透明の 1 枚）。"""
+        return await self.c.direction._overlay(project_id, frames, name, fps)
 
     @staticmethod
     def _slide_keys(

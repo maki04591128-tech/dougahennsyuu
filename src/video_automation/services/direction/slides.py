@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from video_automation.integrations.ocr.engine import OcrLine, OcrResult
+from video_automation.integrations.ocr.engine import OcrLine, OcrResult, union
 
 SLIDE_NAME = "スライド:"
 SLIDE_TRACK = "スライド"
@@ -47,6 +47,22 @@ def best_line(res: OcrResult, toks: set[str]) -> int | None:
         if n > best:
             best, idx = n, i
     return idx
+
+
+def word_box(res: OcrResult, toks: set[str]) -> tuple[float, float, float, float] | None:
+    """統合版 N12: 一致する行の中で、発話の語（最も長い語）に当たる語の範囲（元の画像の画素）。"""
+    j = best_line(res, toks)
+    if j is None:
+        return None
+    words = res.lines[j].words
+    low = [w.text.lower() for w in words]
+    for t in sorted((t for t in toks if t in res.lines[j].text.lower()), key=len, reverse=True):
+        # その語を含む最短の語の範囲（終わりを前から、始まりを後ろから広げる）
+        for b in range(len(words)):
+            for a in range(b, -1, -1):
+                if t in "".join(low[a : b + 1]):
+                    return union([(w.x, w.y, w.w, w.h) for w in words[a : b + 1]])
+    return None
 
 
 def assign(seg_tokens: list[set[str]], pages: list[OcrResult]) -> list[int]:
