@@ -48,6 +48,9 @@ PART = {
     "beat_cut": "拍でカット",
     "sfx": "効果音",
     "character": "立ち絵",
+    "grain": "グレイン・周辺減光・色収差",
+    "glow": "グロー",
+    "halation": "ハレーション",
 }
 
 

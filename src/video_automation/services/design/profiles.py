@@ -609,6 +609,20 @@ PROFILES: dict[Purpose, DesignProfile] = {
 }
 
 
+# 統合版 2.3「使ってよい新しい演出」のうち、書き出しの仕上げ（M9・L4・L5）
+_FINISH = {
+    Purpose.VLOG: (Component.GRAIN,),
+    Purpose.PROMO: (Component.GRAIN, Component.GLOW),
+    Purpose.EVENT: (Component.GRAIN,),
+    Purpose.MV: (Component.GRAIN, Component.GLOW),
+    Purpose.LYRIC: (Component.GRAIN, Component.GLOW),
+    Purpose.TRAILER: (Component.GRAIN, Component.GLOW, Component.HALATION),
+}
+for _p, _cs in _FINISH.items():
+    for _c in _cs:
+        PROFILES[_p].components[_c] = ANY
+
+
 def profile(purpose: Purpose) -> DesignProfile:
     return PROFILES[purpose]
 
