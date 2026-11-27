@@ -383,9 +383,50 @@ DIRECTION_NAMES = {
 }  # fmt: skip
 
 
-def screen_for(direction: str, section: str) -> Screen:
-    """方向性とセクション（M3）→ 画面の組み合わせ。サビ系はサビ用、ほかは A メロ用。"""
+# 組み合わせの例 U10・U12・U13・U15・U18（方向性の既定に足す、区間ごとの画面）
+EXTRA: dict[str, Screen] = {
+    # U10 飾り字幕: 下の 76px の字幕（フチ）＋上の線だけの題字。1 番の A メロ
+    "U10": Screen((Block("UR1", up="UP7", ul="UL1", us="US3", uf="UF6", ug="UG1", ut="UT2"),
+                   Block("UR2", up="UP5", ul="UL1", us="US5", uf="UF6", ug="UG3", ut="UT1")),
+                  uh="UH1", colors=("#FFC82E", "#111111", "#FF5A5F")),
+    # U12 枠の中の絵と 2 行の字幕（白黒の絵・差し色 1）。B メロ
+    "U12": Screen((Block("UR1", up="UP7", ul="UL2", us="US2", uf="UF4", ut="UT2"),),
+                  uh="UH2", uk="UK2", colors=("#F1F0EC", "#1E1E1E", "#35B89A")),
+    # U13 交差する線と箱の中の縦書き → 端の巨大な縦書き。B メロ
+    "U13": Screen((Block("UR1", uc="UC3", up="UP8", ul="UL4", us="US1", uf="UF2", ut="UT1",
+                         px=36),
+                   Block("UR2", up="UP2", ul="UL4", us="US5", uf="UF2", ug="UG1", ut="UT3",
+                         accent_last=True)),
+                  uh="UH1", ud="UD3", colors=_COOL),
+    # U15 丸い窓の中の絵（十字の線）。2 回目からの A メロ
+    "U15": Screen((Block("UR1", up="UP7", ul="UL1", us="US2", uf="UF4", ug="UG1", ut="UT2"),),
+                  uh="UH5", ud="UD3", colors=("#0C0F16", "#FFFFFF", "#E9E4FF")),
+    # U18 傾けた札を人物（影絵）のまわりに散らす。2 回目からのサビ
+    "U18": Screen((Block("UR2", uc="UC2", up="UP3", ul="UL5", us="US3", uf="UF4", ut="UT3",
+                         px=84),),
+                  uh="UH3", uk="UK2", colors=("#0C0C0C", "#FFFFFF", "#BDBDBD")),
+}  # fmt: skip
+
+# 方向性 → (セクション, 何回目（0 から。None はすべて）) → 例の画面
+SECTION_SCREENS: dict[str, list[tuple[str, int | None, str]]] = {
+    "vocaloid_cool": [("verse", 1, "U15"), ("verse", 3, "U15"), ("bridge", None, "U13"),
+                      ("chorus", 1, "U18"), ("chorus", 3, "U18")],
+    "pop": [("verse", 0, "U10"), ("bridge", None, "U12")],
+    "anison": [("bridge", None, "U13")],
+}  # fmt: skip
+
+
+def screen_for(direction: str, section: str, nth: int = 0) -> Screen:
+    """方向性とセクション（M3）→ 画面の組み合わせ。サビ系はサビ用、ほかは A メロ用。
+    SECTION_SCREENS に当たる区間（例: かっこいい系の B メロは U13）は、その例の画面にする。
+    nth はそのセクションの何回目のフレーズか（サビは chorus_first も chorus として数える）。"""
     verse, chorus = PRESETS[direction]
+    kind = "chorus" if section in ("chorus", "chorus_first") else section
+    for sec, n, ex in SECTION_SCREENS.get(direction, []):
+        if sec == kind and (n is None or n == nth):
+            base = EXTRA[ex]
+            # 決まり 17: 絵の位置は 1 曲で固定する（方向性の既定の位置に合わせる）
+            return replace(base, pic_x=verse.pic_x)
     return chorus if section in ("chorus", "chorus_first", "drop") else verse
 
 
@@ -732,6 +773,22 @@ class Builder:
         tagged = b.uc in ("UC2", "UC3")
         txt_col = self.ground if b.uc == "UC2" else ink
         # 組み方ごとに部品を作る
+        if b.ul == "UL2" and b.role == "UR1":  # 横 2 行: 2 行ずつ組み、行間は文字の 1.3 倍
+            for i in range(0, len(ph.lines), 2):
+                pair = ph.lines[i : i + 2]
+                ims = [self._line_img(b, t, size, ink) for t in pair]
+                for j, im in enumerate(ims):
+                    if im.width > w * 0.94:
+                        r = w * 0.94 / im.width
+                        ims[j] = im.resize(
+                            (max(1, round(im.width * r)), max(1, round(im.height * r)))
+                        )
+                a = ph.frames[i][0]
+                nxt = ph.frames[i + 2][0] if i + 2 < len(ph.frames) else None
+                for j, im in enumerate(ims):
+                    y = h - 56 * k - size * 1.3 * (len(ims) - 1 - j) - im.height / 2
+                    self.items.append(Item(im, w / 2, y, a, nxt, "fade"))
+            return
         if b.ul == "UL1" and b.role == "UR1":  # 1 行ずつ（UT2）か 1 行の札（UT3 は拍に 1 枚）
             for i, (txt, (a, _e)) in enumerate(zip(ph.lines, ph.frames, strict=True)):
                 col = self.accent if (b.accent_last and i == len(ph.lines) - 1) else txt_col
@@ -822,6 +879,9 @@ class Builder:
                 cols = [x[:12] for x in ph.lines][:5]
             right = self.s.pic_x <= 0.5
             x0 = (w - 120 * k) if right else (120 * k)
+            if b.up == "UP8":  # 画面の中央に列の塊を置く（右から左へ読む）
+                x0 = w / 2 + gap * (len(cols) - 1) / 2 + size / 2
+                right = True
             for i, txt in enumerate(cols):
                 col = (
                     self.accent
@@ -830,7 +890,9 @@ class Builder:
                 )
                 im = self._line_img(b, txt, size, col, vertical=True,
                                     track=0.18 if size < 60 * k else 0.04)  # fmt: skip
-                if tagged:
+                if b.uc == "UC3":  # 箱（線の枠）
+                    im = self._tag(im, size, ink, box=True)
+                elif tagged:
                     face = self.accent if (b.accent_last and i == len(cols) - 1) else ink
                     im = self._tag(self._line_img(b, txt, size, self.ground if face == ink else
                                                   (255, 255, 255), vertical=True, track=0.08),
@@ -841,6 +903,8 @@ class Builder:
                 y = top + im.height / 2
                 if b.us in ("US5",):
                     y = h / 2 + (i % 2) * 60 * k
+                    if b.up == "UP2" and b.role == "UR2":  # 巨大な列は左右の端に交互
+                        x = (w - 110 * k - im.width / 2) if i % 2 == 0 else 110 * k + im.width / 2
                 a = ph.frames[min(i, len(ph.frames) - 1)][0]
                 anim = "scale_y" if tagged else ("cut" if b.ut == "UT4" else "fade")
                 t_out = None
@@ -1135,6 +1199,8 @@ def presets_ok() -> dict[str, list[str]]:
     out = {}
     for name, (v, c) in PRESETS.items():
         out[name] = check(v) + check(c) + check(v, c)
+    for name, scr in EXTRA.items():
+        out[name] = check(scr)
     return out
 
 
