@@ -1007,6 +1007,13 @@ async def test_story_cutout_image_gets_parallax(dclient, media_dir):
     # 解説（2.5D を使わない用途）では今までどおりケン・バーンズ
     clip = await image_clip("explainer")
     assert not [k for k in clip["animation"]["keyframes"] if k.get("x")]
+    # 統合版 I3: Vlog では白の縁と影のステッカーにして、傾けて貼る
+    clip = await image_clip("vlog")
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a_["id"]: a_["name"] for a_ in tl["assets"]}
+    assert names[clip["asset_id"]].endswith("（ステッカー）")
+    keys = clip["animation"]["keyframes"]
+    assert keys[0]["scale"] == 1.3 and keys[0]["rotation"] == 10 and keys[1]["rotation"] == -6
 
 
 async def test_kids_background_is_memphis_then_liquid(dclient, monkeypatch):

@@ -1015,6 +1015,35 @@ class DirectionService:
             )
         return notes
 
+    async def _sticker(self, project_id: str, img: AssetRead, h: int) -> AssetRead:
+        """統合版 I3: 透過の画像の形に沿って白の縁（8px）と影を付けた画像。"""
+        from PIL import Image, ImageFilter
+
+        src = Path(self.settings.data_dir) / img.path
+        im = await asyncio.to_thread(lambda: Image.open(src).convert("RGBA"))
+        k = max(1.0, im.height / max(1, h))  # 画面に置いたときに縁が 8px になるよう、素材の画素で
+        b = max(2, round(8 * k))
+        pad = b * 3
+        big = Image.new("RGBA", (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+        big.alpha_composite(im, (pad, pad))
+        a = big.getchannel("A").point(lambda v: 255 if v > 32 else 0)
+        edge = a.filter(ImageFilter.MaxFilter(2 * b + 1))
+        shadow = edge.filter(ImageFilter.GaussianBlur(b)).point(lambda v: round(v * 0.35))
+        out = Image.new("RGBA", big.size, (0, 0, 0, 0))
+        sh = Image.new("RGBA", big.size, (0, 0, 0, 255))
+        sh.putalpha(shadow)
+        out.alpha_composite(sh, (b // 2, b))
+        white = Image.new("RGBA", big.size, (255, 255, 255, 255))
+        white.putalpha(edge)
+        out.alpha_composite(white)
+        out.alpha_composite(big)
+        dst = src.with_name(f"{src.stem}_sticker.png")
+        await asyncio.to_thread(out.save, dst)
+        row = await self.timeline.register_generated(
+            project_id, dst, AssetKind.IMAGE, "pillow", f"{img.name}（ステッカー）"
+        )
+        return AssetRead.model_validate(row)
+
     async def _years(
         self,
         project_id: str,
@@ -1490,6 +1519,7 @@ class DirectionService:
                 cmds.append(SetClipAnimation(clip_id=clip_id, animation=anim))
 
         kb_index = 0  # 連続する画像のケン・バーンズの向き（B3）
+        n_sticker = 0  # 統合版 I3: 何枚目のステッカーか（傾きの向き）
 
         def ken_burns(clip_id: str, a: AssetRead, length: int, box: float) -> None:
             """画像のケン・バーンズ（統合版 B3）。拡大量 = 秒数 × 1.75%（最小 8%・最大 20%）。
@@ -1947,6 +1977,13 @@ class DirectionService:
                     img = await self._matched_image(p.id, img, prof, assets)
                 use(Component.IMAGE)
                 box = min(zone_h, main_w)
+                sticker = (
+                    prof is not None
+                    and prof.purpose in (Purpose.VLOG, Purpose.SHORT)
+                    and parallax_dx(img, box) > 0
+                )
+                if sticker:  # 統合版 I3: 切り抜きの画像は白の縁と影を付けたステッカーにする
+                    img = await self._sticker(p.id, img, h)
                 cid = add(
                     fig_t,
                     img.id,
@@ -1956,7 +1993,18 @@ class DirectionService:
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
                 dx = parallax_dx(img, box) if prof is not None else 0.0
-                if dx and prof is not None and prof.allows(Component.PARALLAX):
+                if sticker and length > 6:
+                    # 統合版 I3: scale 1.3→1.0・回転 +10°→（奇数番目 −6°、偶数番目 ＋6°）を 5f
+                    n_sticker += 1
+                    rot = -6.0 if n_sticker % 2 else 6.0
+                    keys = [
+                        Keyframe(frame=0, scale=1.3, rotation=10.0, easing=Easing.CUBIC_OUT),
+                        Keyframe(frame=5, scale=1.0, rotation=rot),
+                    ]
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys))
+                    )
+                elif dx and prof is not None and prof.allows(Component.PARALLAX):
                     # 統合版 M8: 切り抜いた絵（透明の部分がある）は、ケン・バーンズの代わりに
                     # 絵を横へ被写体の幅の 3% だけ動かし、後ろの背景との間に奥行きを出す
                     use(Component.PARALLAX)
