@@ -282,6 +282,7 @@ async def test_mcp_visual_tools(media_settings, fake, tmp_path, media_dir):
             "genre": None,
             "hearing_aid": False,
             "look": "",
+            "lyric_direction": "",
         }
         assert (await visual_server.check_design(pid))["purpose"] == "explainer"
     finally:
