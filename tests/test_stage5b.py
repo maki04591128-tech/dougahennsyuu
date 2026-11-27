@@ -419,3 +419,26 @@ def test_translation_wrap_and_speed():
     top, bottom = two.split("\n")
     assert len(top) <= 42 and len(bottom) <= 42 and len(bottom) >= len(top)
     assert reading_speed("abc\ndef", 0.3) == 20.0
+
+
+def test_mv_audio_visualization():
+    """統合版 M11（拍ごとに 20f の輪）・M10（32 本の棒、下がるときは 150ms）。"""
+    import numpy as np
+
+    from video_automation.services.direction import mv_audio_vis as av
+
+    fr = av.ring_frames([0.0, 0.5, 1.0], 1.2, 30, 64, 36, "#FFFFFF")
+    assert len(fr) == 36
+    a = [im.getchannel("A").getextrema()[1] for im in fr]
+    assert a[2] > 0 and a[19] < a[2]  # 輪は薄くなりながら広がる
+    sr = 8000
+    t = np.arange(sr * 2) / sr
+    wave = (np.sin(2 * np.pi * 440 * t) * (t < 1)).astype(np.float32)  # 1 秒だけ 440Hz
+    lev = av.band_levels(wave, sr, 30)
+    assert lev.shape[1] == 32 and lev.max() <= 1.0
+    k = int(np.argmax(lev[10]))
+    assert 300 < np.geomspace(40, 8000, 33)[k + 1] and np.geomspace(40, 8000, 33)[k] < 600
+    assert lev[40, k] < lev[30, k] * 0.5  # 音が止まると 150ms で下がる
+    sp = av.spectrum_frames(lev, 0.0, 0.5, 30, 64, 36, "#FFFFFF")
+    assert len(sp) == 15
+    assert av.interludes([(0, 5, "verse"), (8, 10, "chorus"), (10, 12, "verse")]) == [(5, 8)]

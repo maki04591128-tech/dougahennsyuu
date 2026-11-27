@@ -149,6 +149,7 @@ MV_IMAGE_NAME = "MVの絵: "  # 構成で取り込んだ MV のショットの�
 MV_SHOT_TRACK = "MV・ショット"
 MV_MOTIF_TRACKS = ("MV・形（白）", "MV・形（黒）")  # 統合版 V11
 MV_INK_TRACK = "MV・インク"  # 統合版 V6
+MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
@@ -1459,6 +1460,29 @@ class BuildService:
                     transform=ClipTransform(fit=FitMode.FILL),
                 )
             )
+        # 統合版 M11（イントロの拍の輪）・M10（2 回目以降の間奏のスペクトラム）
+        from video_automation.services.direction import mv_audio_vis as av
+
+        vis_tid = track(MV_VIS_TRACK, MV_INK_TRACK)
+        n_vis = 0
+        intro_end = spans[0][0]
+        if intro_end > 1.0:
+            fr = await asyncio.to_thread(av.ring_frames, bt.times, intro_end, fps, w, h, ink)
+            a_ = await self._alpha_mov(project_id, work, fr, fps, "拍の輪（M11）")
+            cmds.append(AddClip(track_id=vis_tid, asset_id=a_.id, start_frame=0,
+                                duration_frames=len(fr), clip_id=str(uuid4())))  # fmt: skip
+            n_vis += 1
+        gaps = av.interludes(spans)[1:]
+        if gaps:
+            lev = await asyncio.to_thread(av.band_levels, wave_, sync_audio.SR, fps)
+            for a0, b0 in gaps:
+                fr = await asyncio.to_thread(av.spectrum_frames, lev, a0, b0, fps, w, h, ink)
+                if not fr:
+                    continue
+                a_ = await self._alpha_mov(project_id, work, fr, fps, "スペクトラム（M10）")
+                cmds.append(AddClip(track_id=vis_tid, asset_id=a_.id, start_frame=round(a0 * fps),
+                                    duration_frames=len(fr), clip_id=str(uuid4())))  # fmt: skip
+                n_vis += 1
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
         await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
         await c.timeline.submit(
@@ -1487,6 +1511,8 @@ class BuildService:
         ]
         if entries:
             notes.append(f"サビの頭 {len(entries)} か所をインクの転換にしました")
+        if n_vis:
+            notes.append("イントロに拍の輪、2 回目からの間奏にスペクトラムを入れました")
         v7_text = [
             t
             for t, k in (
@@ -1503,6 +1529,27 @@ class BuildService:
                 f"サビの前の {len(bars)} 小節に、白と黒の{mv.MOTIF_LABEL[shape]}を置きました"
             )
         return notes
+
+    async def _alpha_mov(
+        self, project_id: str, work: Path, frames: list[Any], fps: float, label: str
+    ) -> AssetRead:
+        """透過の画の列を 1 本の動画（PNG の mov）にする（最後に透明の 1 枚を足す）。"""
+        from PIL import Image
+
+        c = self.c
+        tmp = work / f"vis_{uuid4().hex[:8]}"
+        tmp.mkdir(parents=True, exist_ok=True)
+        for i, fr in enumerate([*frames, Image.new("RGBA", frames[0].size, (0, 0, 0, 0))]):
+            await asyncio.to_thread(fr.save, tmp / f"{i:05d}.png")
+        out = work / f"{tmp.name}.mov"
+        await c.ffmpeg.run(
+            ["-y", "-framerate", f"{fps:.6f}", "-i", str(tmp / "%05d.png"), "-c:v", "png",
+             "-pix_fmt", "rgba", str(out)]
+        )  # fmt: skip
+        await asyncio.to_thread(shutil.rmtree, tmp, True)
+        return AssetRead.model_validate(
+            await c.timeline.register_generated(project_id, out, AssetKind.VIDEO, "build", label)
+        )
 
     async def _bake_shots(
         self, project_id: str, work: Path, cuts: list[Any], paths: list[Path], tl: Any
