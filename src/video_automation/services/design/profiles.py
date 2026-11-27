@@ -618,6 +618,24 @@ _FINISH = {
     Purpose.LYRIC: (Component.GRAIN, Component.GLOW),
     Purpose.TRAILER: (Component.GRAIN, Component.GLOW, Component.HALATION),
 }
+# 統合版 K4: 感情の表現を使う用途（2.2 の「感情の表現: あり」）
+EMOTION_SUBTITLES = (
+    Purpose.EXPLAINER,
+    Purpose.TUTORIAL,
+    Purpose.RECIPE,
+    Purpose.SHORT,
+    Purpose.GAME,
+    Purpose.VLOG,
+    Purpose.RANKING,
+    Purpose.PRODUCT,
+    Purpose.PROMO,
+    Purpose.EVENT,
+    Purpose.KIDS,
+)
+
+# 統合版 Q7: 聴覚補助の字幕を選べる用途（2.2 の「選べる」）
+HEARING_AID = (Purpose.SUBTITLE, Purpose.INTERVIEW, Purpose.NEWS)
+
 # 統合版 2.3「使ってよい新しい演出」のうち、題名の光沢のスイープ（L7）
 _GLOSS = (Purpose.PRODUCT, Purpose.PROMO, Purpose.MV, Purpose.LYRIC, Purpose.TRAILER)
 for _p, _cs in _FINISH.items():

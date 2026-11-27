@@ -21,7 +21,15 @@ from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.core.jobs.job_manager import JobManager
 from video_automation.database.database import Database
-from video_automation.database.models import Asset, Clip, Project, RenderJob, Script, Track
+from video_automation.database.models import (
+    Asset,
+    Clip,
+    Project,
+    RenderJob,
+    Script,
+    ScriptSegment,
+    Track,
+)
 from video_automation.integrations.blender.runner import Blender, BlenderError
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
 from video_automation.schemas.animation import ClipAnimation, TransitionType
@@ -62,7 +70,7 @@ from video_automation.services.rendering.lyrics import (
 )
 from video_automation.services.rendering.lyrics import sections as lyric_sections
 from video_automation.services.rendering.rich import RichPlan, max_level, plan_rich
-from video_automation.services.subtitle.formats import ass_color, build_ass
+from video_automation.services.subtitle.formats import ass_color, build_ass, hearing_aid
 from video_automation.services.subtitle.subtitle_service import SubtitleService
 from video_automation.services.timeline.timeline_service import (
     CommandError,
@@ -296,6 +304,55 @@ class RenderService:
             return style
         return style.model_copy(update={"margin_v_ratio": need})
 
+    async def _emotions(self, project_id: str, script_id: str, kept: list[Any]) -> dict[int, str]:
+        """統合版 K4: 字幕の番号 → 発話の感情（感情の表現を使う用途だけ）。"""
+        if self.design is None:
+            return {}
+        from video_automation.services.design.profiles import EMOTION_SUBTITLES
+
+        if (await self.design.get(project_id)).purpose not in EMOTION_SUBTITLES:
+            return {}
+        async with self.db.session_factory() as s:
+            q = select(ScriptSegment.id, ScriptSegment.emotion).where(
+                ScriptSegment.script_id == script_id
+            )
+            emo = {i: e for i, e in (await s.execute(q)).all() if e}
+        return {
+            k: emo[c.script_segment_id] for k, c in enumerate(kept) if c.script_segment_id in emo
+        }
+
+    async def _hearing_aid(
+        self,
+        project_id: str,
+        rows: list[tuple[int, int, str, str]],
+        fps: Fraction,
+        offset_frames: int,
+        multi: bool,
+        style: Any,
+    ) -> list[tuple[int, int, str, str]]:
+        """統合版 Q7: 選べる用途（字幕動画・インタビュー・ニュース）で、オンのときだけ。"""
+        if self.design is None:
+            return rows
+        from video_automation.services.design.profiles import HEARING_AID
+
+        d = await self.design.get(project_id)
+        if not d.hearing_aid or d.purpose not in HEARING_AID:
+            return rows
+        tl = await self.timeline.get_timeline(project_id)
+        bgm = {t.id for t in tl.tracks if t.name == "BGM" and not t.muted}
+        spans = [(c.start_frame, c.end_frame) for c in tl.clips if c.track_id in bgm]
+        music = None
+        if spans:
+            music = (
+                max(0, min(a for a, _ in spans) - offset_frames),
+                max(b for _, b in spans) - offset_frames,
+            )
+            if music[1] <= 0:
+                music = None
+        # 話者名を字幕の上に出す型では、名前を重ねて書かない
+        name_prefix = multi and not getattr(style, "speaker_label", False)
+        return hearing_aid(rows, fps, music, name_prefix)
+
     async def _ass_for(
         self,
         script_id: str,
@@ -328,6 +385,10 @@ class RenderService:
         ]
         rb = await self.subtitles.ruby_map(script_id)  # 統合版 P7（子ども向けだけ）
         style = await self.subtitles.project_style(p.id)
+        multi = len({c.speaker for c in cues if c.speaker}) >= 2
+        rows = await self._hearing_aid(
+            p.id, rows, Fraction(p.fps_num, p.fps_den), offset_frames, multi, style
+        )
         style = await self._clear_of_tachie(p.id, width, height, style)
         if not fade:
             style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
@@ -342,8 +403,9 @@ class RenderService:
             speaker_design=await self.subtitles.speaker_design(script_id),
             speaker_entrance=await self.subtitles.speaker_entrance(script_id),
             # 範囲を切り出しても、話者名を出すかどうかは台本全体で決める
-            multi_speaker=len({c.speaker for c in cues if c.speaker}) >= 2,
+            multi_speaker=multi,
             ruby={i: rb[c.id] for i, c in enumerate(kept) if c.id in rb},
+            emotions=await self._emotions(p.id, script_id, kept),
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out

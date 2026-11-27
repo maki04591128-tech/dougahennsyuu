@@ -358,3 +358,53 @@ def test_v4_brightness_match():
     src.paste((255, 255, 255, 255), (30, 20, 70, 140))
     shot = np.asarray(mv.shot_image(src, "cutout", 320, 180, "#3E5C9A", "#FFFFFF")).astype(float)
     assert shot[90, 160, :3].max() < 200
+
+
+def test_hearing_aid_rows():
+    from fractions import Fraction
+
+    from video_automation.services.subtitle.formats import hearing_aid
+
+    rows = [
+        (10, 40, "A", "こんにちは"),
+        (40, 70, "A", "元気"),
+        (80, 99, "B", "はい"),
+        (100, 120, "", "…"),
+    ]
+    out = hearing_aid(rows, Fraction(30), (0, 300), True)
+    assert [r[3] for r in out[:4]] == ["（A）こんにちは", "元気", "（B）はい", "…"]
+    assert out[4:] == [(0, 60, "", "♪～"), (240, 300, "", "～♪")]
+    # BGM が 4 秒より短いときは始まりだけ、名前を書かない設定
+    out = hearing_aid(rows, Fraction(30), (0, 90), False)
+    assert [r[3] for r in out] == ["こんにちは", "元気", "はい", "…", "♪～"]
+    assert hearing_aid(rows, Fraction(30), None, False) == rows
+
+
+def test_emotion_subtitles_k4():
+    """統合版 K4: 感情ごとの字幕の変化（入りの置き換え・大きさ・不透明度・怒りの縁と揺れ）。"""
+    from fractions import Fraction
+
+    from video_automation.schemas.subtitle import SubtitleStyle
+    from video_automation.services.subtitle.formats import build_ass
+
+    rows = [(0, 90, "A", "あ"), (90, 180, "A", "い"), (180, 270, "A", "う"), (270, 360, "A", "え")]
+    st = SubtitleStyle(band=False)
+    emo = {0: "sad", 1: "surprise", 2: "tired", 3: "angry"}
+    d = [x for x in build_ass(rows, Fraction(30), 640, 360, st, emotions=emo).splitlines()]
+    d = [x for x in d if x.startswith("Dialogue")]
+    assert "\\fad(400,100)" in d[0]  # 悲しい: 12f
+    size = round(360 * st.font_size_ratio)
+    assert "\\fscx88" in d[1] and f"\\fs{round(size * 1.08)}" in d[1]  # 驚き: ポップ中・×1.08
+    assert "\\1a&H19&" in d[2]  # 疲れ: 不透明度 90%
+    shake = d[3:]  # 怒り: 4 つの区間（+2px・−2px）、縁 ×1.3
+    assert len(shake) == 4 and all(f"\\bord{st.outline * 1.3:.1f}" in x for x in shake)
+    assert "\\pos(321," in shake[1] and "\\pos(319," in shake[2]
+    assert shake[0].split(",")[1] == "0:00:09.00" and shake[-1].split(",")[2] == "0:00:12.00"
+    # 二重縁: 文字を透明にした層では、不透明度で文字の面を出さない
+    dbl = SubtitleStyle(double_outline=True, band=False)
+    d = build_ass(rows[2:3], Fraction(30), 640, 360, dbl, emotions={0: "tired"}).splitlines()
+    layer1 = next(x for x in d if x.startswith("Dialogue: 1"))
+    assert "\\1a&HFF&" in layer1 and "\\1a&H19&" not in layer1
+    # 感情を渡さなければ変えない
+    plain = build_ass(rows, Fraction(30), 640, 360, st)
+    assert "\\fad(400" not in plain and "\\pos(" not in plain

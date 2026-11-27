@@ -66,6 +66,38 @@ def test_animator_pose_change_pops_arm_and_blinks() -> None:
     assert any("arm_l" in s.pop_arms for s in states[100:115])
     assert any(s.eyes_closed for s in states)
     assert states[30].speaking > 0.9 and states[90].speaking < 0.5
+    # 統合版 F1: まばたきは 半目 1f → 閉 2f → 半目 1f（4 フレーム続けて）
+    f0 = next(i for i, s in enumerate(states) if s.blink_phase == 0)
+    assert [s.blink_phase for s in states[f0 : f0 + 5]] == [0, 1, 2, 3, -1]
+    assert [s.eyes_closed for s in states[f0 : f0 + 4]] == [False, True, True, False]
+
+
+def test_blink_half_eyes_or_closed_three_frames() -> None:
+    """統合版 F1: 半目の部品があれば 半目→閉→閉→半目、無ければ閉じた目 3f。"""
+    from types import SimpleNamespace
+
+    from video_automation.services.characters.overlay import Composer
+
+    def eyes(parts: dict, half: str) -> list[str]:
+        pack = SimpleNamespace(
+            blink="closed",
+            blink_half=half,
+            parts={"eyes": parts},
+            expression=lambda n: {"eyes": "open", "mouth": [""]},
+            pose=lambda n: {},
+        )
+        comp = Composer.__new__(Composer)
+        comp.pack = pack
+        out = []
+        for ph in (-1, 0, 1, 2, 3):
+            st = motion.State("neutral", "neutral", 0, ph in (1, 2), 0.0, blink_phase=ph)
+            out.append(comp._choice(st)["eyes"])
+        return out
+
+    full = {"open": None, "closed": None, "half": None}
+    assert eyes(full, "half") == ["open", "half", "closed", "closed", "half"]
+    no_half = {"open": None, "closed": None}
+    assert eyes(no_half, "half") == ["open", "closed", "closed", "closed", "open"]
 
 
 def test_mouth_levels_from_audio() -> None:

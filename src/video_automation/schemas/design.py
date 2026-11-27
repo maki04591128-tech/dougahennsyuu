@@ -225,6 +225,9 @@ class ProjectDesign(BaseModel):
     series_id: str | None = Field(default=None, max_length=36)  # 統合版 Q4: シリーズの設定
     # 統合版 M3・M7: 曲のジャンル（MV・リリックの書体・質感）。None は未設定（ポップとして扱う）
     genre: Literal["ballad", "citypop", "rock", "edm", "vocaloid", "idol", "pop"] | None = None
+    # 統合版 Q7: 聴覚補助の字幕（字幕動画・インタビュー・ニュースで選べる。既定はオフ）。
+    # None は変えない（設定のときだけ使う）
+    hearing_aid: bool | None = None
 
 
 SERIES_COLOR_KEYS = ("base", "base2", "surface", "main", "accent", "text", "text_muted")

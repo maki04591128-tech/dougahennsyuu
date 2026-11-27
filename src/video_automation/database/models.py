@@ -34,6 +34,7 @@ class Project(Base):
     design_extras: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     series_id: Mapped[str | None] = mapped_column(String(36), nullable=True)  # 統合版 Q4
     music_genre: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 統合版 M3・M7
+    hearing_aid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # 統合版 Q7
     # 演出で作った要素の記録（作った処理ごと。書き出し前の検査に使う）
     design_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -182,6 +183,8 @@ class ScriptSegment(Base):
     reply_to_segment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     voice_style_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 統合版 K4: 台本の生成で LLM が出した感情（voice.characters.EMOTIONS の 14 種）
+    emotion: Mapped[str | None] = mapped_column(String(16), nullable=True)
     audio_file_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("audio_files.id", ondelete="SET NULL"), nullable=True
     )

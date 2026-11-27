@@ -94,12 +94,13 @@ class Composer:
         mouths = exp.get("mouth") or []
         mouth = mouths[min(st.mouth, len(mouths) - 1)] if mouths else ""
         eyes = exp.get("eyes", "open")
-        if (
-            st.eyes_closed
-            and exp.get("blink", True)
-            and self.pack.blink in self.pack.parts.get("eyes", {})
-        ):
-            eyes = self.pack.blink
+        eye_parts = self.pack.parts.get("eyes", {})
+        if st.blink_phase >= 0 and exp.get("blink", True) and self.pack.blink in eye_parts:
+            # 統合版 F1: 開 → 半目 1f → 閉 2f → 半目 1f → 開。半目の部品が無ければ閉じた目 3f
+            if self.pack.blink_half and self.pack.blink_half in eye_parts:
+                eyes = self.pack.blink_half if st.blink_phase in (0, 3) else self.pack.blink
+            elif st.blink_phase < 3:
+                eyes = self.pack.blink
         return {
             **pose,
             "eyes": eyes,
