@@ -278,6 +278,22 @@ def pattern_background(out: Path, w: int, h: int, c0: str, c1: str, main: str) -
     im.convert("RGB").save(out)
 
 
+def shorten_animation(cmds: list[Any], clip_id: str | None, old_len: int, cut: int) -> None:
+    """クリップを cut フレーム短くしたとき、出のキー（後ろ半分）を同じだけ前へ寄せる。
+
+    入りのキー（前半分）はそのまま。キーがクリップの外に出ると命令が通らない。"""
+    for k, c in enumerate(cmds):
+        if not isinstance(c, SetClipAnimation) or c.clip_id != clip_id or c.animation is None:
+            continue
+        keys = []
+        for kf in c.animation.keyframes:
+            f = kf.frame if kf.frame < old_len / 2 else max(0, kf.frame - cut)
+            if f < old_len - cut and (not keys or f > keys[-1].frame):
+                keys.append(kf.model_copy(update={"frame": f}))
+        anim = c.animation.model_copy(update={"keyframes": keys})
+        cmds[k] = c.model_copy(update={"animation": anim})
+
+
 def native_transform(
     aw: int,
     ah: int,
@@ -1416,6 +1432,7 @@ class DirectionService:
                                 "duration_frames": c.duration_frames - cut,
                             }
                         )
+                        shorten_animation(cmds, c.clip_id, c.duration_frames, cut)
                 b_at = max(at + n, end - frames(pp.RANK_BOARD_SEC))
                 if end - b_at < frames(1.5):
                     continue

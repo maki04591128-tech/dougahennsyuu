@@ -252,3 +252,16 @@ def test_ranks_skip_preface_and_strip_endings():
         (2, 10, "北海道・小樽運河"),
         (3, 1, "東京・東京スカイツリー"),
     ]
+
+
+def test_shorten_animation_moves_exit_keys():
+    """実機: 順位の数字の後へ寄せたカードの出のキーがクリップの外に残り、命令が通らなかった。"""
+    from video_automation.schemas.animation import ClipAnimation, Keyframe
+    from video_automation.schemas.timeline import SetClipAnimation
+    from video_automation.services.direction.service import shorten_animation
+
+    keys = [Keyframe(frame=f, opacity=o) for f, o in ((0, 0.0), (10, 1.0), (264, 1.0), (269, 0.0))]
+    cmds = [SetClipAnimation(clip_id="c", animation=ClipAnimation(keyframes=keys))]
+    shorten_animation(cmds, "c", 270, 60)
+    got = [(k.frame, k.opacity) for k in cmds[0].animation.keyframes]
+    assert got == [(0, 0.0), (10, 1.0), (204, 1.0), (209, 0.0)]
