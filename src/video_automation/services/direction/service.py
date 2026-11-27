@@ -12,6 +12,7 @@
 import asyncio
 import json
 import math
+import random
 import re
 import shutil
 from collections.abc import Iterable
@@ -27,6 +28,7 @@ from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import (
+    Asset,
     AudioFile,
     Project,
     Script,
@@ -339,6 +341,10 @@ _T35_NUM = re.compile(r"[0-9]{2,}")
 # 統合版 T28: 語が図に変わる用途と、強調テロップの入りの長さ（この後 12f 静止して変える）
 T28_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS})
 T28_ENTER = 10
+# 統合版 F3: 子ども向けで縁をふるわせるクリップ（役割）と、ずらす量（1080p の px）
+F3_ROLES = frozenset({"card", "keyword"})
+F3_PX = 1.5
+F3_MAX = 40
 
 
 def t38_hit(line_text: str, phrase: str, query: dict[str, Any] | None, strike: bool = True) -> bool:
@@ -1254,6 +1260,63 @@ class DirectionService:
         return await self._overlay(
             project_id, gen, f"語が図に変わる（T28）「{kreq.heading[:12]}」", fps
         )
+
+    async def _f3_cards(
+        self, project_id: str, cmds: list[Any], roles: dict[str, str], fps: float, h: int
+    ) -> None:
+        """統合版 F3（子ども向け）: カード・強調テロップの静止画を、3 コマごとに ±1.5px（1080p）の
+        乱数でずらす画の列に替える（線の点ごとではなく、画の全体をずらして近似する）。"""
+        from PIL import Image
+
+        targets = [
+            (i, c)
+            for i, c in enumerate(cmds)
+            if isinstance(c, AddClip) and roles.get(c.clip_id or "") in F3_ROLES
+            and (c.duration_frames or 0) > 0
+        ]  # fmt: skip
+        if not targets:
+            return
+        ids = {c.asset_id for _i, c in targets}
+        async with self.db.session_factory() as s:
+            rows = (await s.execute(select(Asset).where(Asset.id.in_(ids)))).scalars().all()
+            paths = {r.id: r.path for r in rows if r.kind == AssetKind.IMAGE.value}
+        px = F3_PX * h / 1080
+        made: dict[tuple[str, int], str] = {}
+        for i, c in targets[:F3_MAX]:
+            rel = paths.get(c.asset_id)
+            if rel is None:
+                continue
+            n = c.duration_frames or 0
+            key = (c.asset_id, n)
+            if key not in made:
+                im = await asyncio.to_thread(
+                    lambda r_=rel: Image.open(self.settings.data_dir / r_).convert("RGBA")
+                )
+                pad = max(1, math.ceil(px))
+                seed = sum(map(ord, c.asset_id))
+
+                def gen(im_: Any = im, n_: int = n, pad_: int = pad, seed_: int = seed) -> Any:
+                    from video_automation.services.rendering.n_marks import JITTER_STEP
+
+                    cache: dict[int, Any] = {}
+                    for f in range(n_):
+                        k = f // JITTER_STEP
+                        if k not in cache:
+                            rnd = random.Random(seed_ * 7919 + k)
+                            out = Image.new(
+                                "RGBA", (im_.width + 2 * pad_, im_.height + 2 * pad_), (0, 0, 0, 0)
+                            )
+                            out.alpha_composite(
+                                im_,
+                                (round(pad_ + rnd.uniform(-px, px)),
+                                 round(pad_ + rnd.uniform(-px, px))),
+                            )  # fmt: skip
+                            cache = {k: out}
+                        yield cache[k]
+
+                a = await self._overlay(project_id, gen(), "線のふるえ（F3）", fps)
+                made[key] = a.id
+            cmds[i] = c.model_copy(update={"asset_id": made[key]})
 
     async def _not_telops(
         self,
@@ -3677,6 +3740,8 @@ class DirectionService:
                 no_subs += [(x.start, x.end) for x in lines if hc_.is_intertitle(x.text)]
             if prof.purpose in (Purpose.TRAILER, Purpose.STORY):  # T44: 最初の台詞
                 no_subs.append((lines[0].start, lines[0].end))
+        if prof is not None and prof.purpose == Purpose.KIDS:  # 統合版 F3: カード・図の縁のふるえ
+            await self._f3_cards(p.id, cmds, roles, fps, h)
         res = await self.timeline.submit(
             p.id,
             CommandRequest(

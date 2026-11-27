@@ -1944,3 +1944,16 @@ async def test_keyword_word_turns_into_icon_t28(dclient):
     names = {a["id"]: a["name"] for a in tl["assets"]}
     used = [names[x["asset_id"]] for x in tl["clips"]]
     assert any(n.startswith("語が図に変わる（T28）") for n in used), used
+
+
+async def test_kids_cards_tremble_f3(dclient):
+    """統合版 F3: 子ども向けのカード・強調テロップは、3 コマごとにずれる画の列にする。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    tl, by = await _apply(c, pid, sid, "kids")
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    shaky = [x for r in ("card", "keyword") for x in by.get(r, [])]
+    assert shaky and all(names[x["asset_id"]] == "線のふるえ（F3）" for x in shaky)
+    tl2, by2 = await _apply(c, pid, sid, "explainer")
+    names2 = {a["id"]: a["name"] for a in tl2["assets"]}
+    assert all(names2[x["asset_id"]] != "線のふるえ（F3）" for x in by2.get("card", []))
