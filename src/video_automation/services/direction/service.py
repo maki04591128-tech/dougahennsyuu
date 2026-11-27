@@ -26,7 +26,13 @@ from sqlalchemy import select
 from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
-from video_automation.database.models import Project, Script, ScriptCharacter, ScriptSegment
+from video_automation.database.models import (
+    AudioFile,
+    Project,
+    Script,
+    ScriptCharacter,
+    ScriptSegment,
+)
 from video_automation.integrations.ffmpeg.runner import FFmpeg
 from video_automation.schemas.animation import (
     CardRequest,
@@ -314,6 +320,42 @@ class _Line:
     end: int
     emotion: str = ""
     items: dict[str, Any] = field(default_factory=dict)  # 統合版 段階5d: LLM が付けた項目
+    query: dict[str, Any] | None = None  # 音声のクエリ（統合版 T38 の最も強い句）
+
+
+# 統合版 T38: 1 文に 1 つの強調（強調テロップを使う用途）
+T38_PURPOSES = frozenset(
+    {
+        Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.RECIPE,
+        Purpose.CORPORATE, Purpose.SHORT, Purpose.GAME, Purpose.VLOG, Purpose.RANKING,
+        Purpose.PRODUCT, Purpose.PROMO, Purpose.EVENT, Purpose.KIDS,
+    }
+)  # fmt: skip
+T38_SCALE = 1.15
+
+
+def t38_hit(line_text: str, phrase: str, query: dict[str, Any] | None, strike: bool = True) -> bool:
+    """統合版 T38: 強調テロップの文節が、その文のアクセントの最も強い句（Q8）を含むか。
+    句はかなだけなので、文の全モーラに対する句の位置の割合を文字の位置に読み替えて、
+    文節の文字の範囲と重なるかで決める。文節が文の中に無い・クエリが無いときは付けない。
+    strike が真（T36・T46 を使う用途）なら、「A ではなく B」の文には付けない。"""
+    if not query or not phrase:
+        return False
+    i = line_text.find(phrase)
+    if i < 0 or (strike and tx.not_phrases(line_text)):
+        return False
+    try:
+        from video_automation.schemas.voice import AudioQuery
+        from video_automation.services.voice.timing import strongest_phrase_span
+
+        span = strongest_phrase_span(AudioQuery.model_validate(query))
+    except Exception:  # noqa: BLE001 - 読めないクエリは強調しない
+        return False
+    if span is None:
+        return False
+    n = len(line_text)
+    a, b = span[0] * n, span[1] * n
+    return a < i + len(phrase) and i < b
 
 
 # 統合版 T16: 用途ごとの題名の入り（MV・リリックは V5 の曲名のまま。1 文字ずつの入りは、
@@ -668,16 +710,13 @@ class DirectionService:
             p = await s.get(Project, sc.project_id)
             assert p is not None
             segs = (
-                (
-                    await s.execute(
-                        select(ScriptSegment)
-                        .where(ScriptSegment.script_id == script_id)
-                        .order_by(ScriptSegment.sequence)
-                    )
+                await s.execute(
+                    select(ScriptSegment, AudioFile.query)
+                    .outerjoin(AudioFile, AudioFile.id == ScriptSegment.audio_file_id)
+                    .where(ScriptSegment.script_id == script_id)
+                    .order_by(ScriptSegment.sequence)
                 )
-                .scalars()
-                .all()
-            )
+            ).all()
         lines = [
             _Line(
                 x.speaker or "",
@@ -686,8 +725,9 @@ class DirectionService:
                 x.end_frame or 0,
                 x.emotion or "",
                 _json_items(x.items),
+                q if isinstance(q, dict) else None,
             )
-            for x in segs
+            for x, q in segs
         ]
         return p, sc, lines
 
@@ -3067,15 +3107,24 @@ class DirectionService:
                 flower_at.append(start)
                 use(Component.EMPHASIS_TEXT)
                 continue
+            hit38 = (
+                prof is not None
+                and prof.purpose in T38_PURPOSES
+                and t38_hit(
+                    ln_k.text, s.text, ln_k.query,
+                    prof.purpose in (Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE,
+                                     Purpose.TUTORIAL),
+                )
+            )  # fmt: skip
             kreq = CardRequest(
                 project_id=p.id,
                 heading=s.text,
                 style="keyword",
                 accent_color=emphasis,
                 panel_color=panel,
-                text_color=ink,
+                text_color=emphasis if hit38 else ink,
                 font=heading_font,
-                scale=round(0.62 * ts, 3),
+                scale=round(0.62 * ts * (T38_SCALE if hit38 else 1.0), 3),
             )
             a = await self.titles.card(kreq)
             texts.append(text_use("keyword", kreq, a, w, h, sec(start), sec(end)))

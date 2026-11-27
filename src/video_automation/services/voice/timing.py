@@ -215,3 +215,21 @@ def strongest_phrase_sec(query: AudioQuery) -> float | None:
         if peak > 0 and (best is None or peak > best[0]):
             best = (peak, start)
     return None if best is None else round(best[1], 4)
+
+
+def strongest_phrase_span(query: AudioQuery) -> tuple[float, float] | None:
+    """統合版 T38: アクセントの最も強い句（Q8 と同じ選び方）が、発話の全モーラの中で占める
+    範囲（前からの割合 0〜1 の始まりと終わり）。文字の位置への読み替えに使う。"""
+    counts = [len(ap.moras) for ap in query.accent_phrases]
+    total = sum(counts)
+    if total == 0:
+        return None
+    best: tuple[float, int] | None = None
+    for i, ap in enumerate(query.accent_phrases):
+        peak = max((m.pitch or 0.0 for m in ap.moras), default=0.0)
+        if peak > 0 and (best is None or peak > best[0]):
+            best = (peak, i)
+    if best is None:
+        return None
+    a = sum(counts[: best[1]])
+    return a / total, (a + counts[best[1]]) / total
