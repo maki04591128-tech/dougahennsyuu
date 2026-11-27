@@ -1280,3 +1280,47 @@ async def test_onomatopoeia_at_pop_sounds(dclient):
     assert [x.start_frame for x in clips] == [10, 60]  # 重なる 2 つ目は出さない
     assert any(isinstance(x, AddTrack) and x.name == "演出・擬音" for x in cmds)
     assert notes == ["効果音の所に擬音を 2 か所出しました"]
+
+
+async def _set_items(c, sid, items_by_index):
+    import json as _j
+
+    from sqlalchemy import select
+
+    from video_automation.database.models import ScriptSegment
+
+    async with c.app.state.container.db.session_factory() as s:
+        segs = (
+            (await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sid)))
+            .scalars()
+            .all()
+        )
+        segs = sorted(segs, key=lambda x: (x.scene_index, x.sequence))
+        for i, d in items_by_index.items():
+            segs[i].items = _j.dumps(d, ensure_ascii=False)
+        await s.commit()
+
+
+async def test_llm_items_parts(dclient):
+    """統合版 段階5d: LLM の項目から H2（場所）・N10（クイズ）・P11（比較表）・N3（ベン図）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "今日はパリに来ています。"},
+        {"speaker": "B", "text": "フランスの首都はどこでしょう？"},
+        {"speaker": "A", "text": "パリです。花の都と呼ばれます。"},
+        {"speaker": "B", "text": "犬と猫の両方に共通する点があります。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {
+        0: {"place": "パリ"},
+        2: {"answer": True},
+        3: {"venn": ["犬", "猫"], "compare": {"names": ["A社", "B社"], "rows": [
+            {"item": "重さ", "a": "1kg", "b": "2kg", "better": "a"},
+            {"item": "値段", "a": "1万円", "b": "8千円", "better": "b"},
+            {"item": "電池", "a": "10時間", "b": "8時間", "better": "a"},
+        ]}},
+    })  # fmt: skip
+    for purpose, name in (("vlog", "場所のタグ（H2）「パリ」"), ("lecture", "クイズ（N10）"),
+                          ("product", "仕様の比較表（P11）"), ("explainer", "ベン図（N3）")):  # fmt: skip
+        tl, _ = await _apply(c, pid, sid, purpose)
+        assert name in {a["name"] for a in tl["assets"]}, purpose

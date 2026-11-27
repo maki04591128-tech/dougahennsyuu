@@ -185,6 +185,8 @@ class ScriptSegment(Base):
     voice_style_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 統合版 K4: 台本の生成で LLM が出した感情（voice.characters.EMOTIONS の 14 種）
     emotion: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 統合版 段階5d: LLM が出した項目（place・venn・answer・features・compare・chart）の JSON
+    items: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     audio_file_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("audio_files.id", ondelete="SET NULL"), nullable=True
     )

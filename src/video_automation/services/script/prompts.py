@@ -29,7 +29,29 @@ EMOTION_TEXT = (
     + "。"
 )
 
-FULL_VERSION = "script.full.v7"
+# 統合版 段階5d: 台本の文だけでは決まらない入力。合う発話にだけ付ける（無ければ付けない）
+ITEMS_TEXT = (
+    "次の項目は、合う発話にだけ付けます（付けない発話が普通です。作り話の数値は書きません）: "
+    "place（その発話で話している国名か都市名を 1 つ）、"
+    "venn（「両方」「共通」の話のときだけ、比べる 2 語）、"
+    "answer（直前の発話がクイズの問いで、この発話がその答えなら true）、"
+    "features（商品の特長を表す短い語を最大 3 つ）、"
+    "compare（2 つの物の比較: names に 2 者、rows に項目ごとの {item, a, b, better: 'a'|'b'} を"
+    "3〜5 行）、"
+    "chart（台本の中の数値だけで作れる図: kind は number・share・progress・bars・race・pair・"
+    "radar・flow・funnel のどれか、labels と values（race は series に時点ごとの values）、unit）。"
+)
+ITEM_PROPS: dict[str, Any] = {
+    "place": {"type": "string", "maxLength": 40},
+    "venn": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2},
+    "answer": {"type": "boolean"},
+    "features": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+    "compare": {"type": "object"},
+    "chart": {"type": "object"},
+}
+ITEM_KEYS = tuple(ITEM_PROPS)
+
+FULL_VERSION = "script.full.v8"
 FULL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -50,6 +72,7 @@ FULL_SCHEMA: dict[str, Any] = {
                                 "speaker": {"type": "string"},
                                 "text": {"type": "string", "minLength": 1},
                                 "emotion": {"type": "string", "enum": list(EMOTIONS)},
+                                **ITEM_PROPS,
                             },
                             "required": ["speaker", "text"],
                         },

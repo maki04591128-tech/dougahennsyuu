@@ -293,3 +293,117 @@ def timeline(w: int, h: int, items: list[tuple[str, str]], font: str | None, mai
                fill=(*_rgb(ink), 255), anchor="mm", stroke_width=max(1, round(2 * k)),
                stroke_fill=(0, 0, 0, 160))  # fmt: skip
     return im
+
+
+def place_tag(w: int, h: int, place: str, font: str | None, accent: str, ink: str) -> Any:
+    """H2 場所のタグ: ピン（文字の 1.2 倍・accent）と地名（画面の高さの 5%）。小さな画。"""
+    from PIL import Image, ImageDraw
+
+    size = round(h * 0.05)
+    f = _font(font, size)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    tw = probe.textlength(place, font=f)
+    ph = size * 1.2
+    im = Image.new("RGBA", (round(ph + tw + size), round(ph * 1.3)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    r = ph * 0.38
+    cx, cy = ph / 2, r + 2
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*_rgb(accent), 255))
+    d.polygon([(cx - r * 0.7, cy + r * 0.5), (cx + r * 0.7, cy + r * 0.5), (cx, ph)],
+              fill=(*_rgb(accent), 255))  # fmt: skip
+    d.ellipse([cx - r * 0.4, cy - r * 0.4, cx + r * 0.4, cy + r * 0.4], fill=(255, 255, 255, 255))
+    d.text((ph + size * 0.3, ph / 2), place, font=f, fill=(*_rgb(ink), 255), anchor="lm",
+           stroke_width=max(1, size // 12), stroke_fill=(0, 0, 0, 180))  # fmt: skip
+    return im
+
+
+def venn(w: int, h: int, a: str, b: str, both: str, font: str | None, c1: str, c2: str,
+         accent: str, ink: str) -> Any:  # fmt: skip
+    """N3 ベン図: 円 2 つ（半径は高さの 24%、中心の間は半径の 1.2 倍、55%）、重なりは accent。"""
+    from PIL import Image, ImageChops, ImageDraw
+
+    r = h * 0.24
+    cx, cy = w / 2, h * 0.48
+    off = r * 0.6
+    m1, m2 = Image.new("L", (w, h), 0), Image.new("L", (w, h), 0)
+    ImageDraw.Draw(m1).ellipse([cx - off - r, cy - r, cx - off + r, cy + r], fill=255)
+    ImageDraw.Draw(m2).ellipse([cx + off - r, cy - r, cx + off + r, cy + r], fill=255)
+    both_m = ImageChops.multiply(m1, m2)
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    for m, c in ((m1, c1), (m2, c2)):
+        lay = Image.new("RGBA", (w, h), (*_rgb(c), 0))
+        lay.putalpha(m.point(lambda v: round(v * 0.55)))
+        im.alpha_composite(lay)
+    lay = Image.new("RGBA", (w, h), (*_rgb(accent), 0))
+    lay.putalpha(both_m)
+    im.alpha_composite(lay)
+    d = ImageDraw.Draw(im)
+    f = _font(font, round(h * 0.05))
+    st = {"stroke_width": max(1, round(h / 400)), "stroke_fill": (0, 0, 0, 180)}
+    d.text((cx - off - r * 1.05, cy), a, font=f, fill=(*_rgb(ink), 255), anchor="rm", **st)
+    d.text((cx + off + r * 1.05, cy), b, font=f, fill=(*_rgb(ink), 255), anchor="lm", **st)
+    if both:
+        d.text((cx, cy), both[:6], font=f, fill=(*_rgb(ink), 255), anchor="mm", **st)
+    return im
+
+
+def quiz(w: int, h: int, question: str, count: int | None, answer: str, font: str | None,
+         accent: str, ink: str, surface: str) -> Any:  # fmt: skip
+    """N10 クイズ: 問いを中央のカードに、右上に 3→2→1、終わったら答えの最初の文節。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    x0, y0, x1, y1 = w * 0.12, h * 0.22, w * 0.88, h * 0.62
+    d.rounded_rectangle([x0, y0, x1, y1], radius=round(h * 0.02), fill=(*_rgb(surface), 240))
+    f = _font(font, round(h * 0.055))
+    rows = _wrap(d, question, f, (x1 - x0) * 0.86)[:3]
+    lh = h * 0.055 * 1.4
+    for i, r in enumerate(rows):
+        d.text((w / 2, (y0 + y1) / 2 + lh * (i - (len(rows) - 1) / 2)), r, font=f,
+               fill=(*_rgb(ink), 255), anchor="mm")  # fmt: skip
+    if count:
+        fc = _font(font, round(h * 0.12))
+        d.text((x1 - h * 0.02, y0 - h * 0.02), str(count), font=fc, fill=(*_rgb(accent), 255),
+               anchor="rb", stroke_width=max(2, h // 180), stroke_fill=(0, 0, 0, 200))  # fmt: skip
+    if answer:
+        fa = _font(font, round(h * 0.09))
+        d.text((w / 2, y1 + h * 0.12), answer, font=fa, fill=(*_rgb(accent), 255), anchor="mm",
+               stroke_width=max(2, h // 160), stroke_fill=(0, 0, 0, 220))  # fmt: skip
+    return im
+
+
+def compare_table(w: int, h: int, names: list[str], rows: list[dict[str, Any]],
+                  font: str | None, accent: str, ink: str, surface: str) -> Any:  # fmt: skip
+    """P11 仕様の比較表: 3 列（項目・1 者目・2 者目）、良い方の升を accent の面（不透明度 25%）、
+    良い升が多い方の列の見出しに下線。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    n = len(rows) + 1
+    x0, x1 = w * 0.12, w * 0.88
+    rh = min(h * 0.11, h * 0.72 / n)
+    y0 = h * 0.5 - rh * n / 2
+    cols = [x0, x0 + (x1 - x0) * 0.4, x0 + (x1 - x0) * 0.7, x1]
+    f = _font(font, round(rh * 0.42))
+    d.rectangle([x0, y0, x1, y0 + rh * n], fill=(*_rgb(surface), 235))
+    wins = {"a": 0, "b": 0}
+    for i, row in enumerate(rows):
+        y = y0 + rh * (i + 1)
+        better = row.get("better")
+        if better in wins:
+            wins[better] += 1
+            k = 1 if better == "a" else 2
+            d.rectangle([cols[k], y, cols[k + 1], y + rh], fill=(*_rgb(accent), 64))
+        for k, key in enumerate(("item", "a", "b")):
+            d.text(((cols[k] + cols[k + 1]) / 2, y + rh / 2), str(row.get(key, ""))[:14], font=f,
+                   fill=(*_rgb(ink), 255), anchor="mm")  # fmt: skip
+    for k, nm in enumerate(["", *names[:2]]):
+        d.text(((cols[k] + cols[k + 1]) / 2, y0 + rh / 2), nm[:12], font=f,
+               fill=(*_rgb(ink), 255), anchor="mm")  # fmt: skip
+    if wins["a"] != wins["b"]:
+        k = 1 if wins["a"] > wins["b"] else 2
+        d.line([(cols[k] + 10, y0 + rh * 0.88), (cols[k + 1] - 10, y0 + rh * 0.88)],
+               fill=(*_rgb(accent), 255), width=max(2, round(h / 270)))  # fmt: skip
+    return im
