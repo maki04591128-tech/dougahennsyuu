@@ -201,12 +201,15 @@ WAVE_TRACK = "演出・波形"  # 統合版 P2
 CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
 FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
-CHAPTER_TRACK = "演出・章"  # 統合版 H1
+CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
+DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
+N6_PURPOSES = {Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL}
 H1_PURPOSES = {
     Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
 }  # fmt: skip
 EXTRA_TRACKS = (
     CHAPTER_TRACK,
+    DIAGRAM_TRACK,
     CLOSE_TRACK,
     NEWS_TRACK,
     TICKER_TRACK,
@@ -921,10 +924,28 @@ class DirectionService:
                     if f1 > 0:
                         anim(cid, [Keyframe(frame=0, y=round(y0, 4), easing=Easing.LINEAR),
                                    Keyframe(frame=f1, y=round(y_end, 4))])  # fmt: skip
+        toc_n = 0
+        if pv in N6_PURPOSES and len(chapters) >= 3:  # N6: 2 章目からの頭に目次（2.0 秒）
+            from video_automation.services.rendering import n_cards as nc
+
+            toc_n = round(2.0 * fps)
+            titles = [t for _a, t in chapters]
+            for k, (at, _t) in enumerate(chapters):
+                if k == 0 or at + toc_n > total:
+                    continue
+                img = await asyncio.to_thread(
+                    nc.toc, w, h, titles, k, font, prof.palette.accent, ink, prof.palette.surface
+                )
+                a = await self._png(project_id, img, "目次（N6）")
+                cid = clip(lane(CHAPTER_TRACK), a, at, toc_n, ClipTransform(fit=FitMode.FIT))
+                anim(cid, [Keyframe(frame=0, opacity=0.0), Keyframe(frame=6, opacity=1.0),
+                           Keyframe(frame=toc_n - 7, opacity=1.0),
+                           Keyframe(frame=toc_n - 1, opacity=0.0)])  # fmt: skip
         if pv in H1_PURPOSES:  # H1: 2 章目からの頭に章の題名カード（2.5 秒、出は B4 の 6f）
             n = round(2.5 * fps)
             last = -1
-            for k, (at, text) in enumerate([c_ for c_ in chapters if c_[0] > 0], start=2):
+            for k, (at0, text) in enumerate([c_ for c_ in chapters if c_[0] > 0], start=2):
+                at = at0 + (toc_n if len(chapters) >= 3 else 0)  # N6 の後
                 if at < last or at + n > total:
                     continue
                 img = await asyncio.to_thread(
@@ -989,6 +1010,116 @@ class DirectionService:
             notes.append(
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
+        return notes
+
+    async def _n_cards(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+    ) -> list[str]:
+        """統合版 N1（手順）・N7（定義）・N8（正誤）・N11（引用）。1 本のトラックに重ねずに置く。"""
+        from video_automation.services.rendering import n_cards as nc
+
+        pv = prof.purpose
+        pal = prof.palette
+        used: list[tuple[int, int]] = []
+        notes: list[str] = []
+        one_sec = round(fps)
+
+        def free(a: int, b: int) -> bool:
+            return 0 <= a < b <= total and not any(x < b and a < y for x, y in used)
+
+        def put(a_: AssetRead, at: int, n: int, keys: list[Keyframe] | None) -> None:
+            cid = str(uuid4())
+            cmds.append(
+                AddClip(track_id=lane(DIAGRAM_TRACK), asset_id=a_.id, start_frame=at,
+                        duration_frames=n, clip_id=cid, transform=ClipTransform(fit=FitMode.FIT))
+            )  # fmt: skip
+            if keys:
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+            used.append((at, at + n))
+
+        def fade(n: int, slide: bool = False) -> list[Keyframe]:
+            """入り（B1 のスライド・16f）と出（6f）。"""
+            k0 = Keyframe(frame=0, opacity=0.0, x=-0.017 if slide else 0.0, easing=Easing.CUBIC_OUT)
+            f1 = min(16, n // 3)
+            return [
+                k0,
+                Keyframe(frame=f1, opacity=1.0, x=0.0),
+                Keyframe(frame=max(f1 + 1, n - 7), opacity=1.0, x=0.0, easing=Easing.CUBIC_IN),
+                Keyframe(frame=max(f1 + 2, n - 1), opacity=0.0, x=0.0),
+            ]
+
+        runs = (
+            nc.step_runs([x.text for x in lines])
+            if pv in (Purpose.EXPLAINER, Purpose.LECTURE)
+            else []
+        )
+        run_starts = sorted(lines[r[0]].start for r in runs)
+        for i, ln in enumerate(lines):
+            # 後に手順の流れ（N1）があるときは、その始まりまでで消す
+            nxt = next((x for x in run_starts if x > ln.start), total)
+            end = min(total, ln.end + one_sec, nxt)
+            if pv in (Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS) and (
+                d_ := nc.definition(ln.text)
+            ):  # N7
+                if free(ln.start, end):
+                    img = await asyncio.to_thread(nc.definition_card, w, h, d_[0], d_[1], font,
+                                                  pal.accent, ink, pal.surface)  # fmt: skip
+                    a_ = await self._png(project_id, img, f"用語の定義（N7）「{d_[0]}」")
+                    put(a_, ln.start, end - ln.start, fade(end - ln.start, slide=True))
+            elif pv == Purpose.EXPLAINER and i > 0 and nc.is_myth(ln.text):  # N8
+                st = lines[i - 1].start
+                if free(st, end) and ln.start - st >= 12:
+                    for show, a0, b0 in ((False, st, ln.start + 12), (True, ln.start + 12, end)):
+                        if b0 <= a0:
+                            continue
+                        img = await asyncio.to_thread(nc.myth_card, w, h, lines[i - 1].text,
+                                                      ln.text, font, pal.accent, show)  # fmt: skip
+                        a_ = await self._png(project_id, img, "正誤カード（N8）")
+                        put(a_, a0, b0 - a0, None)
+            elif pv in (Purpose.INTERVIEW, Purpose.DOCUMENTARY, Purpose.STORY) and (
+                q := nc.quote(ln.text)
+            ):  # N11
+                if free(ln.start, end):
+                    img = await asyncio.to_thread(nc.quote_card, w, h, q, ln.speaker, font,
+                                                  pal.accent, ink)  # fmt: skip
+                    a_ = await self._png(project_id, img, "引用カード（N11）")
+                    put(a_, ln.start, end - ln.start, fade(end - ln.start))
+        if runs:  # N1
+            for run in runs:
+                labels = [nc.first_phrase(lines[i].text) for i in run]
+                starts = [lines[i].start for i in run]
+                end = min(total, lines[run[-1]].end + one_sec)
+                if not free(starts[0], end):
+                    continue
+                for k, st in enumerate(starts):
+                    nx = starts[k + 1] if k + 1 < len(starts) else end
+                    if nx <= st:
+                        continue
+                    img = await asyncio.to_thread(nc.steps, w, h, labels, k + 1, font, pal.main,
+                                                  pal.accent, ink, pal.surface)  # fmt: skip
+                    a_ = await self._png(project_id, img, "手順の流れ（N1）")
+                    keys = None
+                    if k == len(starts) - 1 and nx - st > 10:
+                        keys = [Keyframe(frame=0, opacity=1.0),
+                                Keyframe(frame=nx - st - 7, opacity=1.0, easing=Easing.CUBIC_IN),
+                                Keyframe(frame=nx - st - 1, opacity=0.0)]  # fmt: skip
+                    elif k == 0:
+                        keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
+                                Keyframe(frame=min(10, nx - st - 1), opacity=1.0)]  # fmt: skip
+                    put(a_, st, nx - st, keys)
+        if used:
+            notes.append("図解（N1・N7・N8・N11）は、出ている間も字幕を出しています")
         return notes
 
     async def _overlay(
@@ -2108,6 +2239,13 @@ class DirectionService:
             skipped += await self._h_cards(
                 p.id, prof, plan, lines, chap, cmds, lane, total, fps, w, h, font, ink
             )
+
+        # 統合版 N1・N7・N8・N11: 台本の語だけで出せる図解
+        if prof is not None:
+            skipped += await self._n_cards(
+                p.id, prof, lines, cmds, lane, total, fps, w, h,
+                self.titles.font_path(heading_font), ink,
+            )  # fmt: skip
 
         # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
         if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:

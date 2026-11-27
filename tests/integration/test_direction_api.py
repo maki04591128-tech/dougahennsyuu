@@ -1155,3 +1155,37 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
                      lambda n: n, 900, 30.0, 640, 360, None, "#FFFFFF")  # fmt: skip
     (close,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・締め"]
     assert close.start_frame == 810 and close.duration_frames == 90
+
+
+async def test_n_cards_from_script_words(dclient):
+    """統合版 N1（まず・次に・最後に）・N7（〜とは）・N11（「」の引用）を台本の語だけで出す。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "光合成とは、植物が光で養分を作るはたらきです。"},
+        {"speaker": "B", "text": "まず葉が光を受け取ります。"},
+        {"speaker": "B", "text": "次に水を分けます。"},
+        {"speaker": "B", "text": "最後に糖を作ります。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "explainer")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    dg = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・図解"),
+        key=lambda x: x["start_frame"],
+    )
+    got = [names[x["asset_id"]] for x in dg]
+    assert got[0] == "用語の定義（N7）「光合成」"
+    assert got[1:] == ["手順の流れ（N1）"] * 3
+    for a, b in zip(dg, dg[1:], strict=False):
+        assert a["end_frame"] <= b["start_frame"]
+    q = [
+        {
+            "speaker": "A",
+            "text": "彼は「失敗したことのない人は何も新しいことに挑戦していない」と言った。",
+        }
+    ]
+    pid, sid = await _ready_script(c, q + lines[1:2])
+    tl, _ = await _apply(c, pid, sid, "interview")
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    assert "引用カード（N11）" in names.values()
