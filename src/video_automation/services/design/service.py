@@ -175,6 +175,12 @@ class DesignService:
             rec = (p.design_manifest or {}).get("direction") or {}
         return dict(rec.get("outline") or {})
 
+    async def recorded(self, project_id: str, source: str) -> dict[str, Any]:
+        """record() で置いた、演出の処理（source）の記録（無ければ空）。"""
+        async with self.db.session_factory() as s:
+            p = await self._project(s, project_id)
+            return dict((p.design_manifest or {}).get(source) or {})
+
     async def series_for(self, project_id: str) -> SeriesSettings | None:
         """プロジェクトに付けたシリーズの設定（無い・消えたときは None）。"""
         d = await self.get(project_id)
