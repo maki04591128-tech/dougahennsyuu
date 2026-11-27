@@ -1117,6 +1117,19 @@ class DirectionService:
             notes.append(
                 "締めのカード（H5）のボタンと URL は、設定の項目がまだ無いため出していません"
             )
+        if pv == Purpose.CORPORATE and plan.title:  # T41: 最後の 3 秒に一本の線で題名を描く
+            from video_automation.services.rendering import line_title as lt
+
+            n = round(3 * fps)
+            at = total - n
+            if at > 0:
+                ov = await self._overlay(
+                    project_id,
+                    lt.line_title_frames(plan.title[:30], n, w, h, font, prof.palette.main, ink),
+                    "一本の線で描く題名（T41）",
+                    fps,
+                )
+                clip(lane(CLOSE_TRACK), ov, at, n, ClipTransform())
         if pv == Purpose.NEWS:  # H3: 下の見出しの帯（章で替える）とティッカー
             heads = chapters or [(0, plan.title or "ニュース")]
             if heads[0][0] > 0:
