@@ -1749,3 +1749,49 @@ async def test_maps_country_city_and_route(dclient):
     tl = (await c.get(f"/projects/{pid}/timeline")).json()
     tracks = {t["id"]: t["name"] for t in tl["tracks"]}
     assert not [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・地図"]
+
+
+async def test_flower_text_for_reactions(dclient):
+    """統合版 T42: ゲーム実況で、うれしい・驚き・熱くなる発話の強調テロップを花字にする。"""
+    from sqlalchemy import select
+
+    from video_automation.database.models import ScriptSegment
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "ボスに挑みます。"},
+        {"speaker": "A", "text": "やったー勝った！"},
+        {"speaker": "B", "text": "次の面へ進みます。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    async with c.app.state.container.db.session_factory() as s:
+        segs = sorted(
+            (await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sid)))
+            .scalars()
+            .all(),
+            key=lambda x: x.sequence,
+        )
+        segs[1].emotion = "happy"
+        await s.commit()
+    plan = {"title": "", "subtitle": "", "shots": [
+        {"kind": "keyword", "from_line": 2, "text": "勝った！"},
+        {"kind": "keyword", "from_line": 3, "text": "次の面"},
+    ]}  # fmt: skip
+
+    async def keyword_names(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        roles = await c.app.state.container.design.clip_roles(pid)
+        names = {a["id"]: a for a in tl["assets"]}
+        kws = sorted(
+            (x for x in tl["clips"] if roles.get(x["id"]) == "keyword"),
+            key=lambda x: x["start_frame"],
+        )
+        return [names[x["asset_id"]] for x in kws]
+
+    got = await keyword_names("game")
+    assert got[0]["name"].startswith("花字（T42）") and got[0]["kind"] == "video"
+    assert not got[1]["name"].startswith("花字")  # ふつうの感情は今までのテロップ
+    got = await keyword_names("explainer")
+    assert not any(a["name"].startswith("花字") for a in got)

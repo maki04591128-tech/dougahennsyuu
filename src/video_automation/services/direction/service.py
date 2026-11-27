@@ -95,6 +95,7 @@ from video_automation.services.direction.plan import (
     rule_plan,
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
+from video_automation.services.rendering import flower as fl
 from video_automation.services.rendering import t_extras as tx
 from video_automation.services.rendering.card import card_layout
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
@@ -1109,6 +1110,45 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _flower(
+        self,
+        project_id: str,
+        text: str,
+        emotion: str,
+        color: str,
+        start: int,
+        end: int,
+        cmds: list[Any],
+        txt_t: str,
+        w: int,
+        h: int,
+        fps: float,
+        side: float,
+        strip_top: float,
+        ts: float,
+        add: Any,
+    ) -> None:
+        """統合版 T42: リアクションの強調テロップを花字にする（強調テロップと同じ右上に置く）。
+        色は話者の色から 3 節の作り方（OKLCH）で作る。大きさは強調テロップの文字の 1.4 倍。"""
+        from video_automation.services.design.oklch import FRAME, OUTLINE, TEXT, derive
+
+        col = fl.FlowerColors(
+            edge=derive(color, OUTLINE),
+            frame=derive(color, FRAME),
+            light=derive(color, (0.88, 0.06)),
+            text=derive(color, TEXT),
+        )
+        size = max(12, round(min(w, h) * 0.078 * 0.62 * ts * 1.4))
+        font = self.titles.font_path("M PLUS Rounded 1c")
+        (cw, ch), gen = fl.frames(text[:16], font, size, col, emotion, end - start, fps, h)
+        a = await self._overlay(project_id, gen, f"花字（T42）「{text[:12]}」", fps)
+        k = native_scale(cw, ch, w, h)
+        # 余白を含む画なので、文字の部分が強調テロップと同じ右上に来るよう中心を置く
+        kx = 1 - side - cw * k / 2 / w + size * 0.9 * k / w
+        ky = strip_top + ch * k / 2 / h - size * 0.9 * k / h
+        add(txt_t, a.id, start, end - start, role="keyword",
+            transform=native_transform(cw, ch, w, h, cx=kx, cy=ky))  # fmt: skip
 
     async def _maps(
         self,
@@ -2829,10 +2869,33 @@ class DirectionService:
                 prev = spans[-1]
                 spans[-1] = (prev[0], prev[1], start)
             spans.append((s, start, end))
+        flower_at: list[int] = []  # 統合版 T42: 花字を出した時刻（1 分に 3 回まで）
+        chars_t42: dict[str, dict[str, str]] | None = None
         for s, start, end in spans:
             if end - start < frames(0.6):
                 continue
             use(Component.KEYWORD)
+            ln_k = lines[s.from_line - 1]
+            if (
+                prof is not None
+                and prof.purpose in (Purpose.GAME, Purpose.VLOG, Purpose.SHORT)
+                and ln_k.emotion in fl.EMOTIONS
+                and sum(1 for t_ in flower_at if start - t_ < frames(60)) < 3
+                and end - start > fl.OUT + 8
+            ):
+                if chars_t42 is None:
+                    chars_t42 = await self._characters(req.script_id)
+                names_ = list(dict.fromkeys(x.speaker for x in lines))
+                spk_col = (chars_t42.get(ln_k.speaker, {}).get("color") or
+                           prof.palette.speakers[names_.index(ln_k.speaker)
+                                                 % len(prof.palette.speakers)])  # fmt: skip
+                await self._flower(
+                    p.id, s.text, ln_k.emotion, spk_col, start, end, cmds, txt_t, w, h, fps,
+                    side, strip_top, ts, add,
+                )  # fmt: skip
+                flower_at.append(start)
+                use(Component.EMPHASIS_TEXT)
+                continue
             kreq = CardRequest(
                 project_id=p.id,
                 heading=s.text,
