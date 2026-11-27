@@ -247,6 +247,7 @@ def credit_card_ass(
 
 
 BLUR_ROLES = ("image",)  # 統合版 E4: 読ませる文字の無いクリップの役割
+GLASS_ROLES = ("card", "keyword")  # 統合版 Y8: 後ろをぼかす面のクリップの役割
 
 
 class _Timer:
@@ -472,6 +473,7 @@ class RenderService:
         single_frame: int | None = None,
         finish: str = "",
         blur: set[str] | None = None,
+        glass: set[str] | None = None,
     ) -> RenderPlan:
         async with self.db.session_factory() as s:
             p = await s.get(Project, project_id)
@@ -578,6 +580,7 @@ class RenderService:
         blur_ids = {c.id for c in visual if c.id in anims and moving_element(anims[c.id])} & set(
             blur or ()
         )
+        glass_ids = set(glass or ())
         span: dict[str, tuple[int, int, float, float]] = {}  # s0, s1, 実素材の秒, 静止で埋める秒
         for c in sorted(set(visual) | set(audible), key=lambda c: c.start_frame):
             s0, s1 = max(c.start_frame, r0), min(c.end_frame + ext.get(c.id, 0), r1)
@@ -660,10 +663,32 @@ class RenderService:
             dy = f"+({af.dy})" if af.dy else ""
             x = f"'(W-w)/2+({t.x}{dx})*W'"
             y = f"'(H-h)/2+({t.y}{dy})*H'"
-            filters.append(
-                f"[{base}][v{label}]overlay=x={x}:y={y}:eof_action=pass:"
-                f"enable='between(t,{ff_seconds(off)},{ff_seconds(off + dur)})'[b{label}]"
-            )
+            enable = f"enable='between(t,{ff_seconds(off)},{ff_seconds(off + dur)})'"
+            if c.id in glass_ids and alpha == 1.0:
+                # 統合版 Y8: カードの形の所だけ、下の画をぼかして敷く（半径は画面の高さの 2%）
+                sig = max(1.0, 0.02 * height / 2)
+                filters.append(f"[v{label}]split[v{label}c][v{label}m]")
+                filters.append(
+                    f"color=c=black@0:s={width}x{height}:r={fps_s}:d={ff_seconds(total)},"
+                    f"format=rgba[g{label}z]"
+                )
+                filters.append(f"[v{label}m]lutrgb=r=255:g=255:b=255[g{label}w]")
+                filters.append(
+                    f"[g{label}z][g{label}w]overlay=x={x}:y={y}:eof_action=pass:{enable},"
+                    f"alphaextract[g{label}a]"
+                )
+                filters.append(f"[{base}]split[g{label}b0][g{label}b1]")
+                filters.append(f"[g{label}b1]gblur=sigma={sig:g},format=rgba[g{label}bl]")
+                filters.append(f"[g{label}bl][g{label}a]alphamerge[g{label}bm]")
+                filters.append(f"[g{label}b0][g{label}bm]overlay=0:0[g{label}base]")
+                filters.append(
+                    f"[g{label}base][v{label}c]overlay=x={x}:y={y}:eof_action=pass:{enable}"
+                    f"[b{label}]"
+                )
+            else:
+                filters.append(
+                    f"[{base}][v{label}]overlay=x={x}:y={y}:eof_action=pass:{enable}[b{label}]"
+                )
             base = f"b{label}"
 
         for c in visual:
@@ -1050,6 +1075,7 @@ class RenderService:
             # 統合版 W4: 下書きは仕上げ（グレイン・グロー）・モーションブラーを省く
             finish="" if req.draft else await self._finish(req.project_id, prof.width, prof.height),
             blur=None if req.draft else await self._blur_clips(req.project_id),
+            glass=None if req.draft else await self._glass_clips(req.project_id),
         )
         tm.lap("prepare")
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
@@ -1092,6 +1118,15 @@ class RenderService:
         roles = await self.design.clip_roles(project_id)
         return {cid for cid, r in roles.items() if r in BLUR_ROLES}
 
+    async def _glass_clips(self, project_id: str) -> set[str]:
+        """統合版 Y8 ガラス: 後ろをぼかすクリップ（見た目の型 Y8 のカード・強調テロップ）。"""
+        if self.design is None:
+            return set()
+        if (await self.design.get(project_id)).look != "Y8":
+            return set()
+        roles = await self.design.clip_roles(project_id)
+        return {cid for cid, r in roles.items() if r in GLASS_ROLES}
+
     async def _finish(self, project_id: str, width: int, height: int) -> str:
         """用途の型の仕上げ（統合版 M9・L4・L5・S7）のフィルター。型が無いときは付けない。"""
         prof = await self.design.profile_for(project_id) if self.design else None
@@ -1132,6 +1167,7 @@ class RenderService:
             end_frame=req.end_frame,
             loudnorm=req.loudnorm,
             blur=None if req.draft else await self._blur_clips(req.project_id),
+            glass=None if req.draft else await self._glass_clips(req.project_id),
         )
         await self.ffmpeg.run(
             plan.args, total_sec=plan.duration_sec, progress=part_progress(0.0, 0.25)

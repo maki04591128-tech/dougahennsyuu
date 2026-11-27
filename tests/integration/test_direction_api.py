@@ -1957,3 +1957,33 @@ async def test_kids_cards_tremble_f3(dclient):
     tl2, by2 = await _apply(c, pid, sid, "explainer")
     names2 = {a["id"]: a["name"] for a in tl2["assets"]}
     assert all(names2[x["asset_id"]] != "線のふるえ（F3）" for x in by2.get("card", []))
+
+
+async def test_glass_cards_blur_what_is_behind_y8(dclient, tmp_path):
+    """統合版 Y8: ガラスの型のカード・強調テロップは、カードの形の所だけ下の画をぼかして敷く。"""
+    import shutil
+    import subprocess
+
+    import numpy as np
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    tl, by = await _apply(c, pid, sid, "product", look="Y8")
+    rs = c.app.state.container.render
+    glass = await rs._glass_clips(pid)
+    shown = [x for r in ("card", "keyword") for x in by.get(r, [])]
+    assert shown and glass == {x["id"] for x in shown}
+    f = shown[0]["start_frame"] + 20
+    outs = {}
+    for name, g in (("glass", glass), ("plain", None)):
+        out = tmp_path / f"{name}.png"
+        plan = await rs.plan(pid, 320, 180, out, single_frame=f, fast=True, glass=g)
+        assert ("alphamerge" in " ".join(plan.args)) == (g is not None)
+        r = subprocess.run([shutil.which("ffmpeg"), *plan.args], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[-1500:]
+        outs[name] = np.asarray(Image.open(out).convert("RGB"), dtype=np.int16)
+    diff = np.abs(outs["glass"] - outs["plain"]).max(axis=2)
+    assert diff.max() > 0  # 後ろの模様がぼけた分だけ違う（背景は R17 のなめらかな面なので小さい）
+    _tl, _by = await _apply(c, pid, sid, "product", look="")
+    assert await rs._glass_clips(pid) == set()
