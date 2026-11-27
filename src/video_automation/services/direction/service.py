@@ -902,6 +902,9 @@ class DirectionService:
             )
             if kinetic:
                 use(Component.KINETIC_TEXT)
+            gloss = prof is not None and prof.allows(Component.GLOSS)  # 統合版 L7
+            if gloss:
+                use(Component.GLOSS)
             t_asset = await self.titles.create(
                 TitleCardRequest(
                     project_id=p.id,
@@ -919,6 +922,7 @@ class DirectionService:
                     text_color=ink,
                     outline_color=title_outline,
                     font=heading_font,
+                    gloss=gloss,
                 )
             )
             t_len = min(title_end, media_frames(t_asset, title_end))

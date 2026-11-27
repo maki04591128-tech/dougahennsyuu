@@ -585,6 +585,13 @@ async def test_end_screen_fills_the_last_15_seconds(dclient):
     await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
     roles = await c.app.state.container.design.clip_roles(pid)
     assert "end_screen" not in roles.values()
+    # 統合版 L7: PR・CM の題名には光沢のスイープを 1 回（解説には付けない）
+    from pathlib import Path
+
+    log_ = Path(c.app.state.container.settings.blender_path).parent / "calls.jsonl"
+    titles = [json.loads(x) for x in log_.read_text("utf-8").splitlines()]
+    titles = [x for x in titles if x["script"] == "title_card"]
+    assert titles[-1]["gloss_at"] > 0 and titles[0]["gloss_at"] == 0
 
 
 async def test_lower_thirds_show_name_and_job_title(dclient):

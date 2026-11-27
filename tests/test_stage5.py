@@ -412,3 +412,59 @@ def test_lyric_motion_table():
     assert m[12][0] == "slam"  # ラストサビの 1 行目
     assert m[16][0] == "stack" and m[17][0] == "track"  # くり返す語・アウトロの最後
     assert lyrics.lyric_motion(["あ", "い"], ["verse"] * 2, "rock")[0][1] == "static"
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_gloss_sweep(tmp_path):
+    """統合版 L7: 入りの後、題名の文字の面を斜めの白い帯が左から右へ 1 回通る。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+    args = {
+        "text": "光の題名",
+        "width": 320,
+        "height": 180,
+        "fps": 30,
+        "frames": 12,
+        "font_path": font if Path(font).is_file() else None,
+        "text_color": [0.05, 0.2, 0.6, 1],
+        "outline": False,
+        "outline_color": [0, 0, 0, 1],
+        "size": 1.0,
+        "position": "center",
+        "output_dir": str(tmp_path / "out"),
+        "animation": "none",
+        "gloss_at": 2,
+        "gloss_frames": 10,
+        "result_path": str(tmp_path / "r.json"),
+        "samples": 1,
+    }
+    (tmp_path / "out").mkdir()
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    frames = sorted((tmp_path / "out").glob("frame_*.png"))
+    assert len(frames) == 12
+
+    def bright_x(p):  # 文字の中で最も明るい列の x（文字の無い所は除く）
+        a = np.asarray(Image.open(p).convert("RGBA")).astype(float)
+        m = a[..., 3] > 200
+        lum = (a[..., :3].sum(axis=-1) * m).sum(axis=0) / np.maximum(m.sum(axis=0), 1)
+        lum[m.sum(axis=0) < 3] = 0
+        return int(np.argmax(lum)), float(lum.max())
+
+    base = bright_x(frames[0])[1]
+    xs = [bright_x(f) for f in frames[3:9]]
+    assert all(v > base * 1.15 for _, v in xs[1:-1])  # 帯が通っている間は明るい
+    assert xs[0][0] < xs[-1][0]  # 左から右へ
+    assert abs(bright_x(frames[-1])[1] - base) < base * 0.1  # 通り過ぎたら元の色

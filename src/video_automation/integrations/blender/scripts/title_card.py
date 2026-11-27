@@ -27,6 +27,82 @@ from _common import (  # noqa: E402
     write_result,
 )
 
+GLOSS_ALPHA = 0.40
+GLOSS_SLOPE = 0.5  # 帯の傾き（画面の y が 1 上がると、帯の位置が 0.5 右へ）
+
+
+def gloss(mat, scene, w, h, vw, vh, pos_y, box_w, box_h, start, n):  # noqa: ANN001, PLR0913
+    """文字の面のマテリアルに、画面の座標で決まる斜めの帯を加算する（帯は文字の形の中だけに出る）。
+
+    帯の中心 P を、文字の範囲の左外から右外へ n フレーム（easeInOutCubic）で動かす。
+    """
+    nt = mat.node_tree
+    N, L = nt.nodes, nt.links
+    emit = next(x for x in N if x.bl_idname == "ShaderNodeEmission")
+    base = list(emit.inputs["Color"].default_value)
+    tc = N.new("ShaderNodeTexCoord")
+    sep = N.new("ShaderNodeSeparateXYZ")
+    L.new(tc.outputs["Window"], sep.inputs[0])
+    # s = x + slope × y（画面の比。y は高さの比を幅の比に直す）
+    ky = N.new("ShaderNodeMath")
+    ky.operation = "MULTIPLY"
+    ky.inputs[1].default_value = GLOSS_SLOPE * h / w
+    L.new(sep.outputs["Y"], ky.inputs[0])
+    s_ = N.new("ShaderNodeMath")
+    s_.operation = "ADD"
+    L.new(sep.outputs["X"], s_.inputs[0])
+    L.new(ky.outputs[0], s_.inputs[1])
+    pos = N.new("ShaderNodeValue")
+    d = N.new("ShaderNodeMath")
+    d.operation = "SUBTRACT"
+    L.new(s_.outputs[0], d.inputs[0])
+    L.new(pos.outputs[0], d.inputs[1])
+    ad = N.new("ShaderNodeMath")
+    ad.operation = "ABSOLUTE"
+    L.new(d.outputs[0], ad.inputs[0])
+    # 帯の半分の幅: 文字の高さの 35%（幅の比）
+    half = max(0.01, 0.35 * box_h / vw)
+    band = N.new("ShaderNodeMapRange")
+    band.inputs["From Min"].default_value = 0.0
+    band.inputs["From Max"].default_value = half
+    band.inputs["To Min"].default_value = GLOSS_ALPHA
+    band.inputs["To Max"].default_value = 0.0
+    band.clamp = True
+    L.new(ad.outputs[0], band.inputs["Value"])
+    mix = N.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.blend_type = "ADD"
+    # ShaderNodeMix は型ごとに同じ名前の入出力を持つので、色（RGBA）のものを選ぶ
+    a_in, b_in = [x for x in mix.inputs if x.type == "RGBA"][:2]
+    a_in.default_value = base
+    b_in.default_value = (1.0, 1.0, 1.0, 1.0)
+    fac = next(x for x in mix.inputs if x.name == "Factor" and x.type == "VALUE")
+    res = next(x for x in mix.outputs if x.type == "RGBA")
+    L.new(band.outputs["Result"], fac)
+    L.new(res, emit.inputs["Color"])
+    # 文字の範囲（画面の比）。y は上が 1
+    x0 = 0.5 - box_w / 2 / vw
+    x1 = 0.5 + box_w / 2 / vw
+    yc = 0.5 + pos_y / vh
+    y0, y1 = yc - box_h / 2 / vh, yc + box_h / 2 / vh
+    k = GLOSS_SLOPE * h / w
+    lo = x0 + k * y0 - half * 1.2
+    hi = x1 + k * y1 + half * 1.2
+    sock = pos.outputs[0]
+    sock.default_value = lo
+    sock.keyframe_insert("default_value", frame=start)
+    sock.default_value = hi
+    sock.keyframe_insert("default_value", frame=start + n - 1)
+    act = nt.animation_data.action if nt.animation_data else None
+    if act is not None:
+        from bpy_extras import anim_utils
+
+        bag = anim_utils.action_get_channelbag_for_slot(act, nt.animation_data.action_slot)
+        for fc in bag.fcurves if bag else []:
+            for kp in fc.keyframe_points:
+                kp.interpolation, kp.easing = "CUBIC", "EASE_IN_OUT"
+    scene.frame_end = max(scene.frame_end, start + n - 1)
+
 
 def main() -> None:
     a = load_args()
@@ -142,6 +218,10 @@ def main() -> None:
         main_obj = o
         box_w, box_h = dims.x * scale, dims.y * scale
     del main_obj
+
+    gloss_at = int(a.get("gloss_at") or 0)
+    if gloss_at > 0:  # 統合版 L7: 斜めの白い帯（不透明度 40%・加算）が題名の上を 1 回通る
+        gloss(mat, scene, w, h, vw, vh, pos_y, box_w, box_h, gloss_at, int(a["gloss_frames"]))
 
     files = render(scene, Path(a["output_dir"]))
     # 文字の範囲（ピクセル）。ワールド座標 → 画素（左上原点）
