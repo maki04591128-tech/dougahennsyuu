@@ -453,3 +453,14 @@ def test_key_char_for_chorus():
     assert av.key_char(["!!"]) is None
     im = av.key_char_image("君", 64, 36, None, "#FFFFFF")
     assert im.getchannel("A").getextrema()[1] == round(255 * 0.12)
+
+
+def test_drop_particles_by_genre():
+    """統合版 X7: 落ちサビの粒（ジャンルごと、150f で繰り返す、不透明度の最大 70%）。"""
+    from video_automation.services.direction import effects as fx
+
+    for g in ("ballad", "citypop", "edm", "vocaloid", "idol", "pop"):
+        fr = fx.drop_particles(g, 320, 180, "#3BB8DB")
+        assert len(fr) == fx.X7_LOOP
+        assert 0 < max(im.getchannel("A").getextrema()[1] for im in fr[:10]) <= 179, g
+    assert len(fx.drop_particles("rock", 64, 36, "#ffffff")) == 150  # ロックは残り火

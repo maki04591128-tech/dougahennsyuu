@@ -152,6 +152,7 @@ MV_INK_TRACK = "MV・インク"  # 統合版 V6
 MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
 MV_KEY_TRACK = "MV・キーの一字"  # 統合版 T26
 X4_TRACK = "演出・擬音"  # 統合版 X4
+MV_X7_TRACK = "MV・落ちサビの粒"  # 統合版 X7
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
@@ -1510,6 +1511,21 @@ class BuildService:
                 if f1 > f0:
                     cmds.append(AddClip(track_id=key_tid, asset_id=a_.id, start_frame=f0,
                                         duration_frames=f1 - f0, clip_id=str(uuid4())))  # fmt: skip
+        # 統合版 X7: 落ちサビにジャンルの粒（150f で繰り返す粒を並べる）
+        drops = [(a0, b0) for a0, b0, s_ in spans if s_ == "drop"]
+        if drops:
+            from video_automation.services.direction import effects as fx
+
+            fr = await asyncio.to_thread(fx.drop_particles, genre, w, h, main)
+            a_ = await self._alpha_mov(project_id, work, fr, fps, f"落ちサビの粒（X7・{genre}）")
+            x7_tid = track(MV_X7_TRACK, MV_VIS_TRACK)
+            f0, f1 = round(drops[0][0] * fps), round(drops[-1][1] * fps)
+            pos = f0
+            while pos < f1:
+                n = min(len(fr), f1 - pos)
+                cmds.append(AddClip(track_id=x7_tid, asset_id=a_.id, start_frame=pos,
+                                    duration_frames=n, clip_id=str(uuid4())))  # fmt: skip
+                pos += n
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
         await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
         await c.timeline.submit(

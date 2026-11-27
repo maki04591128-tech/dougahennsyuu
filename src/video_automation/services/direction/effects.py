@@ -258,3 +258,75 @@ def onomatopoeia(word: str, h: int, accent: str, font: str | None) -> list[Any]:
             im.alpha_composite(s_, ((im.width - s_.width) // 2, (im.height - s_.height) // 2))
         out.append(im)
     return out
+
+
+X7_LOOP = 150
+
+
+def drop_particles(genre: str, w: int, h: int, accent: str, seed: int = 3) -> list[Any]:
+    """X7 落ちサビの粒（ジャンルごと。粒は 30・不透明度の最大 70%。150f で繰り返す）。
+
+    バラード: 花びら（#FFD6E4、右下へ）。シティポップ: ボケ。ロック: 残り火。
+    EDM: 縦の光の線（accent・幅 2px が上へ）。ボカロ: 四角の欠片（8px、2f ごとに位置を変える）。
+    アイドル: 白の星。ポップ: 紙吹雪。
+    流れる量は 150f で画面の 1 周（ずれずに繰り返す）。"""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    if genre == "rock":
+        return embers(w, h, seed)
+    rnd = random.Random(seed)
+    k = h / 1080
+    pts = [(rnd.random(), rnd.random(), rnd.random()) for _ in range(30)]
+    cols = ["#FF5A5F", "#2EC4B6", "#FFC82E", "#FFFFFF"]
+    out = []
+    for f in range(X7_LOOP):
+        u = f / X7_LOOP
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        for i, (x, y, ph) in enumerate(pts):
+            a = round(255 * 0.7)
+            if genre == "ballad":  # 花びら: 右下へ
+                px, py = ((x + u) % 1) * w, ((y + u) % 1) * h
+                r = 8 * k
+                d.ellipse([px - r * 1.4, py - r * 0.7, px + r * 1.4, py + r * 0.7],
+                          fill=(0xFF, 0xD6, 0xE4, a))  # fmt: skip
+            elif genre == "citypop":  # ボケ: ゆっくり上へ
+                px, py = x * w, ((y - u) % 1) * h
+                r = (10 + 20 * ph) * k
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(*_rgb(accent), round(a * 0.4)))
+            elif genre == "edm":  # 縦の光の線: 上へ
+                px, py = x * w, ((y - u) % 1) * h
+                d.line(
+                    [(px, py), (px, py + 60 * k)],
+                    fill=(*_rgb(accent), a),
+                    width=max(1, round(2 * k)),
+                )
+            elif genre == "vocaloid":  # 四角の欠片: 2f ごとに位置を変える
+                r2 = random.Random(seed * 1000 + i * 100 + f // 2)
+                px, py = r2.random() * w, r2.random() * h
+                s = 8 * k
+                d.rectangle([px, py, px + s, py + s], fill=(*_rgb(accent), a))
+            elif genre == "idol":  # 星: ゆっくり下へ、明滅
+                px, py = x * w, ((y + u) % 1) * h
+                r = 10 * k * (0.5 + 0.5 * math.sin(2 * math.pi * (2 * u + ph)))
+                if r > 1:
+                    q = r * 0.25
+                    star = [
+                        (px, py - r),
+                        (px + q, py - q),
+                        (px + r, py),
+                        (px + q, py + q),
+                        (px, py + r),
+                        (px - q, py + q),
+                        (px - r, py),
+                        (px - q, py - q),
+                    ]
+                    d.polygon(star, fill=(255, 255, 255, a))
+            else:  # ポップ: 紙吹雪
+                px, py = (x + 0.02 * math.sin(2 * math.pi * (u + ph))) * w, ((y + u) % 1) * h
+                c = cols[i % len(cols)]
+                d.rectangle([px - 4 * k, py - 8 * k, px + 4 * k, py + 8 * k], fill=(*_rgb(c), a))
+        if genre in ("citypop", "edm"):
+            im = im.filter(ImageFilter.GaussianBlur(2 * k))
+        out.append(im)
+    return out
