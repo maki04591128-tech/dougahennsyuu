@@ -1,4 +1,4 @@
-"""文字だけの場面の型（統合版 段階5c: T30・T32・T33・T34）。Pillow で描く。
+"""文字だけの場面の型（統合版 段階5c: T30〜T34）。Pillow で描く。
 
 文字だけの場面: 映像・画像・カード・図表の素材が無い 3 秒以上の台詞の区間（解説は各章の最初の文の
 区間だけ）。1 本の合計は動画の長さの最大 20%。この区間では字幕・強調テロップを出さず、下の型で
@@ -16,6 +16,11 @@
   scale 1.25→1 を 6f（easeOutExpo）で入る。塊で最も字数の多い文節は accent の面に base の文字。
   次の塊が入るとき、前の塊は上へ画面の高さの 30%・不透明度 1→0 を 6f（easeInCubic）。塊を出して
   いる間、画面全体を 1.00→1.04（linear）
+- T31 3D の字組みを飛ぶカメラ（会社紹介）: 各文節を 3D 空間の板に置く。次の文節は前から x +画面の
+  幅の 0.6・z −0.3、y は交互に ±画面の高さの 0.15、Y 回転は交互に ±25°。カメラは各文節の頭に、その
+  文節の正面で文節の幅が画面の幅の 70% になる距離へ 18f（easeInOutCubic）で移る。区間の最後の 1.5 秒
+  で、全部の文節が画面の幅の 90% に収まる位置へ 45f で引く。Blender の代わりに、板の 4 隅を透視投影
+  して Pillow の射影変換で描く（焦点距離は画面の幅）
 - T34 文字の面をゆっくり押し込む（予告編）: 台本の全文を前から繰り返した小さな文字（画面の高さの
   4%・行間 1.2・text・不透明度 35%）で画面を埋め、今の文節を中央に画面の高さの 12% で重ねる。
   区間の間、画面全体を 1.00→1.25 で一定の速さで寄せる
@@ -34,6 +39,7 @@ KIND = {
     "product": "T30",
     "event": "T30",
     "promo": "T32",
+    "corporate": "T31",
     "short": "T33",
     "trailer": "T34",
 }
@@ -373,6 +379,144 @@ def t34_frames(ph: list[Phrase], start: int, n: int, w: int, h: int, font: str |
         yield im
 
 
+def _cubic_io(u: float) -> float:
+    u = min(max(u, 0.0), 1.0)
+    return 4 * u**3 if u < 0.5 else 1 - (-2 * u + 2) ** 3 / 2
+
+
+def _persp_coeffs(dst: list[tuple[float, float]], src: list[tuple[float, float]]) -> list[float]:
+    """出力の 4 点 dst → 入力の 4 点 src の射影変換の係数（Pillow の PERSPECTIVE）。"""
+    import numpy as np
+
+    a = []
+    b = []
+    for (x, y), (u, v) in zip(dst, src, strict=True):
+        a.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        a.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        b += [u, v]
+    return np.linalg.solve(np.array(a, float), np.array(b, float)).tolist()
+
+
+T31_MOVE = 18
+T31_PULL = 45
+
+
+def t31_layout(ph: list[Phrase], w: int, h: int, font: str | None) -> list[dict[str, Any]]:
+    """各文節の板（中心 x, y, z・Y 回転の度・幅・高さ・大きさ）。"""
+    import math
+
+    size = max(8, round(h * 0.12))
+    f = _font(font, size)
+    out = []
+    for i, p in enumerate(ph):
+        sgn = 1 if i % 2 == 0 else -1
+        pw = f.getlength(p.text) or size
+        out.append({"x": i * 0.6 * w, "y": sgn * 0.15 * h if i else 0.0, "z": -i * 0.3 * w,
+                    "yaw": math.radians(25 * sgn) if i else 0.0, "w": pw, "h": size * 1.4,
+                    "size": size})  # fmt: skip
+    return out
+
+
+def _cam_for(b: dict[str, Any], w: int) -> tuple[float, float, float, float]:
+    """板の正面で、板の幅が画面の幅の 70% になるカメラ（x, y, z, yaw）。"""
+    import math
+
+    dist = w * b["w"] / (0.7 * w)  # 焦点距離 = 画面の幅
+    return (b["x"] + math.sin(b["yaw"]) * dist, b["y"], b["z"] + math.cos(b["yaw"]) * dist,
+            b["yaw"])  # fmt: skip
+
+
+def t31_frames(ph: list[Phrase], start: int, n: int, w: int, h: int, font: str | None,
+               base: str, ink: str, accent: str, fps: float) -> Iterator[Any]:  # fmt: skip
+    import math
+
+    from PIL import Image, ImageDraw
+
+    boards = t31_layout(ph, w, h, font)
+    imgs = []
+    for p, b in zip(ph, boards, strict=True):
+        im = Image.new("RGBA", (round(b["w"]) + 8, round(b["h"])), (0, 0, 0, 0))
+        ImageDraw.Draw(im).text((im.width / 2, im.height / 2), p.text, font=_font(font, b["size"]),
+                                fill=_rgb(accent if p.last else ink), anchor="mm")  # fmt: skip
+        imgs.append(im)
+    cams = [_cam_for(b, w) for b in boards]
+    # 引きのカメラ: 全部の板の x の範囲が画面の幅の 90% に収まる（正面・yaw 0）
+    corners = [
+        (b["x"] + s * b["w"] / 2 * math.cos(b["yaw"]), b["z"] - s * b["w"] / 2 * math.sin(b["yaw"]))
+        for b in boards
+        for s in (-1, 1)
+    ]
+    near_z = max(z for _, z in corners)
+
+    def centered(cz_: float) -> tuple[float, float]:
+        """その距離で、投影した範囲が画面の中央に来るカメラの x と、投影した幅。"""
+        a, b_ = min(x for x, _ in corners) - w, max(x for x, _ in corners) + w
+        for _ in range(50):
+            m = (a + b_) / 2
+            px = [w * (x - m) / (cz_ - z) for x, z in corners]
+            a, b_ = (m, b_) if (max(px) + min(px)) / 2 > 0 else (a, m)
+        px = [w * (x - a) / (cz_ - z) for x, z in corners]
+        return a, max(px) - min(px)
+
+    lo, hi = near_z + 1.0, near_z + 50.0 * w
+    for _ in range(50):  # 投影した幅が画面の幅の 90% になる距離（遠いほど狭い）
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if centered(mid)[1] > 0.9 * w else (lo, mid)
+    pull = (centered(hi)[0], 0.0, hi, 0.0)
+    pull_at = start + n - round(1.5 * fps)
+
+    def cam_at(t: int) -> tuple[float, ...]:
+        cur = cams[0]
+        for i, p in enumerate(ph):
+            if t < p.start:
+                break
+            prev = cams[i - 1] if i else cams[0]
+            u = _cubic_io((t - p.start) / T31_MOVE)
+            cur = tuple(a + (b_ - a) * u for a, b_ in zip(prev, cams[i], strict=True))
+        if t >= pull_at:
+            u = _cubic_io((t - pull_at) / T31_PULL)
+            cur = tuple(a + (b_ - a) * u for a, b_ in zip(cur, pull, strict=True))
+        return cur
+
+    focal = float(w)
+    for fr in range(n):
+        t = start + fr
+        cxx, cy, cz, cyaw = cam_at(t)
+        cs, sn = math.cos(-cyaw), math.sin(-cyaw)
+        out = Image.new("RGBA", (w, h), (*_rgb(base), 255))
+        items = []
+        for b, im in zip(boards, imgs, strict=True):
+            if ph[boards.index(b)].start > t + T31_MOVE and fr < n - round(1.5 * fps):
+                continue  # まだ話していない文節は出さない（引きの間は全部）
+            hw, hh = im.width / 2, im.height / 2
+            bc, bs = math.cos(b["yaw"]), math.sin(b["yaw"])
+            pts = []
+            for lx, ly in ((-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)):
+                wx, wy, wz = b["x"] + lx * bc, b["y"] + ly, b["z"] - lx * bs
+                dx, dy, dz = wx - cxx, wy - cy, wz - cz
+                rx, rz = dx * cs + dz * sn, -dx * sn + dz * cs
+                if rz > -1:
+                    pts = []
+                    break
+                pts.append((w / 2 + focal * rx / -rz, h / 2 + focal * dy / -rz))
+            if pts:
+                items.append((b["z"] - cz, im, pts))
+        for _d, im, pts in sorted(items, key=lambda x: x[0]):
+            src = [(0, 0), (im.width, 0), (im.width, im.height), (0, im.height)]
+            x0, y0 = max(0, int(min(p[0] for p in pts))), max(0, int(min(p[1] for p in pts)))
+            x1, y1 = (
+                min(w, int(max(p[0] for p in pts)) + 1),
+                min(h, int(max(p[1] for p in pts)) + 1),
+            )
+            if x1 <= x0 or y1 <= y0:
+                continue
+            loc = [(px - x0, py - y0) for px, py in pts]
+            tile = im.transform((x1 - x0, y1 - y0), Image.Transform.PERSPECTIVE,
+                                _persp_coeffs(loc, src), Image.Resampling.BICUBIC)  # fmt: skip
+            out.alpha_composite(tile, (x0, y0))
+        yield out
+
+
 def frames(kind: str, ph: list[Phrase], start: int, n: int, w: int, h: int, font: str | None,
            pal: Any, fps: float, bpm: float, script: str) -> Iterator[Any]:  # fmt: skip
     if kind == "T32":
@@ -381,4 +525,6 @@ def frames(kind: str, ph: list[Phrase], start: int, n: int, w: int, h: int, font
         return t33_frames(ph, start, n, w, h, font, pal.text, pal.accent, pal.base, fps, bpm)
     if kind == "T34":
         return t34_frames(ph, start, n, w, h, font, pal.text, script)
+    if kind == "T31":
+        return t31_frames(ph, start, n, w, h, font, pal.base, pal.text, pal.accent, fps)
     return t30_frames(ph, start, n, w, h, font, pal.text)

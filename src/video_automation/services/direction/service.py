@@ -12,6 +12,7 @@
 import asyncio
 import json
 import math
+import random
 import re
 import shutil
 from collections.abc import Iterable
@@ -27,6 +28,7 @@ from video_automation.app.logging import get_logger
 from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import (
+    Asset,
     AudioFile,
     Project,
     Script,
@@ -102,9 +104,10 @@ from video_automation.services.direction.plan import (
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
 from video_automation.services.rendering import flower as fl
+from video_automation.services.rendering import numbers, word_icon
 from video_automation.services.rendering import t_extras as tx
 from video_automation.services.rendering import text_scenes as tscn
-from video_automation.services.rendering.card import card_layout
+from video_automation.services.rendering.card import card_layout, text_width
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
 from video_automation.services.rendering.lower_third import draw_lower_third
 from video_automation.services.rendering.lower_third import schedule as lower_third_schedule
@@ -332,6 +335,16 @@ T38_PURPOSES = frozenset(
     }
 )  # fmt: skip
 T38_SCALE = 1.15
+# 統合版 T35: 強調テロップの 2 桁以上の半角数字を回す用途
+T35_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE, Purpose.PRODUCT})
+_T35_NUM = re.compile(r"[0-9]{2,}")
+# 統合版 T28: 語が図に変わる用途と、強調テロップの入りの長さ（この後 12f 静止して変える）
+T28_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS})
+T28_ENTER = 10
+# 統合版 F3: 子ども向けで縁をふるわせるクリップ（役割）と、ずらす量（1080p の px）
+F3_ROLES = frozenset({"card", "keyword"})
+F3_PX = 1.5
+F3_MAX = 40
 
 
 def t38_hit(line_text: str, phrase: str, query: dict[str, Any] | None, strike: bool = True) -> bool:
@@ -1171,6 +1184,140 @@ class DirectionService:
             )
         return notes
 
+    async def _roll_card(
+        self, project_id: str, kreq: CardRequest, still: AssetRead, n: int, fps: float
+    ) -> AssetRead:
+        """統合版 T35: 強調テロップのカードを、数字が回ってから止まる画の列（n フレーム）にする。"""
+        from PIL import Image
+
+        text = kreq.heading
+        k = numbers.roll_frames_count(text)
+        work = (
+            self.settings.data_dir / "projects" / project_id / "assets" / f"t35_{uuid4().hex[:8]}"
+        )
+        work.mkdir(parents=True, exist_ok=True)
+        imgs: list[Any] = []
+        try:
+            shown: dict[str, Any] = {}
+            for f in range(min(k, n)):
+                t = numbers.roll_text(text, f)
+                if t not in shown:
+                    out = work / f"{len(shown):03d}.png"
+                    await self.titles.card_png(kreq.model_copy(update={"heading": t}), out)
+                    shown[t] = await asyncio.to_thread(
+                        lambda p_=out: Image.open(p_).convert("RGBA")
+                    )
+                imgs.append(shown[t])
+        except Exception:  # noqa: BLE001 - 回せないときは止まった数字のまま
+            await asyncio.to_thread(shutil.rmtree, work, True)
+            return still
+        final = await asyncio.to_thread(
+            lambda: Image.open(self.settings.data_dir / still.path).convert("RGBA")
+        )
+        size = final.size
+
+        def gen() -> Any:
+            for im in imgs:
+                yield im if im.size == size else im.resize(size)
+            for _ in range(n - len(imgs)):
+                yield final
+
+        a = await self._overlay(project_id, gen(), f"数字が回る（T35）「{text[:12]}」", fps)
+        await asyncio.to_thread(shutil.rmtree, work, True)
+        return a
+
+    async def _morph_card(
+        self,
+        project_id: str,
+        kreq: CardRequest,
+        still: AssetRead,
+        icon: str,
+        n: int,
+        fps: float,
+        w: int,
+        h: int,
+        main: str,
+    ) -> AssetRead:
+        """統合版 T28: 強調テロップのカードの文字を、入りの後 12f 静止してから図に変える画の列。"""
+        from PIL import Image
+
+        layout = card_layout(kreq, w, h)
+        if not layout.lines:
+            return still
+        x0 = min(ln.x for ln in layout.lines)
+        y0 = min(ln.y for ln in layout.lines)
+        x1 = max(ln.x + text_width(ln.text, ln.size) for ln in layout.lines)
+        y1 = max(ln.y + round(ln.size * 1.15) for ln in layout.lines)
+        size = max(ln.size for ln in layout.lines)
+        card = await asyncio.to_thread(
+            lambda: Image.open(self.settings.data_dir / still.path).convert("RGBA")
+        )
+        box = (round(x0), round(y0), min(card.width - 1, round(x1)), min(card.height - 1, y1))
+        gen = word_icon.card_morph_frames(
+            card, box, kreq.heading, icon, n, T28_ENTER, size,
+            self.titles.font_path(kreq.font), main,
+        )  # fmt: skip
+        return await self._overlay(
+            project_id, gen, f"語が図に変わる（T28）「{kreq.heading[:12]}」", fps
+        )
+
+    async def _f3_cards(
+        self, project_id: str, cmds: list[Any], roles: dict[str, str], fps: float, h: int
+    ) -> None:
+        """統合版 F3（子ども向け）: カード・強調テロップの静止画を、3 コマごとに ±1.5px（1080p）の
+        乱数でずらす画の列に替える（線の点ごとではなく、画の全体をずらして近似する）。"""
+        from PIL import Image
+
+        targets = [
+            (i, c)
+            for i, c in enumerate(cmds)
+            if isinstance(c, AddClip) and roles.get(c.clip_id or "") in F3_ROLES
+            and (c.duration_frames or 0) > 0
+        ]  # fmt: skip
+        if not targets:
+            return
+        ids = {c.asset_id for _i, c in targets}
+        async with self.db.session_factory() as s:
+            rows = (await s.execute(select(Asset).where(Asset.id.in_(ids)))).scalars().all()
+            paths = {r.id: r.path for r in rows if r.kind == AssetKind.IMAGE.value}
+        px = F3_PX * h / 1080
+        made: dict[tuple[str, int], str] = {}
+        for i, c in targets[:F3_MAX]:
+            rel = paths.get(c.asset_id)
+            if rel is None:
+                continue
+            n = c.duration_frames or 0
+            key = (c.asset_id, n)
+            if key not in made:
+                im = await asyncio.to_thread(
+                    lambda r_=rel: Image.open(self.settings.data_dir / r_).convert("RGBA")
+                )
+                pad = max(1, math.ceil(px))
+                seed = sum(map(ord, c.asset_id))
+
+                def gen(im_: Any = im, n_: int = n, pad_: int = pad, seed_: int = seed) -> Any:
+                    from video_automation.services.rendering.n_marks import JITTER_STEP
+
+                    cache: dict[int, Any] = {}
+                    for f in range(n_):
+                        k = f // JITTER_STEP
+                        if k not in cache:
+                            rnd = random.Random(seed_ * 7919 + k)
+                            out = Image.new(
+                                "RGBA", (im_.width + 2 * pad_, im_.height + 2 * pad_), (0, 0, 0, 0)
+                            )
+                            out.alpha_composite(
+                                im_,
+                                (round(pad_ + rnd.uniform(-px, px)),
+                                 round(pad_ + rnd.uniform(-px, px))),
+                            )  # fmt: skip
+                            cache = {k: out}
+                        yield cache[k]
+
+                a = await self._overlay(project_id, gen(), "線のふるえ（F3）", fps)
+                made[key] = a.id
+            cmds[i] = c.model_copy(update={"asset_id": made[key]})
+
     async def _not_telops(
         self,
         project_id: str,
@@ -1224,8 +1371,7 @@ class DirectionService:
         h: int,
         font: str | None,
     ) -> list[tuple[int, int]]:
-        """統合版 T30・T32・T33・T34。文字だけの場面の区間を返す（字幕・強調テロップを出さない）。
-        T31（会社紹介の 3D の字組みを飛ぶカメラ）は作らない。"""
+        """統合版 T30〜T34。文字だけの場面の区間を返す（字幕・強調テロップを出さない）。"""
         from video_automation.services.build.bgm_prompts import BGM
 
         kind = tscn.KIND[prof.purpose.value]
@@ -3142,6 +3288,21 @@ class DirectionService:
                 scale=round(0.62 * ts * (T38_SCALE if hit38 else 1.0), 3),
             )
             a = await self.titles.card(kreq)
+            if (
+                prof is not None
+                and prof.purpose in T35_PURPOSES
+                and _T35_NUM.search(s.text)
+                and numbers.find_year(s.text) is None
+            ):  # 統合版 T35: 強調テロップの 2 桁以上の数字を回す
+                a = await self._roll_card(p.id, kreq, a, end - start, fps)
+            elif (
+                prof is not None
+                and prof.purpose in T28_PURPOSES
+                and (ic := word_icon.icon_for(s.text)) is not None
+                and end - start > T28_ENTER + word_icon.HOLD + word_icon.MORPH + 6
+            ):  # 統合版 T28: 強調テロップの語が図に変わる
+                a = await self._morph_card(p.id, kreq, a, ic, end - start, fps, w, h,
+                                           prof.palette.main)  # fmt: skip
             texts.append(text_use("keyword", kreq, a, w, h, sec(start), sec(end)))
             aw, ah = a.width or 1, a.height or 1
             # 右上に置く（左上は章の見出しの場所。layout-no-overlap の「補助」の枠）
@@ -3579,6 +3740,8 @@ class DirectionService:
                 no_subs += [(x.start, x.end) for x in lines if hc_.is_intertitle(x.text)]
             if prof.purpose in (Purpose.TRAILER, Purpose.STORY):  # T44: 最初の台詞
                 no_subs.append((lines[0].start, lines[0].end))
+        if prof is not None and prof.purpose == Purpose.KIDS:  # 統合版 F3: カード・図の縁のふるえ
+            await self._f3_cards(p.id, cmds, roles, fps, h)
         res = await self.timeline.submit(
             p.id,
             CommandRequest(

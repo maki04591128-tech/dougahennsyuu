@@ -72,3 +72,35 @@ def test_marker_on_last_sentence():
     marks = [ln for ln in s.splitlines() if ",Marker," in ln and ln.startswith("Dialogue:")]
     assert len(marks) == 1 and "まとめの文です" in marks[0] and "\\t(" in marks[0]
     assert "Style: Marker," not in build_ass(cues, Fraction(30), 1280, 720, st)
+
+
+def test_t31_camera_flies_to_each_phrase_then_pulls_back():
+    """統合版 T31: 文節の頭にその文節の正面へ寄り（幅 70%）、最後の 1.5 秒で全部を 90% に収める。"""
+    from video_automation.services.rendering import text_scenes as ts
+
+    assert ts.KIND["corporate"] == "T31"
+    ph = [
+        ts.Phrase("私たちは", 0, 30),
+        ts.Phrase("未来を", 30, 60),
+        ts.Phrase("つくる", 60, 120, True),
+    ]
+    lay = ts.t31_layout(ph, 320, 180, None)
+    assert lay[1]["x"] == 0.6 * 320 and lay[1]["z"] == -0.3 * 320 and lay[1]["y"] == -0.15 * 180
+    fr = list(ts.t31_frames(ph, 0, 120, 320, 180, None, "#FFFFFF", "#000000", "#FF0000", 30))
+    assert len(fr) == 120
+
+    def ink_box(im):
+        m = im.convert("L").point(lambda v: 255 if v < 200 else 0)
+        return m.getbbox()
+
+    b = ink_box(fr[25])  # 1 つ目の文節の正面: 幅は画面の 70% 前後・中央
+    assert b is not None and 0.55 * 320 < b[2] - b[0] < 0.8 * 320
+    assert abs((b[0] + b[2]) / 2 - 160) < 20
+    last = fr[-1]  # 引き: 全部が画面の幅の 90% ほどに収まる
+    b2 = ink_box(last)
+    assert b2 is not None and b2[0] >= 0 and b2[2] <= 320 and b2[2] - b2[0] > 0.6 * 320
+    assert any(
+        last.getpixel((x, y))[0] > 200 and last.getpixel((x, y))[1] < 80
+        for x in range(320)
+        for y in range(180)
+    )  # 最後の文節は accent

@@ -330,6 +330,11 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         (x.get("animation") or {}).get("preset") for x in tl["clips"] if x["track_id"] == txt
     ]
     assert presets.count("pop_in_soft") == 2, presets  # 解説の pop は控えめ（統合版 B2）
+    # 統合版 T35: 解説の強調テロップの 2 桁以上の数字は、回ってから止まる画の列にする
+    names_ = {a["id"]: a["name"] for a in tl["assets"]}
+    rolled = [names_[x["asset_id"]] for x in tl["clips"] if x["track_id"] == txt
+              and names_[x["asset_id"]].startswith("数字が回る（T35）")]  # fmt: skip
+    assert rolled, sorted(names_.values())
     rec = (await c.app.state.container.design.manifest(pid)).colors
     assert "#4CB3E6" in rec and "#F2B544" in rec
 
@@ -1921,3 +1926,34 @@ async def test_lecture_marker_on_last_subtitle(dclient, tmp_path):
         await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "n.ass")
     ).read_text("utf-8-sig")
     assert ",Marker," not in ass
+
+
+async def test_keyword_word_turns_into_icon_t28(dclient):
+    """統合版 T28: 解説の強調テロップが辞書の語（電池）を含むと、入りの後に図へ変わる画の列になる。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "今日はスマホの電池の話をします。"},
+        {"speaker": "B", "text": "電池を長持ちさせるコツを三つ紹介しますね。"},
+        {"speaker": "A", "text": "まずは画面の明るさを下げましょう。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    plan = {"title": "", "shots": [{"kind": "keyword", "from_line": 2, "text": "電池を長持ち"}]}
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    used = [names[x["asset_id"]] for x in tl["clips"]]
+    assert any(n.startswith("語が図に変わる（T28）") for n in used), used
+
+
+async def test_kids_cards_tremble_f3(dclient):
+    """統合版 F3: 子ども向けのカード・強調テロップは、3 コマごとにずれる画の列にする。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    tl, by = await _apply(c, pid, sid, "kids")
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    shaky = [x for r in ("card", "keyword") for x in by.get(r, [])]
+    assert shaky and all(names[x["asset_id"]] == "線のふるえ（F3）" for x in shaky)
+    tl2, by2 = await _apply(c, pid, sid, "explainer")
+    names2 = {a["id"]: a["name"] for a in tl2["assets"]}
+    assert all(names2[x["asset_id"]] != "線のふるえ（F3）" for x in by2.get("card", []))

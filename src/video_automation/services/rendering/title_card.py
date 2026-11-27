@@ -443,14 +443,25 @@ class TitleCardService:
 
     # ---------- 情報カード（FFmpeg で静止画を作る） ----------
     async def card(self, req: CardRequest) -> AssetRead:
+        if self.font_path(req.font) is None:
+            raise RuntimeError("no Japanese font found (set title_font_path)")
+        out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"card_{uuid4().hex[:8]}.png"
+        await self.card_png(req, out)
+        label = req.heading or (req.body[0] if req.body else "")
+        asset = await self.timeline.register_generated(
+            req.project_id, out, AssetKind.IMAGE, "ffmpeg", f"カード「{label[:20]}」"
+        )
+        return AssetRead.model_validate(asset)
+
+    async def card_png(self, req: CardRequest, out: Path) -> None:
+        """カードの透過 PNG を out に書く（素材には登録しない。T35 の回る数字の画の列に使う）。"""
         w, h, _, _ = await self._project(req.project_id)
         font = self.font_path(req.font)
         if font is None:
             raise RuntimeError("no Japanese font found (set title_font_path)")
         layout = card_layout(req, w, h)
-        out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"card_{uuid4().hex[:8]}.png"
         with tempfile.TemporaryDirectory(prefix="va_card_") as tmp:
             vf = card_filter(req, layout, Path(font), Path(tmp))
             await self.ffmpeg.run(
@@ -474,11 +485,6 @@ class TitleCardService:
         look = await self._look(req.project_id)
         if look in Y_SURFACES:
             await asyncio.to_thread(card_surface, out, Y_SURFACES[look], h, req.only_item)
-        label = req.heading or (req.body[0] if req.body else "")
-        asset = await self.timeline.register_generated(
-            req.project_id, out, AssetKind.IMAGE, "ffmpeg", f"カード「{label[:20]}」"
-        )
-        return AssetRead.model_validate(asset)
 
 
 def _paste_icon(path: Path, name: str, box: tuple[int, int, int], color: str) -> None:
