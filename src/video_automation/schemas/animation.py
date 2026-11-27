@@ -115,6 +115,8 @@ class TransitionType(StrEnum):
     WIPE_LEFT = "wipe_left"  # 左から右へ拭うように現れる
     WIPE_RIGHT = "wipe_right"
     ZOOM_IN = "zoom_in"  # 少し大きい状態から縮みながら現れる
+    WHIP = "whip"  # 統合版 E7: 右から 6f で飛び込む（easeInOutCubic）
+    ZOOM_PUNCH = "zoom_punch"  # 統合版 E8: 0.7 倍から 1 倍へ 5f（easeOutCubic）
 
 
 class Transition(BaseModel):

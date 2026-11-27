@@ -13,6 +13,7 @@ import asyncio
 import json
 import math
 import re
+import shutil
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -32,6 +33,8 @@ from video_automation.schemas.animation import (
     Easing,
     InfographicRequest,
     Keyframe,
+    Transition,
+    TransitionType,
 )
 from video_automation.schemas.design import Component, DesignProfile, Purpose
 from video_automation.schemas.direction import (
@@ -195,7 +198,9 @@ ITEM_TRACK, LOWER_THIRD_TRACK = "演出・項目", "演出・名前帯"
 PART_TRACK, STEP_TRACK = "演出・部品", "演出・手順"  # 統合版 P4・P5・P8
 SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合版 Q4
 WAVE_TRACK = "演出・波形"  # 統合版 P2
+CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
 EXTRA_TRACKS = (
+    CUT_TRACK,
     ITEM_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
@@ -277,6 +282,7 @@ def title_entrance(prof: DesignProfile | None, title: str, kinetic: bool) -> str
     return a
 
 
+from video_automation.services.direction import transitions as tz  # noqa: E402
 from video_automation.services.rendering.backgrounds import PURPOSE_BACKGROUND  # noqa: E402
 
 BACKGROUND_NAMES = {
@@ -817,6 +823,79 @@ class DirectionService:
             project_id, out, AssetKind.IMAGE, "pillow", f"背景（{style}）"
         )
         return AssetRead.model_validate(a)
+
+    async def _cut_transitions(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        cmds: list[Any],
+        fig_t: str,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        lane: Any,
+    ) -> list[str]:
+        """統合版 E6〜E10。cmds の図のトラックのクリップの境目に切り替えを足す。"""
+        kind = tz.PURPOSE_TRANSITION[prof.purpose.value]
+        figs = [c for c in cmds if isinstance(c, AddClip) and c.track_id == fig_t]
+        ends = {c.start_frame + (c.duration_frames or 0) for c in figs}
+        heads = {c.start_frame: c for c in figs if c.start_frame in ends}
+        cuts = tz.pick_cuts(list(heads), fps, total, prof.purpose.value)
+        if not cuts:
+            return []
+        if kind in tz.ENTRANCE:
+            name, n = tz.ENTRANCE[kind]
+            for b in cuts:
+                cid = heads[b].clip_id
+                if cid:
+                    cmds.append(
+                        SetClipAnimation(
+                            clip_id=cid,
+                            transition=Transition(type=TransitionType(name), duration_frames=n),
+                        )
+                    )
+            return []
+        n, at = tz.OVERLAY[kind], tz.CUT_AT[kind]
+        pal = prof.palette
+        cols = [pal.main, pal.accent, pal.chart[1] if len(pal.chart) > 1 else pal.base2]
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tid = None
+        last_end = -1
+        for k, b in enumerate(cuts):
+            start = b - at
+            if start < 0 or start + n > total or start < last_end:
+                continue
+            frames_ = await asyncio.to_thread(tz.overlay_frames, kind, w, h, cols, k)
+            work = out_dir / f"cut_{kind}_{uuid4().hex[:8]}"
+            work.mkdir(parents=True, exist_ok=True)
+            # 最後に透明の 1 枚を足す（動画の長さの丸めで 1 フレーム足りなくならないように）
+            from PIL import Image
+
+            for i, fr in enumerate([*frames_, Image.new("RGBA", (w, h), (0, 0, 0, 0))]):
+                await asyncio.to_thread(fr.save, work / f"{i:03d}.png")
+            mov = work.with_suffix(".mov")
+            await self.ffmpeg.run(
+                ["-y", "-framerate", f"{fps:.6f}", "-i", str(work / "%03d.png"),
+                 "-c:v", "png", "-pix_fmt", "rgba", str(mov)]
+            )  # fmt: skip
+            await asyncio.to_thread(shutil.rmtree, work, True)
+            row = await self.timeline.register_generated(
+                project_id, mov, AssetKind.VIDEO, "pillow", f"切り替え（{kind}）"
+            )
+            tid = tid or lane(CUT_TRACK)
+            cmds.append(
+                AddClip(
+                    track_id=tid,
+                    asset_id=row.id,
+                    start_frame=start,
+                    duration_frames=n,
+                    clip_id=str(uuid4()),
+                )
+            )
+            last_end = start + n
+        return []
 
     async def _r_background(
         self, project_id: str, prof: DesignProfile, w: int, h: int
@@ -1739,6 +1818,10 @@ class DirectionService:
                         max_h=0.12,
                     ),
                 )
+        # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
+        if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:
+            skipped += await self._cut_transitions(p.id, prof, cmds, fig_t, total, fps, w, h, lane)
+
         if es:  # 終了画面（まとめの文字と、YouTube の要素を置く場所の目安の枠）
             out = (
                 Path(self.settings.data_dir)

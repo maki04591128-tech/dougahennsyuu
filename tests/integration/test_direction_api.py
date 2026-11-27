@@ -1052,3 +1052,36 @@ async def test_translated_subtitles_written_separately(dclient):
     assert res.path.endswith(f"{sid}.en.srt") and res.cue_count == n
     assert "Hi." in res.content and res.warnings and "20" in res.warnings[0]
     assert all(len(x) <= 42 for x in res.content.splitlines())
+
+
+async def test_cut_transitions_by_purpose(dclient):
+    """統合版 E6（解説）・E7（Vlog）: 図のショットが替わる所に用途の切り替え。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import AddClip, SetClipAnimation
+    from video_automation.services.design.profiles import PROFILES
+
+    c = dclient
+    pid, _ = await _ready_script(c)
+    d = c.app.state.container.direction
+
+    def shots():
+        return [
+            AddClip(track_id="fig", asset_id="a", start_frame=0, duration_frames=300, clip_id="x"),
+            AddClip(
+                track_id="fig", asset_id="a", start_frame=300, duration_frames=300, clip_id="y"
+            ),
+            AddClip(track_id="txt", asset_id="a", start_frame=600, duration_frames=30, clip_id="z"),
+        ]
+
+    cmds = shots()
+    await d._cut_transitions(pid, PROFILES[Purpose.EXPLAINER], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut")  # fmt: skip
+    (ov,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "cut"]
+    assert (ov.start_frame, ov.duration_frames) == (300 - 9, 16)
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    assert any(a["name"] == "切り替え（E6）" and a["kind"] == "video" for a in tl["assets"])
+    cmds = shots()
+    await d._cut_transitions(pid, PROFILES[Purpose.VLOG], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut")  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation)]
+    assert an.clip_id == "y" and an.transition.type == "whip" and an.transition.duration_frames == 6

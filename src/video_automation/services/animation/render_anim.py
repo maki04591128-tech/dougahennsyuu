@@ -30,6 +30,7 @@ SLIDE_DIR = {
     TransitionType.SLIDE_RIGHT: (-1, 0),
     TransitionType.SLIDE_UP: (0, 1),  # 下から入って上へ
     TransitionType.SLIDE_DOWN: (0, -1),
+    TransitionType.WHIP: (1, 0),  # 統合版 E7（緩急は easeInOutCubic）
 }
 EXTENDS_PREVIOUS = {
     TransitionType.DISSOLVE,
@@ -40,6 +41,7 @@ EXTENDS_PREVIOUS = {
     TransitionType.WIPE_LEFT,
     TransitionType.WIPE_RIGHT,
     TransitionType.ZOOM_IN,
+    TransitionType.WHIP,
 }
 
 
@@ -125,6 +127,9 @@ def clip_filters(
     if tran and tran.type == TransitionType.ZOOM_IN and d > 0:
         u = f"min(max({tt}/{num(d)},0),1)"
         scale_terms.append(f"(1.15-0.15*{ease(u, Easing.EASE_OUT)})")
+    if tran and tran.type == TransitionType.ZOOM_PUNCH and d > 0:  # 統合版 E8
+        u = f"min(max({tt}/{num(d)},0),1)"
+        scale_terms.append(f"(0.7+0.3*{ease(u, Easing.CUBIC_OUT)})")
     if scale_terms:
         s = "*".join(scale_terms)
         out.resize.append(
@@ -146,9 +151,9 @@ def clip_filters(
             u = f"min(max({gt}/{num(d)},0),1)"
             cond = "lte(X,W*{u})" if tran.type == TransitionType.WIPE_LEFT else "gte(X,W*(1-{u}))"
             alpha_terms.append(cond.format(u=ease(u, Easing.EASE_IN_OUT)))
-        elif tran.type not in SLIDE_DIR:
+        elif tran.type not in SLIDE_DIR and tran.type != TransitionType.ZOOM_PUNCH:
             alpha_terms.append(f"min(max({gt}/{num(half)},0),1)")
-        if tran.type not in SLIDE_DIR:
+        if tran.type not in SLIDE_DIR and tran.type != TransitionType.ZOOM_PUNCH:
             wins.append((0.0, d))
         out.audio_fade_in_sec = half
     if alpha_terms:
@@ -172,7 +177,8 @@ def clip_filters(
     if tran and tran.type in SLIDE_DIR and d > 0:
         sx, sy = SLIDE_DIR[tran.type]
         u = f"min(max({to}/{num(d)},0),1)"
-        rest = f"(1-{ease(u, Easing.EASE_OUT)})"
+        e_ = Easing.CUBIC_IN_OUT if tran.type == TransitionType.WHIP else Easing.EASE_OUT
+        rest = f"(1-{ease(u, e_)})"
         if sx:
             dx.append(f"{sx}*{rest}")
         if sy:

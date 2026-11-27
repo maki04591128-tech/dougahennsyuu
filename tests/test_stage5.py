@@ -640,3 +640,32 @@ def test_title_entrances_render(tmp_path):
     # 叩きつける: 最初は 3 倍で画面からはみ出すほど大きく、着地後は元の大きさ
     assert ink["slam"][0] > ink["slam"][-1] * 2
     assert abs(ink["decode"][-1] - ink["mask_rise"][-1]) < ink["decode"][-1] * 0.05
+
+
+def test_cut_transition_filters_and_overlays():
+    """統合版 E7・E8: 次のショットの入り。E6・E9・E10: 重ねる透過の動画。"""
+    from fractions import Fraction
+
+    from video_automation.schemas.animation import ClipAnimation, Transition, TransitionType
+    from video_automation.services.animation.render_anim import clip_filters
+    from video_automation.services.direction import transitions as tz
+
+    def f(t):
+        anim = ClipAnimation(transition_in=Transition(type=t, duration_frames=6))
+        return clip_filters(
+            anim, fps=Fraction(30), k=0.0, off=0.0, clip_sec=3.0, src_size=(640, 360),
+            canvas=(640, 360), is_image=True,
+        )  # fmt: skip
+
+    whip = f(TransitionType.WHIP)
+    assert whip.dx and not whip.post  # 右から飛び込む（不透明度は変えない）
+    punch = f(TransitionType.ZOOM_PUNCH)
+    assert any("0.7+0.3" in x for x in punch.resize) and not punch.post
+    fr = tz.shape_wipe(64, 36, ["#ff0000", "#00ff00", "#0000ff"])
+    assert len(fr) == tz.OVERLAY["E6"]
+    alpha = [im.getchannel("A").getextrema()[1] for im in fr]
+    assert alpha[0] == 0 and alpha[-1] == 0  # 始まりと終わりは透明
+    full = fr[tz.CUT_AT["E6"]].getchannel("A")
+    assert full.getextrema()[0] == 255  # 下の画が替わるフレームは全面を覆う
+    assert len(tz.light_leak(64, 36)) == 12 and len(tz.glitch(64, 36, [], 1)) == 6
+    assert tz.pick_cuts([10, 600, 1300, 1900, 1950], 30, 3000, "explainer") == [10, 1900]
