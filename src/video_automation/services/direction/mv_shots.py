@@ -1,4 +1,4 @@
-"""MV のショットとカット（統合版 段階5b: V1・V2・V3・V7・V8・V12）。
+"""MV のショットとカット（統合版 段階5b: V1・V2・V3・V6・V7・V8・V11・V12）。
 
 1 枚の絵（利用者の画像。透明の部分があれば切り抜きとして使う）から 8 種のショットを作り、
 曲のセクションごとの拍の単位でカットを並べる。
@@ -7,6 +7,9 @@
 - V2 カットの間隔（拍）と順は下の SECTION_CUTS。1 拍が 0.34 秒未満（BPM 176 超）なら 1 拍を 2 拍に
 - V8 一瞬のカット: M1 のピークに 2f、1 秒に最大 1 回。奇数番目は色相 180°、偶数番目はピクセルソート
 - V12 配色: ジャンルごとの主色（切り抜きと面・グリッドの地）
+- V6 インクの転換: 各サビの最初のカットで、前のショットに雑音のしきい値で穴をあけて次を現す（10f）
+- V11 モチーフの対: 各サビの直前の 1 小節を主色の面にし、白と黒の同じ形を左右の鏡像で置いて、
+  小節の最後の拍で中央に重ねる。形は歌詞から LLM が選ぶ（選べないときは円）
 
 立ち絵の部品（「!目」「!口」）を使う寄りは、立ち絵の画像の取り出しを作るときに足す。
 """
@@ -31,6 +34,7 @@ SHOT_LABEL = {
     "cutout": "切り抜きと面",
     "grid": "グリッド",
     "flash": "一瞬のカット",
+    "plane": "単色の面",  # V11 の形を置く面（カットの計画には出てこない）
 }
 # セクション → (カットの間隔の拍, ショットの順)。サビは別の決まり（CHORUS_*）
 SECTION_CUTS: dict[str, tuple[int, tuple[str, ...]]] = {
@@ -237,6 +241,8 @@ def shot_image(
             for c in range(4):
                 g.alpha_composite(cell, (c * (w // 4), r * (h // 4)))
         return g
+    if shot == "plane":  # V11 の下の V3 の面（主色だけ）
+        return Image.new("RGBA", (w, h), (*_rgb(main), 255))
     if shot == "flash":  # V8
         base = shot_image(src, "full", w, h, main, ink).convert("RGB")
         return (hue_rotate(base) if k % 2 == 0 else pixel_sort(base)).convert("RGBA")
@@ -296,7 +302,7 @@ def save_shot(
         ImageOps.exif_transpose(im).load()
         src_im = ImageOps.exif_transpose(im)
         shot_im = shot_image(src_im, shot, w, h, main, ink, k)
-        if look and shot not in ("silhouette", "grid", "flash"):  # 統合版 V4
+        if look and shot not in ("silhouette", "grid", "flash", "plane"):  # 統合版 V4
             cut_a = None
             if shot == "cutout" and has_cutout(src_im.convert("RGBA")):
                 cut_a = _cutout_alpha(src_im, w, h)
@@ -406,3 +412,252 @@ def letterbox_spans(
             else:
                 out.append((a, b))
     return [(a, min(b, total_sec)) for a, b in out if b > a]
+
+
+# ---------------- V6 マットの転換（インク） ----------------
+
+INK_FRAMES = 10
+INK_EDGE_PX = 6  # 1080p
+INK_SCALE = 4.0  # Noise Texture の Scale
+INK_DETAIL = 6  # 重ねる細かさの段数
+
+
+def ink_noise(w: int, h: int, seed: int = 0) -> np.ndarray:
+    """V6 の雑音（0〜1、w×h）。粗い格子の雑音を 6 段重ね、値の順位で 0〜1 に均す。
+
+    均すので、しきい値を 0→1 に動かすと現れる面積がしきい値に比例する。
+    """
+    rng = np.random.default_rng(seed)
+    acc = np.zeros((h, w), np.float32)
+    amp = 1.0
+    for o in range(INK_DETAIL + 1):
+        n = round(INK_SCALE * 2**o)
+        gw, gh = max(2, n * w // max(w, h) + 1), max(2, n * h // max(w, h) + 1)
+        g = Image.fromarray((rng.random((gh, gw)) * 255).astype(np.uint8), "L")
+        acc += amp * np.asarray(g.resize((w, h), Image.Resampling.BICUBIC), np.float32) / 255.0
+        amp *= 0.5
+    order = acc.ravel().argsort(kind="stable")
+    rank = np.empty(order.size, np.float32)
+    rank[order] = np.arange(order.size, dtype=np.float32) / max(1, order.size - 1)
+    return rank.reshape(h, w)
+
+
+def _expo_out(u: float) -> float:
+    return 1.0 if u >= 1.0 else 1.0 - 2.0 ** (-10.0 * u)
+
+
+def ink_thresholds(n: int = INK_FRAMES) -> list[float]:
+    """各フレームのしきい値（EXPO EASE_OUT で 0→1）。最後のフレームは全部現れるので含めない。"""
+    return [_expo_out(k / n) for k in range(n)]
+
+
+def camera_view(img: Image.Image, shot: str, n: int, fps: float) -> Image.Image:
+    """ショットの最後のフレームに見えている画（camera と同じズーム・パンを当てる）。"""
+    keys = camera(shot, n, fps)
+    if not keys:
+        return img
+    k = keys[-1]
+    z = max(1.0, k.zoom if k.zoom is not None else 1.0)
+    px = k.pan_x if k.pan_x is not None else 0.0
+    py = k.pan_y if k.pan_y is not None else 0.0
+    w, h = img.size
+    vw, vh = w / z, h / z
+    x0, y0 = (w - vw) * (0.5 + 0.5 * px), (h - vh) * (0.5 + 0.5 * py)
+    return img.crop((round(x0), round(y0), round(x0 + vw), round(y0 + vh))).resize(
+        (w, h), Image.Resampling.BICUBIC
+    )
+
+
+def _dilate(mask: np.ndarray, e: int) -> np.ndarray:
+    """真偽の画を一辺 2e+1 の正方形で太らせる（行と列に分けて、ずらした最大を取る）。"""
+    out = mask.copy()
+    for d in range(1, e + 1):
+        out[d:, :] |= mask[:-d, :]
+        out[:-d, :] |= mask[d:, :]
+    col = out.copy()
+    for d in range(1, e + 1):
+        out[:, d:] |= col[:, :-d]
+        out[:, :-d] |= col[:, d:]
+    return out
+
+
+def ink_frames(
+    prev: Image.Image, edge_color: str, seed: int = 0, n: int = INK_FRAMES
+) -> list[Image.Image]:
+    """V6: 前のショットを、雑音のしきい値で穴をあけていく透過の画（n 枚）。
+
+    下の次のショットが穴から現れる。穴の縁に文字の色の線（幅 6px・1080p）。
+    """
+    w, h = prev.size
+    noise = ink_noise(w, h, seed)
+    e = max(1, round(INK_EDGE_PX * h / 1080))
+    base = np.asarray(prev.convert("RGBA")).copy()
+    ec = np.array([*_rgb(edge_color), 255], np.uint8)
+    out = []
+    for t in ink_thresholds(n):
+        hole_a = noise < t
+        grown_a = _dilate(hole_a, e) if t > 0 else hole_a
+        px = base.copy()
+        px[grown_a & ~hole_a] = ec
+        px[hole_a, 3] = 0
+        out.append(Image.fromarray(px, "RGBA"))
+    return out
+
+
+def chorus_heads(spans: list[tuple[float, float, str]], beats: list[float]) -> list[int]:
+    """各サビの頭に最も近い拍の番号（前の行がサビでない所だけ）。"""
+    out: list[int] = []
+    prev = ""
+    for a, _, s in spans:
+        sec = "chorus" if s in ("chorus", "chorus_first") else s
+        if sec == "chorus" and prev != "chorus" and beats:
+            out.append(int(np.argmin([abs(b - a) for b in beats])))
+        prev = sec
+    return out
+
+
+def chorus_entries(
+    cuts: list[Cut], spans: list[tuple[float, float, str]], beats: list[float], fps: float
+) -> list[int]:
+    """V6 を入れるカットの番号: 各サビの頭の拍で始まるカット（前にカットがあり、10f 以上）。
+
+    サビの頭は V11 と同じ拍（行の始まりに最も近い拍）。半拍より離れたカットしか無ければ入れない。
+    """
+    if len(beats) < 2 or not cuts:
+        return []
+    half = float(np.median(np.diff(beats))) * fps / 2
+    out: list[int] = []
+    for i in chorus_heads(spans, beats):
+        f = round(beats[i] * fps)
+        j = min(range(len(cuts)), key=lambda j: abs(cuts[j].start - f))
+        c = cuts[j]
+        if j > 0 and abs(c.start - f) <= half and c.end - c.start >= INK_FRAMES:
+            if c.shot != "flash" and (not out or out[-1] != j):
+                out.append(j)
+    return out
+
+
+# ---------------- V11 モチーフの対 ----------------
+
+MOTIF_SHAPES = ("circle", "star", "heart", "diamond", "triangle", "cross")
+MOTIF_LABEL = {
+    "circle": "円",
+    "star": "星",
+    "heart": "ハート",
+    "diamond": "ひし形",
+    "triangle": "三角",
+    "cross": "十字",
+}
+MOTIF_SIZE = 0.30  # 形の高さ（画面の高さに対する比）
+MOTIF_OFFSET = 0.22  # 小節の頭の、中央からの横のずれ（画面の幅に対する比）
+MOTIF_WHITE, MOTIF_BLACK = "#FFFFFF", "#111111"
+
+
+def _shape_points(shape: str, s: float) -> list[tuple[float, float]]:
+    """形の輪郭（0〜s の四角の中）。非対称の形（三角）は右に向く。"""
+    import math
+
+    c = s / 2
+    if shape == "diamond":
+        return [(c, 0), (s, c), (c, s), (0, c)]
+    if shape == "triangle":
+        return [(0, 0), (s, c), (0, s)]
+    if shape == "cross":
+        a, b = s * 0.34, s * 0.66
+        return [
+            (a, 0),
+            (b, 0),
+            (b, a),
+            (s, a),
+            (s, b),
+            (b, b),
+            (b, s),
+            (a, s),
+            (a, b),
+            (0, b),
+            (0, a),
+            (a, a),
+        ]
+    if shape == "star":
+        pts = []
+        for i in range(10):
+            r = c if i % 2 == 0 else c * 0.42
+            ang = -math.pi / 2 + i * math.pi / 5
+            pts.append((c + r * math.cos(ang), c + r * math.sin(ang)))
+        return pts
+    if shape == "heart":
+        pts = []
+        for i in range(120):
+            t = 2 * math.pi * i / 120
+            x = 16 * math.sin(t) ** 3
+            y = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+            pts.append((c + x / 34 * s, c - y / 34 * s - s * 0.03))
+        return pts
+    raise ValueError(shape)
+
+
+def motif_image(shape: str, color: str, w: int, h: int, mirror: bool = False) -> Image.Image:
+    """V11 の形 1 つ（画面の大きさの透過 PNG。中央に置く）。mirror は左右の鏡像。"""
+    from PIL import ImageDraw
+
+    size = round(h * MOTIF_SIZE)
+    ss = 4  # 縁をなめらかにするため 4 倍で描いて縮める
+    big = Image.new("L", (size * ss, size * ss), 0)
+    d = ImageDraw.Draw(big)
+    if shape == "circle":
+        d.ellipse((0, 0, size * ss - 1, size * ss - 1), fill=255)
+    else:
+        d.polygon(_shape_points(shape, size * ss - 1), fill=255)
+    a = big.resize((size, size), Image.Resampling.LANCZOS)
+    if mirror:
+        a = ImageOps.mirror(a)
+    shp = Image.new("RGBA", (size, size), (*_rgb(color), 255))
+    shp.putalpha(a)
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    out.alpha_composite(shp, ((w - size) // 2, (h - size) // 2))
+    return out
+
+
+def motif_bars(
+    spans: list[tuple[float, float, str]], beats: list[float], fps: float
+) -> list[tuple[int, int, int]]:
+    """V11 を出す所: 各サビの直前の 1 小節。(始まり, 最後の拍, 終わり) のフレーム。
+
+    サビの頭の拍の 4 拍前から。前の小節が曲の頭より前、または前のサビと重なるときは出さない。
+    """
+    if len(beats) < 5:
+        return []
+    out: list[tuple[int, int, int]] = []
+    for i in chorus_heads(spans, beats):
+        if i >= 4:
+            f0, f3, f4 = (round(beats[i - k] * fps) for k in (4, 1, 0))
+            if f0 < f3 < f4 and (not out or f0 >= out[-1][2]):
+                out.append((f0, f3, f4))
+    return out
+
+
+def insert_planes(cuts: list[Cut], bars: list[tuple[int, int, int]]) -> list[Cut]:
+    """V11 の小節を、V3 の面（主色だけの止めの画）のカットに置き換える。"""
+    out = list(cuts)
+    for f0, _, f4 in bars:
+        nxt: list[Cut] = []
+        for c in out:
+            if c.end <= f0 or c.start >= f4:
+                nxt.append(c)
+                continue
+            if c.start < f0:
+                nxt.append(Cut(c.start, f0, c.shot))
+            if c.end > f4:
+                nxt.append(Cut(f4, c.end, c.shot))
+        nxt.append(Cut(f0, f4, "plane"))
+        out = sorted(nxt, key=lambda c: c.start)
+    return out
+
+
+def motif_keys(f0: int, f3: int, f4: int, side: int) -> list[Keyframe]:
+    """V11 の形の動き: 小節の頭は中央から横に MOTIF_OFFSET、最後の拍で中央に重なる。"""
+    return [
+        Keyframe(frame=0, x=side * MOTIF_OFFSET, easing=Easing.CUBIC_IN_OUT),
+        Keyframe(frame=f3 - f0, x=0.0),
+        Keyframe(frame=f4 - f0 - 1, x=0.0),
+    ]
