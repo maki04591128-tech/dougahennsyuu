@@ -58,6 +58,13 @@ def _rgba(hex_color: str) -> list[float]:
     return [_srgb_to_linear(int(h[i : i + 2], 16) / 255) for i in (0, 2, 4)] + [1.0]
 
 
+GLOSS_SEC = 25 / 30  # 統合版 L7: 820ms（25f）
+
+
+def gloss_frames(fps: float) -> int:
+    return max(4, round(GLOSS_SEC * fps))
+
+
 class TitleCardService:
     def __init__(
         self,
@@ -188,6 +195,12 @@ class TitleCardService:
         total = max(1, round(req.duration_sec * fps_num / fps_den))
         anim_sec = self.animation_seconds(req)
         rendered = min(total, max(1, round(anim_sec * fps_num / fps_den)))
+        gloss_at = 0
+        if req.gloss:  # 統合版 L7: 入りの後に光の帯を 25f（30fps）
+            gloss_at = rendered + 1
+            rendered = min(total, gloss_at + gloss_frames(fps_num / fps_den))
+            if rendered - gloss_at < 4:  # 表示が短すぎて通しきれないときは付けない
+                gloss_at, rendered = 0, min(total, max(1, round(anim_sec * fps_num / fps_den)))
         out_dir = self.settings.data_dir / "projects" / req.project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"title_{uuid4().hex[:8]}.mov"
@@ -209,6 +222,8 @@ class TitleCardService:
                     "position": req.position,
                     "output_dir": tmp,
                     "animation": req.animation,
+                    "gloss_at": gloss_at,
+                    "gloss_frames": gloss_frames(fps_num / fps_den),
                 },
             )
             if not result.get("frames"):

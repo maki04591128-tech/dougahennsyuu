@@ -618,9 +618,13 @@ _FINISH = {
     Purpose.LYRIC: (Component.GRAIN, Component.GLOW),
     Purpose.TRAILER: (Component.GRAIN, Component.GLOW, Component.HALATION),
 }
+# 統合版 2.3「使ってよい新しい演出」のうち、題名の光沢のスイープ（L7）
+_GLOSS = (Purpose.PRODUCT, Purpose.PROMO, Purpose.MV, Purpose.LYRIC, Purpose.TRAILER)
 for _p, _cs in _FINISH.items():
     for _c in _cs:
         PROFILES[_p].components[_c] = ANY
+for _p in _GLOSS:
+    PROFILES[_p].components[Component.GLOSS] = 1  # 題名に 1 回
 
 
 def profile(purpose: Purpose) -> DesignProfile:

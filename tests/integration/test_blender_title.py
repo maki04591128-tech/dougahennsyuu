@@ -45,6 +45,16 @@ async def test_title_card_creates_alpha_video_asset(tmp_path, media_settings, fa
             assert a["kind"] == "video" and a["source"] == "blender"
             assert (a["width"], a["height"]) == (320, 180) and abs(a["duration_sec"] - 1) < 0.1
             assert (await c.get("/render/engines")).json()["blender"]["version"] == "5.3.0"
+            # 統合版 L7: 光沢のスイープは入り（pop 12f）の後の 25f。動く部分を延ばして描く
+            r = await c.post(
+                "/assets/title_card",
+                json={"project_id": pid, "text": "光る", "duration_sec": 2, "gloss": True},
+            )
+            assert (await app.state.jobs.wait(r.json()["id"])).status == "SUCCEEDED"
+            import json
+
+            last = json.loads((tmp_path / "calls.jsonl").read_text().splitlines()[-1])
+            assert (last["gloss_at"], last["gloss_frames"], last["frames"]) == (13, 25, 38)
             bad = await c.post(
                 "/assets/title_card", json={"project_id": pid, "text": "x", "text_color": "red"}
             )

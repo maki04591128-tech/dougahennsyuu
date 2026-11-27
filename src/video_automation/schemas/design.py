@@ -79,6 +79,7 @@ class Component(StrEnum):
     GRAIN = "grain"  # M9: グレイン・周辺減光・色収差
     GLOW = "glow"  # L4: 明るい所の光のにじみ
     HALATION = "halation"  # L5: 赤いにじみ（フィルムの質感）
+    GLOSS = "gloss"  # L7: 題名を斜めの光の帯が 1 回通る
 
 
 # 部品の許可: 0=使わない、-1=制限なし、n>0=1 本の動画で n 回まで
