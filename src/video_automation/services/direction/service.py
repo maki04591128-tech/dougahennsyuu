@@ -210,6 +210,8 @@ PLACE_TRACK = "演出・場所"  # 統合版 H2
 MARK_TRACK = "手描きの印"  # 統合版 N12・N13（スライドの上。build が置く）
 CARD_MARK_TRACK = "演出・項目の印"  # 統合版 I1・N15
 CALLOUT_TRACK = "演出・特長の線"  # 統合版 P9
+MAP_TRACK = "演出・地図"  # 統合版 J1〜J3
+J_PURPOSES = {Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.EXPLAINER}
 TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
 TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
 BEHIND_TITLE = (TITLE_BACK_TRACK, TITLE_BACK2_TRACK, TITLE_RING_TRACK)  # 立ち絵と題名の下に置く
@@ -252,6 +254,7 @@ EXTRA_TRACKS = (
     ITEM_TRACK,
     CARD_MARK_TRACK,
     CALLOUT_TRACK,
+    MAP_TRACK,
     LOWER_THIRD_TRACK,
     PART_TRACK,
     STEP_TRACK,
@@ -1107,6 +1110,73 @@ class DirectionService:
             )
         return notes
 
+    async def _maps(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        shown: list[tuple[int, int]],
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        box: float,
+        cy: float,
+    ) -> list[str]:
+        """統合版 J1（国の塗り）・J2（地点へ寄る）・J3（経路の線）。地図は Natural Earth を初回に
+        取得する（取れなければ出さない）。地名が地図に無ければ出さない。"""
+        from video_automation.integrations.maps import natural_earth as ne
+        from video_automation.services.rendering import maps as mp
+
+        want = [x for x in lines if str(x.items.get("place") or "").strip()]
+        if not want:
+            return []
+        world = await asyncio.to_thread(ne.ensure, self.settings.data_dir)
+        if world is None:
+            return ["地図のデータ（Natural Earth）を取得できなかったので、地図を出しませんでした"]
+        pal = prof.palette
+        mpal = mp.Palette(pal.base, pal.surface, pal.text_muted, pal.accent)
+        fw, fh = max(2, round(w * box)) // 2 * 2, max(2, round(h * box)) // 2 * 2
+        tf = ClipTransform(fit=FitMode.FIT, scale=box, y=cy - 0.5)
+        used = list(shown)
+        track = None
+        notes: list[str] = []
+        one = round(fps)
+        for k_, ln in enumerate(want):
+            place = str(ln.items["place"]).strip()
+            nxt = want[k_ + 1].start if k_ + 1 < len(want) else total
+            start, end = ln.start, min(total, ln.end + one, nxt)
+            if end - start < one or any(a < end and start < b for a, b in used):
+                continue
+            got = await asyncio.to_thread(mp.frames_for, world, place, ln.text, fw, fh, mpal)
+            if got is None:
+                notes.append(f"地名「{place[:20]}」が地図に無いので、地図を出しませんでした")
+                continue
+            name, fr, still = got
+            track = track or lane(MAP_TRACK)
+            n_mov = min(len(fr), end - start)
+            mov = await self._overlay(project_id, fr[:n_mov], f"{name}「{place[:12]}」", fps)
+            c1 = str(uuid4())
+            cmds.append(AddClip(track_id=track, asset_id=mov.id, start_frame=start,
+                                duration_frames=n_mov, clip_id=c1, transform=tf))  # fmt: skip
+            cmds.append(SetClipAnimation(clip_id=c1, animation=ClipAnimation(keyframes=[
+                Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
+                Keyframe(frame=min(6, n_mov - 1), opacity=1.0)])))  # fmt: skip
+            if end - start > n_mov:
+                b = await self._png(project_id, still.convert("RGBA"), f"{name}「{place[:12]}」")
+                c2 = str(uuid4())
+                m = end - start - n_mov
+                cmds.append(AddClip(track_id=track, asset_id=b.id, start_frame=start + n_mov,
+                                    duration_frames=m, clip_id=c2, transform=tf))  # fmt: skip
+                if m > 8:
+                    cmds.append(SetClipAnimation(clip_id=c2, animation=ClipAnimation(keyframes=[
+                        Keyframe(frame=m - 7, opacity=1.0, easing=Easing.CUBIC_IN),
+                        Keyframe(frame=m - 1, opacity=0.0)])))  # fmt: skip
+            used.append((start, end))
+        return notes
+
     async def _callouts(
         self,
         project_id: str,
@@ -1434,6 +1504,7 @@ class DirectionService:
         # 統合版 段階5d: LLM が発話に付けた項目から出す部品（H2・N3・N10・P11）
         sa = safe_area_for(prof, w, h)
         placed_place: set[str] = set()
+        last_tag: AddClip | None = None
         for i, ln in enumerate(lines):
             it = ln.items
             end = min(total, ln.end + one_sec)
@@ -1443,7 +1514,19 @@ class DirectionService:
                 and pv in (Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.VLOG)
                 and pl not in placed_place
             ):
-                # H2: 左上に場所のタグ（4 秒。ピンが落ちる 8f）
+                # H2: 左上に場所のタグ（4 秒。ピンが落ちる 8f）。前のタグがまだ出ていれば、
+                # 次のタグの頭で前のタグを終える（同じトラックで重ねない）
+                if (
+                    last_tag is not None
+                    and last_tag.start_frame + (last_tag.duration_frames or 0) > ln.start
+                ):
+                    old_n = last_tag.duration_frames or 0
+                    # 同じ時刻に始まることは無い（発話の頭は 1 フレーム以上ずれる）
+                    keep = max(1, ln.start - last_tag.start_frame)
+                    cmds[cmds.index(last_tag)] = last_tag.model_copy(
+                        update={"duration_frames": keep}
+                    )
+                    shorten_animation(cmds, last_tag.clip_id, old_n, old_n - keep)
                 n = min(round(4 * fps), total - ln.start)
                 img = await asyncio.to_thread(nc.place_tag, w, h, pl[:20], font, pal.accent, ink)
                 a_ = await self._png(project_id, img, f"場所のタグ（H2）「{pl[:12]}」")
@@ -1451,9 +1534,10 @@ class DirectionService:
                 tf = native_transform(bw_, bh_, w, h, cx=sa.left + bw_ / w / 2,
                                       cy=sa.top + bh_ / h / 2, max_w=1.0)  # fmt: skip
                 cid = str(uuid4())
-                cmds.append(AddClip(track_id=lane(PLACE_TRACK), asset_id=a_.id,
-                                    start_frame=ln.start, duration_frames=n, clip_id=cid,
-                                    transform=tf))  # fmt: skip
+                last_tag = AddClip(track_id=lane(PLACE_TRACK), asset_id=a_.id,
+                                   start_frame=ln.start, duration_frames=n, clip_id=cid,
+                                   transform=tf)  # fmt: skip
+                cmds.append(last_tag)
                 if n > 14:
                     cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=[
                         Keyframe(frame=0, y=-20 / h, opacity=0.0, easing=Easing.BACK_OUT),
@@ -2724,6 +2808,13 @@ class DirectionService:
                         self.titles.font_path(heading_font), ink,
                     )  # fmt: skip
                 shown.append((start, end))
+
+        # 統合版 J1〜J3: LLM が place を付けた発話の間、図の枠に地図（図・カードの無い所だけ）
+        if prof is not None and prof.purpose in J_PURPOSES:
+            skipped += await self._maps(
+                p.id, prof, lines, cmds, lane, shown, total, fps, w, h, min(zone_h, main_w),
+                zone_cy,
+            )  # fmt: skip
 
         # テロップ（その発話の間。重なる分は前を短くする）
         kws = [s for s in plan.shots if s.kind == ShotKind.KEYWORD]

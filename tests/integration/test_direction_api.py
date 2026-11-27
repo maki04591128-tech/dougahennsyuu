@@ -1686,3 +1686,66 @@ async def test_product_feature_callouts(dclient, media_dir):
     # 3 つの語: それぞれ「描く動き → 止め絵」
     assert len(call) == 6 and all(names[x["asset_id"]] == "特長の引き出し線（P9）" for x in call)
     assert all(a_["end_frame"] <= b_["start_frame"] for a_, b_ in zip(call, call[1:], strict=False))
+
+
+def _fake_world(data_dir):
+    import json as _json
+
+    d = data_dir / "maps"
+    d.mkdir(parents=True, exist_ok=True)
+
+    def sq(x0, y0, x1, y1):
+        return {
+            "type": "Polygon",
+            "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]],
+        }
+
+    countries = {"features": [
+        {"properties": {"NAME_JA": "日本", "ADM0_A3": "JPN"}, "geometry": sq(130, 30, 145, 45)},
+        {"properties": {"NAME_JA": "フランス", "ADM0_A3": "FRA"}, "geometry": sq(-4, 43, 8, 51)},
+    ]}  # fmt: skip
+    places = {"features": [
+        {"properties": {"NAME_JA": "パリ", "ADM0_A3": "FRA"},
+         "geometry": {"type": "Point", "coordinates": [2.35, 48.86]}},
+        {"properties": {"NAME_JA": "東京都", "ADM0_A3": "JPN"},
+         "geometry": {"type": "Point", "coordinates": [139.7, 35.7]}},
+    ]}  # fmt: skip
+    (d / "ne_110m_admin_0_countries.geojson").write_text(_json.dumps(countries), "utf-8")
+    (d / "ne_110m_populated_places.geojson").write_text(_json.dumps(places), "utf-8")
+
+
+async def test_maps_country_city_and_route(dclient):
+    """統合版 J1（国）・J2（都市）・J3（1 つの文に 2 地点）。地図に無い地名は出さない。"""
+    c = dclient
+    _fake_world(c.app.state.container.settings.data_dir)
+    lines = [
+        {"speaker": "A", "text": "日本の話をします。"},
+        {"speaker": "B", "text": "パリは花の都と呼ばれます。"},
+        {"speaker": "A", "text": "東京からパリまで飛行機で行きます。"},
+        {"speaker": "B", "text": "アトランティスは伝説の島です。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {0: {"place": "日本"}, 1: {"place": "パリ"}, 2: {"place": "東京"},
+                              3: {"place": "アトランティス"}})  # fmt: skip
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    plan = {"title": "", "subtitle": "", "shots": []}
+    res = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    assert any("アトランティス" in n for n in res["skipped"]), res["skipped"]
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    maps = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・地図"),
+        key=lambda x: x["start_frame"],
+    )
+    kinds = [names[x["asset_id"]].split("「")[0] for x in maps]
+    assert kinds == [
+        "国の塗り（J1）", "国の塗り（J1）", "地点へ寄る（J2）", "地点へ寄る（J2）",
+        "経路の線（J3）", "経路の線（J3）",
+    ]  # fmt: skip
+    # ニュース以外の用途（Vlog）では地図を出さない
+    await c.put(f"/projects/{pid}/design", json={"purpose": "vlog"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    assert not [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・地図"]
