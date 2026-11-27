@@ -1859,8 +1859,12 @@ class BuildService:
             return c.titles.font_path(name)
 
         made = 0
+        seen: dict[str, int] = {}
         for i, ph in enumerate(phs):
-            scr = ls_.screen_for(direction, ph.section)
+            kind = "chorus" if ph.section == "chorus_first" else ph.section
+            nth = seen.get(kind, 0)
+            seen[kind] = nth + 1
+            scr = ls_.screen_for(direction, ph.section, nth)
             gen = ls_.frames(scr, ph, pic, w, h, fonts, fps, seed=i)
             a = await c.direction._overlay(
                 project_id,

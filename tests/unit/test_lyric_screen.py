@@ -14,7 +14,7 @@ def test_presets_follow_rules() -> None:
     assert set(ls.PRESETS) == {
         "vocaloid_cool", "vocaloid_cute", "vocaloid_calm", "anison", "ballad", "rap", "pop", "idol"
     }  # fmt: skip
-    assert ls.presets_ok() == {k: [] for k in ls.PRESETS}
+    assert ls.presets_ok() == {k: [] for k in [*ls.PRESETS, *ls.EXTRA]}
     for verse, chorus in ls.PRESETS.values():
         for s in (verse, chorus):
             for b in s.blocks:
@@ -64,3 +64,27 @@ def test_frames_are_opaque_and_change_by_line() -> None:
     fr = list(ls.frames(ls.screen_for("vocaloid_calm", "verse"), ph, pic, 320, 180,
                         lambda n: None, 30))  # fmt: skip
     assert len({id(x) for x in fr}) < len(fr)
+
+
+def test_section_screens_use_examples_and_keep_picture_position() -> None:
+    cool_v, cool_c = ls.PRESETS["vocaloid_cool"]
+    assert ls.screen_for("vocaloid_cool", "verse", 0) is cool_v
+    assert ls.screen_for("vocaloid_cool", "verse", 1).uh == "UH5"  # U15 丸い窓
+    assert ls.screen_for("vocaloid_cool", "bridge", 0).ud == "UD3"  # U13
+    assert ls.screen_for("vocaloid_cool", "chorus_first", 0) is cool_c
+    assert ls.screen_for("vocaloid_cool", "chorus", 1).uh == "UH3"  # U18 影絵
+    assert ls.screen_for("pop", "verse", 0).blocks[1].ug == "UG3"  # U10 線だけの題字
+    assert ls.screen_for("pop", "bridge", 2).uk == "UK2"  # U12
+    for d, rows in ls.SECTION_SCREENS.items():
+        for sec, n, _ex in rows:
+            assert ls.screen_for(d, sec, n or 0).pic_x == ls.PRESETS[d][0].pic_x  # 決まり 17
+    assert ls.presets_ok()["U13"] == []
+
+
+def test_two_line_subtitle_shows_pairs() -> None:
+    scr = ls.EXTRA["U12"]
+    ph = ls.Phrase("bridge", ["あいう", "かきく", "さしす"], [(0, 10), (10, 20), (20, 30)], 0, 40)
+    bd = ls.Builder(scr, ph, None, 320, 180, lambda n: None, 30, 0)
+    bd.build()
+    assert [it.t_in for it in bd.items] == [0, 0, 20]
+    assert bd.items[0].t_out == 20 and bd.items[0].y < bd.items[1].y
