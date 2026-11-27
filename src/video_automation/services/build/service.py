@@ -1424,8 +1424,13 @@ class BuildService:
         # 最後にカード（V11 の小節とは重ねない）
         cuts, v7 = mv.apply_v7(cuts, spans, bt.times, fps, [(a, b) for a, _, b in bars])
         cuts = mv.insert_planes(cuts, bars)
-        genre = (await c.design.get(project_id)).genre or "pop"
+        from video_automation.services.rendering.lyrics import DIRECTIONS, direction_genre
+
+        dsg = await c.design.get(project_id)
+        genre = direction_genre(dsg.lyric_direction or None, dsg.genre) or "pop"
         main, ink = mv.V12_MAIN.get(genre, mv.V12_MAIN["pop"])
+        if dsg.lyric_direction in DIRECTIONS:  # 統合版 U1: 方向性の主色と文字の色
+            main, ink = DIRECTIONS[dsg.lyric_direction][4:6]
         work = c.settings.data_dir / "projects" / project_id / "assets"
         src = c.settings.data_dir / image.path
         files: dict[tuple[str, int], Path] = {}

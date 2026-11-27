@@ -38,6 +38,31 @@ GENRE_LABEL = {
     "idol": "アイドル",
     "pop": "ポップ",
 }
+# 統合版 U1・U7: 曲の方向性 → (名前, 読み替える M3 のジャンル, 書体, 太さ, 主色, 文字の色, 待機)。
+# 方向性を選んだときは、書体・色・待機をこの表から取り、M3・M7・V12・ジャンルの待機は使わない。
+# ジャンルで決まるほかの項目（X7 など）は、読み替えたジャンルで決める。
+# 色は 5e の「値の詳細1」の表（背景と色）の主な色。書体が入っていなければジャンルの書体
+DIRECTIONS: dict[str, tuple[str, str, str, str, str, str, str]] = {
+    "vocaloid_cool": ("ボカロ（かっこいい系）", "vocaloid", "Shippori Mincho", "SemiBold",
+                      "#8E1024", "#F4EDEA", "static"),
+    "vocaloid_cute": ("ボカロ（かわいい系）", "idol", "Hachi Maru Pop", "Regular",
+                      "#FFD9E8", "#E8336D", "sway"),
+    "vocaloid_calm": ("ボカロ（しっとり系）", "ballad", "Shippori Mincho", "Regular",
+                      "#F4F4F2", "#2B2D33", "static"),
+    "anison": ("アニソン", "rock", "Zen Maru Gothic", "Medium", "#E4212B", "#FFFFFF", "drift"),
+    "ballad": ("バラード", "ballad", "Zen Kurenaido", "Regular", "#140A1E", "#FFFFFF", "static"),
+    "rap": ("ラップ", "rock", "Dela Gothic One", "Regular", "#EDE7DA", "#111111", "static"),
+    "pop": ("ポップソング", "pop", "RocknRoll One", "Regular", "#FFC82E", "#111111", "sway"),
+    "idol": ("アイドルソング", "idol", "Mochiy Pop One", "Regular", "#FFD3EA", "#55C6F2", "wave"),
+}  # fmt: skip
+
+
+def direction_genre(direction: str | None, genre: str | None) -> str | None:
+    """U1: 方向性を選んでいれば、読み替えた M3 のジャンル。選んでいなければ genre のまま。"""
+    d = DIRECTIONS.get(direction or "")
+    return d[1] if d else genre
+
+
 CHORUS_TILT_DEG = -8.0
 PARTICLE_SCALE = 0.68
 DROP_RATIO = 0.6
@@ -125,10 +150,11 @@ def _dup_word(text: str) -> bool:
 
 
 def lyric_motion(
-    texts: list[str], secs: list[str], genre: str | None
+    texts: list[str], secs: list[str], genre: str | None, hold_override: str | None = None
 ) -> list[tuple[str, str, str]]:
-    """各行の (入り, 待機, 出)。段階5c の「V5 の改訂」の表（上の行ほど優先）。"""
-    hold = GENRE_HOLD.get(genre or DEFAULT_GENRE, "sway")
+    """各行の (入り, 待機, 出)。段階5c の「V5 の改訂」の表（上の行ほど優先）。
+    hold_override は U1 の方向性の待機（ジャンルの待機の代わり）。"""
+    hold = hold_override or GENRE_HOLD.get(genre or DEFAULT_GENRE, "sway")
     n = len(texts)
     chorus_idx = [i for i, s in enumerate(secs) if s in ("chorus", "chorus_first")]
     blocks: list[list[int]] = []

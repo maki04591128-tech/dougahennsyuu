@@ -34,6 +34,7 @@ class Project(Base):
     design_extras: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     series_id: Mapped[str | None] = mapped_column(String(36), nullable=True)  # 統合版 Q4
     music_genre: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 統合版 M3・M7
+    lyric_direction: Mapped[str | None] = mapped_column(String(20), nullable=True)  # 統合版 U1
     hearing_aid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # 統合版 Q7
     look: Mapped[str | None] = mapped_column(String(4), nullable=True)  # 統合版 Y1〜Y10
     # 演出で作った要素の記録（作った処理ごと。書き出し前の検査に使う）

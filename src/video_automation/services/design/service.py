@@ -131,6 +131,7 @@ class DesignService:
                 genre=p.music_genre if p.music_genre in GENRES else None,  # type: ignore[arg-type]
                 hearing_aid=bool(p.hearing_aid),
                 look=p.look or "",
+                lyric_direction=p.lyric_direction or "",
             )
 
     async def set(self, project_id: str, design: ProjectDesign) -> ProjectDesign:
@@ -146,6 +147,8 @@ class DesignService:
                 p.music_genre = design.genre
             if design.hearing_aid is not None:
                 p.hearing_aid = design.hearing_aid
+            if design.lyric_direction is not None:  # 統合版 U1
+                p.lyric_direction = design.lyric_direction or None
             if design.look is not None:  # 統合版 Y: 選べない型は保存しない
                 ok = design.purpose is not None and allowed(design.purpose, design.look)
                 p.look = design.look if ok else None

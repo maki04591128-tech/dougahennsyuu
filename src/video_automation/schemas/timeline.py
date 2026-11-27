@@ -466,3 +466,5 @@ class TitleCardRequest(BaseModel):
     # 統合版 L7: 入りが終わった後、斜めの白い帯（不透明度 40%・加算）が 25f で 1 回通る
     gloss: bool = False
     sun_beams: bool = False  # 統合版 L3: 文字から下へ光の筋（コンポジタの Sun Beams）
+    solid3d: bool = False  # 統合版 T24 立体の文字（L1 3 点照明・L2 リム。予告編のタイトルカード）
+    vertical: bool = False  # 統合版 T11 縦書き（Y10 墨と和紙の題名）

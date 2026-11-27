@@ -266,6 +266,7 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         "genre": None,
         "hearing_aid": False,
         "look": "",
+        "lyric_direction": "",
     }
     # 統合版 Y: 用途で選べない見た目の型は保存しない
     r = await c.put(f"/projects/{pid}/design", json={"purpose": "lecture", "look": "Y5"})
@@ -274,6 +275,13 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
     assert r.json()["look"] == "Y1"
     assert (await c.put(f"/projects/{pid}/design", json={"look": "Y99"})).status_code == 422
     await c.put(f"/projects/{pid}/design", json={"purpose": None, "look": ""})
+    # 統合版 U1: 曲の方向性（8 種のどれか。知らない値は 422）
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "mv", "lyric_direction": "idol"})
+    assert r.json()["lyric_direction"] == "idol"
+    assert (
+        await c.put(f"/projects/{pid}/design", json={"lyric_direction": "x"})
+    ).status_code == 422
+    await c.put(f"/projects/{pid}/design", json={"purpose": None, "lyric_direction": ""})
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
     ]
@@ -1894,3 +1902,22 @@ async def test_document_highlight_in_news(dclient, media_dir):
     keys = clip["animation"]["keyframes"]
     assert keys[-1]["zoom"] == 1.25 and keys[-1]["frame"] == 24 and keys[-1]["pan_y"] < 0
     assert clip["transform"]["scale"] == 0.7
+
+
+async def test_lecture_marker_on_last_subtitle(dclient, tmp_path):
+    """統合版 T37: 講義の焼き込みの字幕で、章の最後の文（章が無ければ最後の文）にマーカー。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    await c.put(f"/projects/{pid}/design", json={"purpose": "lecture"})
+    plan = {"title": "", "subtitle": "", "shots": []}
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    ass = (
+        await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "m.ass")
+    ).read_text("utf-8-sig")
+    marks = [ln for ln in ass.splitlines() if ",Marker," in ln and ln.startswith("Dialogue:")]
+    assert marks
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    ass = (
+        await c.app.state.container.render._ass_for(sid, 640, 360, tmp_path / "n.ass")
+    ).read_text("utf-8-sig")
+    assert ",Marker," not in ass

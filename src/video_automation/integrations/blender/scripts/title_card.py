@@ -32,6 +32,8 @@ from _common import (  # noqa: E402
     write_result,
 )
 
+VERT_SMALL = "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ"  # 統合版 T11
+VERT_ROTATE = "ー〜～…―‐-「」『』（）()［］[]【】〈〉《》"
 PER_CHAR = ("typewriter", "bounce", "decode", "tracking", "flip3d", "mask_rise", "stroke")
 CURSOR = "▍"
 GLOSS_ALPHA = 0.40
@@ -219,6 +221,69 @@ def entrance_frames(anim, n, fps=30):  # noqa: ANN001
     }.get(anim, 0)
 
 
+KEY_RGB, FILL_RGB, RIM_RGB = (1.0, 0.89, 0.78), (1.0, 1.0, 1.0), (0.435, 0.765, 1.0)  # L1
+
+
+def solid3d(scene, root):  # noqa: ANN001
+    """統合版 T24: 文字に奥行き（文字の大きさの 12%）とベベル（1.5%）を付け、L1 の 3 点照明
+    （キー #FFE3C8 100%・フィル 白 40%・リム #6FC3FF 15%）と L2 のリム（Fresnel IOR 0.95 →
+    Color Ramp 一定 → 加算）で立体に見せる。正投影なので、行全体を少し傾けて側面を見せる。"""
+    char_h = 0.7  # 文字のローカル座標での高さの目安
+    for ob in [o for o in scene.objects if o.type == "FONT"]:
+        cu = ob.data
+        cu.extrude = char_h * 0.12
+        cu.bevel_depth = char_h * 0.015
+        cu.bevel_resolution = 2
+        for i, m in enumerate(list(cu.materials)):
+            if m is None:
+                continue
+            rgba = list(m.diffuse_color)
+            cu.materials[i] = _lit_material(f"{m.name}_lit", rgba)
+    for o in [o for o in scene.objects if "_ol" in o.name]:  # 縁取りの写しは立体では使わない
+        o.hide_render = True
+    root.rotation_euler = (math.radians(-12.0), math.radians(16.0), 0.0)
+    for name, rgb, power, loc in (
+        ("key", KEY_RGB, 1.0, (3.0, 3.0, 4.2)),  # 斜め前上 45°・距離 3（文字の単位）
+        ("fill", FILL_RGB, 0.4, (-3.0, 0.5, 4.2)),  # 反対側の斜め前
+        ("rim", RIM_RGB, 0.15, (0.0, 3.0, -3.0)),  # 後ろ斜め上
+    ):
+        ld = bpy.data.lights.new(name, "AREA")
+        ld.size = 1.0
+        ld.color = rgb
+        ld.energy = 600.0 * power
+        lo = bpy.data.objects.new(name, ld)
+        lo.location = loc
+        scene.collection.objects.link(lo)
+        direction = -lo.location.normalized()
+        lo.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+
+def _lit_material(name, rgba):  # noqa: ANN001
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value = rgba
+    bsdf.inputs["Roughness"].default_value = 0.45
+    fres = nt.nodes.new("ShaderNodeFresnel")
+    fres.inputs["IOR"].default_value = 0.95
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.interpolation = "CONSTANT"
+    ramp.color_ramp.elements[0].position = 0.0
+    ramp.color_ramp.elements[1].position = 0.5
+    emit = nt.nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value = (*RIM_RGB, 1.0)
+    add = nt.nodes.new("ShaderNodeAddShader")
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(fres.outputs[0], ramp.inputs[0])
+    nt.links.new(ramp.outputs[0], emit.inputs["Strength"])
+    nt.links.new(bsdf.outputs[0], add.inputs[0])
+    nt.links.new(emit.outputs[0], add.inputs[1])
+    nt.links.new(add.outputs[0], out.inputs[0])
+    return mat
+
+
 def main() -> None:
     a = load_args()
     w, h, fps, frames = int(a["width"]), int(a["height"]), int(a["fps"]), int(a["frames"])
@@ -269,7 +334,45 @@ def main() -> None:
                     if back is not None:
                         kp.back = back
 
-    if anim in PER_CHAR and len(text.replace("\n", "")) > 1 and "\n" not in text:
+    if a.get("vertical") and len(text.replace("\n", "")) > 1:
+        # 統合版 T11 縦書き（Y10 墨と和紙の題名）: 上から下へ字送り 1.0、行は右から左。
+        # 1 文字ずつ 2f ずらし、各 6f で不透明度 0→1
+        cols = [c for c in text.split("\n") if c] or [text]
+        longest = max(len(c) for c in cols)
+        unit = min(0.85 * vh / max(longest, 1), 0.8 * vw / max(len(cols) * 1.4, 1)) * size
+        gp = text_object("gprobe", "国", font, mat)
+        bpy.context.view_layer.update()
+        g_h = max(gp.dimensions.y, 1e-3)
+        bpy.data.objects.remove(gp, do_unlink=True)
+        scale_v = unit * 0.9 / g_h  # 字の高さを字送りの 90% に
+        tc = a.get("text_color", [1, 1, 1, 1])
+        k = 0
+        for ci, col in enumerate(cols):
+            x = (len(cols) - 1) / 2 * unit * 1.4 - ci * unit * 1.4
+            for j, ch in enumerate(col):
+                y = ((longest - 1) / 2 - j) * unit
+                cm = fade_material(f"v{k}", tc)
+                o = text_object(f"v{k}", ch, font, cm)
+                o.parent = root
+                dx, dy, rot = 0.0, 0.0, 0.0
+                if ch in VERT_SMALL:  # 小書きの仮名: 右へ 0.1・上へ 0.1
+                    dx, dy = 0.1 * unit, 0.1 * unit
+                elif ch in "、。":  # 句読点: 右へ 0.6・上へ 0.6
+                    dx, dy = 0.6 * unit, 0.6 * unit
+                elif ch in VERT_ROTATE:  # 長音・波線・括弧: 時計回りに 90°
+                    rot = math.radians(-90.0)
+                o.location = (x + dx, y + dy, 0)
+                o.rotation_euler.z = rot
+                o.scale = (scale_v,) * 3
+                st = 1 + 2 * k
+                key_alpha([cm], 1, 0.0)
+                if st > 1:
+                    key_alpha([cm], st, 0.0)
+                key_alpha([cm], st + 6, 1.0)
+                k += 1
+        box_w, box_h = len(cols) * unit * 1.4, longest * unit
+        main_obj = root
+    elif anim in PER_CHAR and len(text.replace("\n", "")) > 1 and "\n" not in text:
         # 1文字ずつのオブジェクト。位置は先頭からの部分文字列の幅で決める
         widths = []
         for i in range(1, len(text) + 1):
@@ -435,6 +538,9 @@ def main() -> None:
         main_obj = o
         box_w, box_h = dims.x * scale, dims.y * scale
     del main_obj
+
+    if a.get("solid3d"):  # 統合版 T24 立体の文字・L1 3 点照明・L2 リム
+        solid3d(scene, root)
 
     if a.get("sun_beams"):  # 統合版 L3（予告編の題名）
         sun_beams(scene, mat)

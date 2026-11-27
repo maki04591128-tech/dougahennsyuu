@@ -65,7 +65,9 @@ from video_automation.services.rendering.finish import finish_chain
 from video_automation.services.rendering.flash_check import check_video
 from video_automation.services.rendering.lyrics import (
     DEFAULT_GENRE,
+    DIRECTIONS,
     GENRE_LABEL,
+    direction_genre,
     genre_style,
     lyric_motion,
     particle_spans,
@@ -421,6 +423,17 @@ class RenderService:
             style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
         prof = await self.design.profile_for(p.id) if self.design is not None else None
         ball = prof.palette.accent if prof is not None and prof.purpose.value == "kids" else None
+        marks: set[int] = set()
+        if prof is not None and prof.purpose.value in ("lecture", "tutorial") and kept:
+            # 統合版 T37: 各章の最後の文の字幕（章の区切りは演出の記録の章の頭）
+            heads = sorted(
+                int(c[0]) for c in (await self.design.outline(p.id)).get("chapters") or [] if c
+            ) if self.design is not None else []  # fmt: skip
+            bounds = [b - offset_frames for b in heads if b - offset_frames > 0]
+            for b in [*bounds, 10**9]:
+                last = max((i for i, r in enumerate(rows) if r[0] < b), default=None)
+                if last is not None:
+                    marks.add(last)
         content = build_ass(
             rows,
             Fraction(p.fps_num, p.fps_den),
@@ -436,6 +449,8 @@ class RenderService:
             ruby={i: rb[c.id] for i, c in enumerate(kept) if c.id in rb},
             emotions=await self._emotions(p.id, script_id, kept),
             ball_color=ball,  # 統合版 T51（子ども向け）
+            markers=marks,  # 統合版 T37（講義・操作説明）
+            marker_color=prof.palette.accent if prof is not None else None,
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out
@@ -1155,7 +1170,10 @@ class RenderService:
         lyric_args: dict[str, Any] = {}
         if rich.parts.get("lyrics") and cues:
             # 統合版 M3（セクションごとの置き方）・M7（ジャンルの書体と質感）・M5（コマ打ち）
-            genre = (await self.design.get(req.project_id)).genre
+            dsg_ = await self.design.get(req.project_id)
+            direction = dsg_.lyric_direction or None
+            genre = direction_genre(direction, dsg_.genre)
+            u1 = DIRECTIONS.get(direction or "")
             rms: list[float] | None = None
             try:
                 wav = await sync_audio.load(self.ffmpeg, clean)
@@ -1181,7 +1199,7 @@ class RenderService:
             except Exception as exc:  # noqa: BLE001 - 音量が取れなくても置き方は決められる
                 log.info("lyric_rms_failed", error=str(exc)[:200])
             secs = lyric_sections([c["text"] for c in cues], rms)
-            motions = lyric_motion([c["text"] for c in cues], secs, genre)
+            motions = lyric_motion([c["text"] for c in cues], secs, genre, u1[6] if u1 else None)
             for cue_, s_, mo_ in zip(cues, secs, motions, strict=True):
                 cue_["section"] = s_
                 cue_["motion"] = list(mo_)
@@ -1191,13 +1209,25 @@ class RenderService:
             gfont = (
                 self.font_for(f"{fam} {weight}") or self.font_for(fam) if self.font_for else None
             )
+            if (
+                u1 is not None and self.font_for
+            ):  # 統合版 U7: 方向性の書体（無ければジャンルの書体）
+                ufont = self.font_for(f"{u1[2]} {u1[3]}") or self.font_for(u1[2])
+                if ufont:
+                    gfont = ufont
+                else:
+                    rich.notes.append(
+                        f"方向性の書体「{u1[2]}」が無いので、ジャンルの書体にしました"
+                    )
             lyric_args = {
                 "lyric_font": gfont or "",
                 "lyric_texture": texture,
                 "stepped": dprof.motion.stepped,
             }
             rich.notes.append(
-                f"歌詞はジャンル「{GENRE_LABEL[genre or DEFAULT_GENRE]}」の書体で、"
+                f"歌詞は方向性「{u1[0]}」の書体・色・待機で、サビ・B メロごとに置き方を変えました"
+                if u1 is not None
+                else f"歌詞はジャンル「{GENRE_LABEL[genre or DEFAULT_GENRE]}」の書体で、"
                 "サビ・B メロごとに置き方を変えました"
             )
         beats: list[int] = []

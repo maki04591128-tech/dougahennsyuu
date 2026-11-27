@@ -704,3 +704,163 @@ def test_number_roll_and_year():
     fr = nb.year_frames("2024", 360, None, "#FFFFFF", "#000000", True)
     assert len(fr) == 22 and fr[0].size == fr[-1].size
     assert len(nb.year_frames("2024", 360, None, "#FFFFFF", "#000000", False)) == 1
+
+
+@pytest.mark.skipif(not BPY or FFMPEG is None, reason="VA_BPY_PYTHON is not set")
+def test_rich_direction_more_lyric_motions(tmp_path):
+    """Blender: V5 の改訂の残りの入り・待機・出（行全体の動きで近似）が使われる。"""
+    import json
+    from pathlib import Path
+
+    clean = tmp_path / "clean.mp4"
+    subprocess.run(
+        [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=4:r=30", "-f",
+         "lavfi", "-i", "sine=d=4", "-shortest", "-pix_fmt", "yuv420p", str(clean)],
+        check=True,
+    )  # fmt: skip
+    motions = [
+        ["track", "pulse", "blur_out"],
+        ["glitch_in", "wave", "glitch_out"],
+        ["curve", "static", "curve_out"],
+        ["circle", "drift", "scatter"],
+        ["warp_in", "breathe", "warp_out"],
+        ["gather", "static", "fall"],
+    ]
+    cues = [
+        {"segment": str(i), "text": "そら", "start_frame": 2 + 19 * i,
+         "end_frame": 19 + 19 * i, "section": "verse", "motion": m}
+        for i, m in enumerate(motions)
+    ]  # fmt: skip
+    args = {
+        "clean_path": str(clean),
+        "out_path": str(tmp_path / "out.mp4"),
+        "result_path": str(tmp_path / "r.json"),
+        "font": "",
+        "width": 320,
+        "height": 180,
+        "fps_num": 30,
+        "fps_den": 1,
+        "title": "",
+        "catch": "",
+        "chapters": [],
+        "cues": cues,
+        "beats": list(range(0, 120, 15)),
+        "parts": {"lyrics": True},
+        "params": {},
+        "limits": {},
+        "colors": {"base": "#000000", "main": "#3366CC", "accent": "#FFCC00", "text": "#FFFFFF"},
+        "lyric_font": "",
+        "lyric_texture": "shadow",
+        "plan_only": True,
+    }
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/rich_direction.py"
+    )
+    r = subprocess.run([BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True,
+                       text=True, timeout=900)  # fmt: skip
+    rep = json.loads((tmp_path / "r.json").read_text())
+    assert rep["parts"]["lyrics"]["ok"], r.stderr[-2000:]
+    got = rep["motion"]
+    for m in motions:
+        for name in m:
+            assert got.get(name, 0) >= 1, (name, got)
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_solid3d_lit(tmp_path):
+    """統合版 T24・L1・L2: 立体の文字は面ごとに明るさが違い（照明）、縁にリムの青みが出る。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+    args = {
+        "text": "立体",
+        "width": 320,
+        "height": 180,
+        "fps": 30,
+        "frames": 1,
+        "font_path": font if Path(font).is_file() else None,
+        "text_color": [0.8, 0.8, 0.8, 1],
+        "outline": False,
+        "outline_color": [0, 0, 0, 1],
+        "size": 1.0,
+        "position": "center",
+        "output_dir": str(tmp_path / "out"),
+        "animation": "none",
+        "solid3d": True,
+        "result_path": str(tmp_path / "r.json"),
+        "samples": 4,
+    }
+    (tmp_path / "out").mkdir()
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    (frame,) = sorted((tmp_path / "out").glob("frame_*.png"))
+    a = np.asarray(Image.open(frame).convert("RGBA")).astype(float)
+    m = a[..., 3] > 200
+    assert m.sum() > 500
+    lum = a[..., :3].mean(axis=-1)[m]
+    assert lum.std() > 12  # 平らな発光ではなく、照明で明暗がある
+    blue = (a[..., 2] - a[..., 0])[m]
+    assert (blue > 25).mean() > 0.01  # リム（#6FC3FF）の縁
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_vertical(tmp_path):
+    """統合版 T11（Y10 の題名）: 縦書きで上から下へ並び、1 文字ずつ現れる。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"
+    args = {
+        "text": "夜明けの街",
+        "width": 320,
+        "height": 180,
+        "fps": 30,
+        "frames": 16,
+        "font_path": font if Path(font).is_file() else None,
+        "text_color": [0.9, 0.9, 0.9, 1],
+        "outline": False,
+        "outline_color": [0, 0, 0, 1],
+        "size": 1.0,
+        "position": "center",
+        "output_dir": str(tmp_path / "out"),
+        "animation": "stroke",
+        "vertical": True,
+        "result_path": str(tmp_path / "r.json"),
+        "samples": 1,
+    }
+    (tmp_path / "out").mkdir()
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    frames = sorted((tmp_path / "out").glob("frame_*.png"))
+
+    def box(p):
+        a = np.asarray(Image.open(p).convert("RGBA"))[..., 3] > 128
+        ys, xs = np.where(a)
+        return (xs.min(), ys.min(), xs.max(), ys.max()) if len(xs) else None
+
+    last = box(frames[-1])
+    assert last is not None and (last[3] - last[1]) > 2.5 * (last[2] - last[0])  # 縦に長い
+    early = box(frames[3])
+    assert early is None or early[3] < last[3]  # 上から順に現れる

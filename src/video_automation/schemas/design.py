@@ -234,6 +234,11 @@ class ProjectDesign(BaseModel):
     hearing_aid: bool | None = None
     # 統合版 Y1〜Y10: 見た目の型（用途ごとに選べるものだけ。""は「なし」に戻す。None は変えない）
     look: str | None = Field(default=None, pattern=r"^(|Y([1-9]|10))$")
+    # 統合版 U1: 曲の方向性（MV・リリック。""は「選ばない」に戻す。None は変えない）
+    lyric_direction: str | None = Field(
+        default=None,
+        pattern=r"^(|vocaloid_cool|vocaloid_cute|vocaloid_calm|anison|ballad|rap|pop|idol)$",
+    )
 
 
 SERIES_COLOR_KEYS = ("base", "base2", "surface", "main", "accent", "text", "text_muted")
