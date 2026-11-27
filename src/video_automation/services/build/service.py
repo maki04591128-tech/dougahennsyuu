@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from video_automation.app.logging import get_logger
 from video_automation.database.models import Project
+from video_automation.schemas.asset_source import MusicGenerateRequest
 from video_automation.schemas.build import (
     BuildChange,
     BuildCharacter,
@@ -60,7 +61,7 @@ from video_automation.schemas.timeline import (
     TrackKind,
 )
 from video_automation.schemas.voice import ReadingCheckRequest
-from video_automation.services.build import audio_bed, recording_reader
+from video_automation.services.build import audio_bed, bgm_prompts, recording_reader
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction.service import native_transform
@@ -180,6 +181,10 @@ def purpose_structure(purpose: Purpose, portrait: bool) -> str:
     elif purpose == Purpose.TRAILER:
         parts.append(pp.TRAILER_STRUCTURE)
     return "\n".join(parts)
+
+
+async def _no_progress(_x: float) -> None:
+    return None
 
 
 def skipped_notes(skipped: list[str]) -> list[str]:
@@ -1028,6 +1033,38 @@ class BuildService:
                 )
             except Exception as exc:  # noqa: BLE001 - 使えないときは自動の BGM にする
                 log.warning("series_bgm_failed", error=type(exc).__name__)
+        spec = bgm_prompts.bgm_spec(purpose)
+        if bgm is None and spec is not None and c.music is not None:
+            # 統合版 Q5: 用途ごとの caption と BPM で、ACE-Step に BGM を作らせる。
+            # 動かないとき・失敗したときは、自動の和音にする
+            try:
+                if (await c.music.status()).available:
+                    caption, bpm = spec
+                    length = bgm_prompts.cut_length(total / fps, bpm)
+                    made = await c.music.generate(
+                        MusicGenerateRequest(
+                            project_id=project_id,
+                            prompt=caption,
+                            bpm=bpm,
+                            duration_sec=min(600.0, max(10.0, length + bgm_prompts.EXTRA_SEC)),
+                            instrumental=True,
+                        ),
+                        _no_progress,
+                    )
+                    if made:
+                        bgm = await register(
+                            await audio_bed.make_bgm_from(
+                                c.ffmpeg,
+                                c.settings.data_dir / made[0].path,
+                                work / f"bgm_{uuid4().hex[:8]}.wav",
+                                length,
+                                speech,
+                                fade_sec=bgm_prompts.FADE_SEC,
+                            ),
+                            f"BGM（生成: {caption[:40]}・{bpm}BPM）",
+                        )
+            except Exception as exc:  # noqa: BLE001 - 作れなくても和音で続ける
+                log.warning("bgm_generate_failed", error=type(exc).__name__)
         if bgm is None:
             bgm = await register(
                 await audio_bed.make_bgm(
