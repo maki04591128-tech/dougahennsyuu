@@ -1436,6 +1436,19 @@ class DirectionService:
                 b_at = max(at + n, end - frames(pp.RANK_BOARD_SEC))
                 if end - b_at < frames(1.5):
                     continue
+                # ボードの間はカードを出さない（ボードと同時に消えると、同時に動く要素が 3 つ
+                # になった。実機）。カードはボードが出る所で終える
+                for k_c, c in enumerate(cmds):
+                    if (
+                        isinstance(c, AddClip)
+                        and c.track_id in delay_ids
+                        and c.duration_frames is not None
+                        and c.start_frame < b_at < c.start_frame + c.duration_frames
+                        and b_at - c.start_frame >= frames(0.5)
+                    ):
+                        cut = c.start_frame + c.duration_frames - b_at
+                        cmds[k_c] = c.model_copy(update={"duration_frames": b_at - c.start_frame})
+                        shorten_animation(cmds, c.clip_id, c.duration_frames, cut)
                 board = [f"第{x.number}位　{x.name}".rstrip() for x in rks[: k + 1]]
                 row = await png(
                     "ここまでの順位",
