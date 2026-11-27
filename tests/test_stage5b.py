@@ -464,3 +464,21 @@ def test_drop_particles_by_genre():
         assert len(fr) == fx.X7_LOOP
         assert 0 < max(im.getchannel("A").getextrema()[1] for im in fr[:10]) <= 179, g
     assert len(fx.drop_particles("rock", 64, 36, "#ffffff")) == 150  # ロックは残り火
+
+
+def test_text_art_t29():
+    """統合版 T29: 48×27 のマス、輝度 0.25 以上のマスにだけ文字。下の段から動き、最後に消える。"""
+    from PIL import Image, ImageDraw
+
+    from video_automation.services.direction import mv_audio_vis as av
+
+    im = Image.new("RGB", (192, 108), (0, 0, 0))
+    ImageDraw.Draw(im).rectangle((0, 54, 191, 107), fill=(255, 255, 255))  # 下半分だけ明るい
+    cells = av.text_art_cells(im)
+    assert cells and all(r >= 13 for _c, r, _l in cells)
+    assert {c for c, _r, _l in cells} == set(range(48))
+    fr = av.text_art_frames(im, "夜明け", 30, 192, 108, "#102030", "#FFFFFF", None)
+    assert len(fr) == 30
+    assert fr[0].getpixel((5, 5)) == (16, 32, 48, 255)  # マスの外は主色で塗る
+    assert fr[-1].getchannel("A").getextrema()[1] < 255  # 最後の 6f で消える
+    assert fr[20].tobytes() != fr[0].tobytes()  # 文字が動く

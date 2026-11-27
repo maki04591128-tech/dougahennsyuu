@@ -151,6 +151,7 @@ MV_MOTIF_TRACKS = ("MV・形（白）", "MV・形（黒）")  # 統合版 V11
 MV_INK_TRACK = "MV・インク"  # 統合版 V6
 MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
 MV_KEY_TRACK = "MV・キーの一字"  # 統合版 T26
+MV_T29_TRACK = "MV・文字の絵"  # 統合版 T29
 X4_TRACK = "演出・擬音"  # 統合版 X4
 MV_X7_TRACK = "MV・落ちサビの粒"  # 統合版 X7
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
@@ -1594,6 +1595,30 @@ class BuildService:
                 cmds.append(AddClip(track_id=vis_tid, asset_id=a_.id, start_frame=round(a0 * fps),
                                     duration_frames=len(fr), clip_id=str(uuid4())))  # fmt: skip
                 n_vis += 1
+        # 統合版 T29: 1 曲で最初の間奏の最初の 1 小節、そのときのショットを直前の歌詞の文字で描く
+        all_gaps = av.interludes(spans)
+        n_t29 = 0
+        if all_gaps:
+            g0 = all_gaps[0][0]
+            f0 = round(g0 * fps)
+            n29 = min(round(4 * 60.0 / max(1.0, bt.bpm) * fps), round((all_gaps[0][1] - g0) * fps))
+            prev_i = max((i for i, sp in enumerate(spans) if sp[1] <= g0 + 1e-6), default=-1)
+            jc = next((j for j, x in enumerate(cuts) if x.start <= f0 < x.end), None)
+            if n29 > av.T29_OUT + 6 and prev_i >= 0 and jc is not None:
+                from PIL import Image as _Image
+
+                shot_im = await asyncio.to_thread(_Image.open, files[cut_keys[jc]])
+                fr = await asyncio.to_thread(
+                    av.text_art_frames, shot_im, cues[prev_i].text, n29, w, h, main, ink,
+                    c.titles.font_path("Noto Sans CJK JP Black"),
+                )  # fmt: skip
+                a_ = await self._alpha_mov(project_id, work, fr, fps, "文字で絵を作る（T29）")
+                t29_tid = track(MV_T29_TRACK, MV_VIS_TRACK)
+                cmds.append(AddClip(track_id=t29_tid, asset_id=a_.id, start_frame=f0,
+                                    duration_frames=len(fr), clip_id=str(uuid4())))  # fmt: skip
+                n_t29 = 1
+        if not n_t29 and MV_T29_TRACK in tracks:
+            track(MV_T29_TRACK, None)  # 前に作った T29 を消す
         # 統合版 T26: サビの間、サビで最も多い漢字 1 字を背景に巨大に置く
         ch_spans = [(a0, b0) for a0, b0, s_ in spans if s_ in ("chorus", "chorus_first")]
         ch_texts = [x.text for x, (_a, _b, s_) in zip(cues, spans, strict=False)
@@ -1664,6 +1689,8 @@ class BuildService:
             notes.append(f"サビの頭 {len(entries)} か所をインクの転換にしました")
         if n_vis:
             notes.append("イントロに拍の輪、2 回目からの間奏にスペクトラムを入れました")
+        if n_t29:
+            notes.append("最初の間奏の頭の 1 小節を、直前の歌詞の文字で描いた絵にしました")
         v7_text = [
             t
             for t, k in (
