@@ -157,6 +157,7 @@ MV_X7_TRACK = "MV・落ちサビの粒"  # 統合版 X7
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
+MAX_REC_MARKS = 60  # 統合版 N12・N13（録画）: OCR する文の数の上限
 # 録画を置く枠（画面比）: 上 100px は見出しの帯、下は字幕。立ち絵があれば左右に各 300px 空ける
 REC_CY = 0.44
 REC_H = 0.66
@@ -985,11 +986,114 @@ class BuildService:
                 f"録画の最後の {round((rec_frames - total) / fps)} 秒は、"
                 "話が終わったため使っていません"
             )
+        if not game and zoomed is not rec:
+            n_marks = await self._recording_marks(
+                project_id, sid, zoomed, transform, length, fps, tl, cmds
+            )
+            if n_marks:
+                notes.append(
+                    f"録画の中の話している語を {n_marks} か所、丸（小さい字は虫めがね）で示しました"
+                )
         await c.timeline.submit(
             project_id,
             CommandRequest(command=Batch(commands=cmds), description="画面録画を置く"),
         )
         return notes
+
+    async def _recording_marks(
+        self,
+        project_id: str,
+        sid: str,
+        zoomed: AssetRead,
+        transform: ClipTransform,
+        length: int,
+        fps: float,
+        tl: Any,
+        cmds: list[Any],
+    ) -> int:
+        """統合版 N12・N13（画面録画）: 各文の頭から 6f 後の録画の画面を OCR し、その文が
+        話している語に手描きの丸（語が小さければ虫めがね）を、録画と同じ置き方で重ねる。
+        録画は寄った後の映像なので、カメラは付けない（文の途中で寄りが変わると印がずれる）。"""
+        from PIL import Image
+
+        from video_automation.integrations.ocr.engine import OcrUnavailable
+        from video_automation.services.rendering import n_marks as nm
+
+        c = self.c
+        ocr = c.screencast.ocr
+        if ocr is None or not zoomed.width or not zoomed.height:
+            return 0
+        segs = [
+            x
+            for x in (await c.studio.detail(sid)).segments
+            if x.start_frame is not None and x.end_frame and x.start_frame + nm.N12_DRAW < length
+        ][:MAX_REC_MARKS]
+        if not segs:
+            return 0
+        work = c.settings.data_dir / "projects" / project_id / "assets" / f"recmk_{uuid4().hex[:8]}"
+        work.mkdir(parents=True, exist_ok=True)
+        src = c.settings.data_dir / zoomed.path
+        imgs: list[Path] = []
+        for i, x in enumerate(segs):
+            out = work / f"f{i:03d}.png"
+            t = ((x.start_frame or 0) + 6) / fps
+            await c.ffmpeg.run(
+                ["-y", "-ss", f"{t:.3f}", "-i", str(src), "-frames:v", "1", str(out)]
+            )  # fmt: skip
+            imgs.append(out)
+        try:
+            results = await asyncio.to_thread(ocr.read, imgs)
+        except OcrUnavailable:
+            await asyncio.to_thread(shutil.rmtree, work, True)
+            return 0
+        prof = await c.design.profile_for(project_id) if c.design else None
+        accent = (prof or PROFILES[Purpose.TUTORIAL]).palette.accent
+        cw, ch = tl.width, tl.height
+        zw, zh = zoomed.width, zoomed.height
+        k_disp = min(cw / zw, ch / zh) * (transform.scale or 1.0)  # 録画の画素 → 出力の画素
+        scale = min(1.0, 960 / zw)
+        ow, oh = max(2, round(zw * scale)), max(2, round(zh * scale))
+        px_per_out = scale / k_disp
+        mark_t = next((t for t in tl.tracks if t.name == MARK_TRACK), None)
+        if mark_t is not None:
+            cmds.extend(DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == mark_t.id)
+            mark_tid = mark_t.id
+        else:
+            mark_tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=MARK_TRACK, track_id=mark_tid))
+        made = 0
+        for i, (x, res) in enumerate(zip(segs, results, strict=False)):
+            if not res.width or not res.lines:
+                continue
+            box = sl.word_box(res, sl.tokens(x.text))
+            if box is None:
+                continue
+            f0 = x.start_frame or 0
+            n = min(x.end_frame or f0, length) - f0
+            if n < nm.N12_DRAW:
+                continue
+            sx, sy = ow / res.width, oh / res.height
+            b = (box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy)
+            if box[3] / res.height * zh * k_disp / ch < nm.N13_MIN:
+                frame_im = await asyncio.to_thread(
+                    lambda p_=imgs[i]: Image.open(p_).convert("RGBA").resize((ow, oh))
+                )
+                lens = await asyncio.to_thread(
+                    nm.magnifier, frame_im, b, nm.N13_DIAM * ch * px_per_out, px_per_out
+                )
+                gen = nm.magnifier_frames((ow, oh), lens, b, n)
+                name = "虫めがね（N13・録画）"
+            else:
+                gen = nm.circle_frames((ow, oh), b, n, accent, px_per_out, i)
+                name = "手描きの丸（N12・録画）"
+            a = await self._frames_mov(project_id, gen, fps, name)
+            cmds.append(
+                AddClip(track_id=mark_tid, asset_id=a.id, start_frame=f0, duration_frames=n,
+                        clip_id=str(uuid4()), transform=transform)
+            )  # fmt: skip
+            made += 1
+        await asyncio.to_thread(shutil.rmtree, work, True)
+        return made
 
     def _slides_dir(self, project_id: str) -> Path:
         return self.c.settings.data_dir / "projects" / project_id / "slides"
