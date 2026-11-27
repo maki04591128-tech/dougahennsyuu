@@ -442,3 +442,14 @@ def test_mv_audio_visualization():
     sp = av.spectrum_frames(lev, 0.0, 0.5, 30, 64, 36, "#FFFFFF")
     assert len(sp) == 15
     assert av.interludes([(0, 5, "verse"), (8, 10, "chorus"), (10, 12, "verse")]) == [(5, 8)]
+
+
+def test_key_char_for_chorus():
+    """統合版 T26: サビで最も多い漢字 1 字（無ければかな）を、高さの 90%・不透明度 12% で。"""
+    from video_automation.services.direction import mv_audio_vis as av
+
+    assert av.key_char(["君の声が聞こえる", "君と歩く道"]) == "君"
+    assert av.key_char(["らららら", "ららら"]) == "ら"
+    assert av.key_char(["!!"]) is None
+    im = av.key_char_image("君", 64, 36, None, "#FFFFFF")
+    assert im.getchannel("A").getextrema()[1] == round(255 * 0.12)

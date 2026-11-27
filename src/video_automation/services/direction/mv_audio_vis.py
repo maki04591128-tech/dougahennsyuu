@@ -110,3 +110,33 @@ def spectrum_frames(levels: np.ndarray, a: float, b: float, fps: float, w: int, 
                 d.rectangle([x + bw * 0.15, base - hh, x + bw * 0.85, base], fill=(*col, 255))
         out.append(im)
     return out
+
+
+def key_char(texts: list[str]) -> str | None:
+    """統合版 T26: サビの歌詞で最も多く出る漢字 1 字（無ければ最も多いかな 1 字）。"""
+    from collections import Counter
+
+    s = "".join(texts)
+    kanji = Counter(c for c in s if "一" <= c <= "龯" or c in "々")
+    if kanji:
+        return kanji.most_common(1)[0][0]
+    kana = Counter(c for c in s if "ぁ" <= c <= "ゖ" or "ァ" <= c <= "ヺ")
+    return kana.most_common(1)[0][0] if kana else None
+
+
+def key_char_image(ch: str, w: int, h: int, font: str | None, color: str) -> Any:
+    """T26: 画面の高さの 90%・V12 の文字の色・不透明度 12% の 1 字（透過の全面の画）。"""
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    size = round(h * 0.9)
+    f = (
+        ImageFont.truetype(font, size)
+        if font and Path(font).is_file()
+        else ImageFont.load_default(size)
+    )
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(im).text((w / 2, h / 2), ch, font=f, fill=(*_rgb(color), round(255 * 0.12)),
+                            anchor="mm")  # fmt: skip
+    return im

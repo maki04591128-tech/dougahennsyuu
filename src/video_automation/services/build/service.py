@@ -150,6 +150,7 @@ MV_SHOT_TRACK = "MV・ショット"
 MV_MOTIF_TRACKS = ("MV・形（白）", "MV・形（黒）")  # 統合版 V11
 MV_INK_TRACK = "MV・インク"  # 統合版 V6
 MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
+MV_KEY_TRACK = "MV・キーの一字"  # 統合版 T26
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
@@ -1483,6 +1484,31 @@ class BuildService:
                 cmds.append(AddClip(track_id=vis_tid, asset_id=a_.id, start_frame=round(a0 * fps),
                                     duration_frames=len(fr), clip_id=str(uuid4())))  # fmt: skip
                 n_vis += 1
+        # 統合版 T26: サビの間、サビで最も多い漢字 1 字を背景に巨大に置く
+        ch_spans = [(a0, b0) for a0, b0, s_ in spans if s_ in ("chorus", "chorus_first")]
+        ch_texts = [x.text for x, (_a, _b, s_) in zip(cues, spans, strict=False)
+                    if s_ in ("chorus", "chorus_first")]  # fmt: skip
+        key = av.key_char(ch_texts) if ch_spans else None
+        if key:
+            img = await asyncio.to_thread(
+                av.key_char_image, key, w, h, c.titles.font_path("Noto Sans CJK JP Black"), ink
+            )
+            p_ = work / f"t26_{uuid4().hex[:8]}.png"
+            await asyncio.to_thread(img.save, p_)
+            a_ = await asset(p_, f"キーの一字（T26）「{key}」")
+            key_tid = track(MV_KEY_TRACK, MV_SHOT_TRACK)
+            # 続くサビの行は 1 つの区間にまとめる（同じトラックで重ねない）
+            merged: list[list[float]] = []
+            for a0, b0 in ch_spans:
+                if merged and a0 - merged[-1][1] < 0.5:
+                    merged[-1][1] = max(merged[-1][1], b0)
+                else:
+                    merged.append([a0, b0])
+            for a0, b0 in merged:
+                f0, f1 = round(a0 * fps), round(b0 * fps)
+                if f1 > f0:
+                    cmds.append(AddClip(track_id=key_tid, asset_id=a_.id, start_frame=f0,
+                                        duration_frames=f1 - f0, clip_id=str(uuid4())))  # fmt: skip
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
         await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
         await c.timeline.submit(
