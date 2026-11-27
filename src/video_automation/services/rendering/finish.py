@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from video_automation.schemas.design import Component, DesignProfile
+from video_automation.schemas.design import Component, DesignProfile, Purpose
 
 GRAIN_OPACITY = 0.04  # M9 のグレイン（OVERLAY）の不透明度
 DITHER = "noise=alls=2:allf=t"  # S7
@@ -78,11 +78,30 @@ def grain() -> str:
     return f"noise=c0s={round(GRAIN_OPACITY * 255)}:c0f=t+u,vignette=angle=PI/6"
 
 
+PAPER_OPACITY = 0.10  # V9: 紙の質感（乗算）
+PAPER_SHIFT = 0.02  # 2f ごとに画面の 2% 以内でずらす
+
+
+def paper(width: int, height: int, fps: float = 30.0) -> str:
+    """統合版 V9: 紙の質感（明るい灰色の雑音）を乗算・不透明度 10% で重ね、2f ごとにずらす。"""
+    m = max(2, round(min(width, height) * PAPER_SHIFT))
+    return (
+        "null[v9a];"
+        f"color=c=0xE6E6E6:s={width + m}x{height + m}:r={fps:g},format=gray,"
+        "noise=alls=24,format=gbrp,"
+        f"crop={width}:{height}:x='mod(floor(n/2)*37,{m})':y='mod(floor(n/2)*23,{m})'[v9t];"
+        "[v9a]format=gbrp[v9b];"
+        f"[v9b][v9t]blend=all_mode=multiply:all_opacity={PAPER_OPACITY}:shortest=1"
+    )
+
+
 def finish_chain(prof: DesignProfile | None, width: int, height: int) -> str:
     """映像に掛ける仕上げ（1 本のフィルターの連なり。ラベルは中で閉じる）。無ければ空。"""
     if prof is None:
         return ""
     parts: list[str] = []
+    if prof.purpose in (Purpose.MV, Purpose.LYRIC):  # V9 テクスチャ（MV・リリック）
+        parts.append(paper(width, height))
     if prof.allows(Component.GLOW):
         parts.append(glow(height))
     if prof.allows(Component.HALATION):
