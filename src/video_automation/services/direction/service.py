@@ -2650,6 +2650,7 @@ class DirectionService:
                         font=heading_font,
                         gloss=gloss,
                         sun_beams=beams,
+                        solid3d=prof is not None and prof.purpose == Purpose.TRAILER,  # T24
                     )
                 )
             t_len = min(title_end, media_frames(t_asset, title_end))

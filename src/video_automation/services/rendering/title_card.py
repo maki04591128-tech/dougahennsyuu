@@ -238,6 +238,7 @@ class TitleCardService:
                     "animation": req.animation,
                     "gloss_at": gloss_at,
                     "sun_beams": req.sun_beams,
+                    "solid3d": req.solid3d,
                     "gloss_frames": gloss_frames(fps_num / fps_den),
                 },
             )

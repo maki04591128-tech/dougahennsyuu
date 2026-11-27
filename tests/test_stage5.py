@@ -764,3 +764,51 @@ def test_rich_direction_more_lyric_motions(tmp_path):
     for m in motions:
         for name in m:
             assert got.get(name, 0) >= 1, (name, got)
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_solid3d_lit(tmp_path):
+    """統合版 T24・L1・L2: 立体の文字は面ごとに明るさが違い（照明）、縁にリムの青みが出る。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+    args = {
+        "text": "立体",
+        "width": 320,
+        "height": 180,
+        "fps": 30,
+        "frames": 1,
+        "font_path": font if Path(font).is_file() else None,
+        "text_color": [0.8, 0.8, 0.8, 1],
+        "outline": False,
+        "outline_color": [0, 0, 0, 1],
+        "size": 1.0,
+        "position": "center",
+        "output_dir": str(tmp_path / "out"),
+        "animation": "none",
+        "solid3d": True,
+        "result_path": str(tmp_path / "r.json"),
+        "samples": 4,
+    }
+    (tmp_path / "out").mkdir()
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    (frame,) = sorted((tmp_path / "out").glob("frame_*.png"))
+    a = np.asarray(Image.open(frame).convert("RGBA")).astype(float)
+    m = a[..., 3] > 200
+    assert m.sum() > 500
+    lum = a[..., :3].mean(axis=-1)[m]
+    assert lum.std() > 12  # 平らな発光ではなく、照明で明暗がある
+    blue = (a[..., 2] - a[..., 0])[m]
+    assert (blue > 25).mean() > 0.01  # リム（#6FC3FF）の縁

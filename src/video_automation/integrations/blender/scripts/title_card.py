@@ -219,6 +219,69 @@ def entrance_frames(anim, n, fps=30):  # noqa: ANN001
     }.get(anim, 0)
 
 
+KEY_RGB, FILL_RGB, RIM_RGB = (1.0, 0.89, 0.78), (1.0, 1.0, 1.0), (0.435, 0.765, 1.0)  # L1
+
+
+def solid3d(scene, root):  # noqa: ANN001
+    """統合版 T24: 文字に奥行き（文字の大きさの 12%）とベベル（1.5%）を付け、L1 の 3 点照明
+    （キー #FFE3C8 100%・フィル 白 40%・リム #6FC3FF 15%）と L2 のリム（Fresnel IOR 0.95 →
+    Color Ramp 一定 → 加算）で立体に見せる。正投影なので、行全体を少し傾けて側面を見せる。"""
+    char_h = 0.7  # 文字のローカル座標での高さの目安
+    for ob in [o for o in scene.objects if o.type == "FONT"]:
+        cu = ob.data
+        cu.extrude = char_h * 0.12
+        cu.bevel_depth = char_h * 0.015
+        cu.bevel_resolution = 2
+        for i, m in enumerate(list(cu.materials)):
+            if m is None:
+                continue
+            rgba = list(m.diffuse_color)
+            cu.materials[i] = _lit_material(f"{m.name}_lit", rgba)
+    for o in [o for o in scene.objects if "_ol" in o.name]:  # 縁取りの写しは立体では使わない
+        o.hide_render = True
+    root.rotation_euler = (math.radians(-12.0), math.radians(16.0), 0.0)
+    for name, rgb, power, loc in (
+        ("key", KEY_RGB, 1.0, (3.0, 3.0, 4.2)),  # 斜め前上 45°・距離 3（文字の単位）
+        ("fill", FILL_RGB, 0.4, (-3.0, 0.5, 4.2)),  # 反対側の斜め前
+        ("rim", RIM_RGB, 0.15, (0.0, 3.0, -3.0)),  # 後ろ斜め上
+    ):
+        ld = bpy.data.lights.new(name, "AREA")
+        ld.size = 1.0
+        ld.color = rgb
+        ld.energy = 600.0 * power
+        lo = bpy.data.objects.new(name, ld)
+        lo.location = loc
+        scene.collection.objects.link(lo)
+        direction = -lo.location.normalized()
+        lo.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+
+def _lit_material(name, rgba):  # noqa: ANN001
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value = rgba
+    bsdf.inputs["Roughness"].default_value = 0.45
+    fres = nt.nodes.new("ShaderNodeFresnel")
+    fres.inputs["IOR"].default_value = 0.95
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.interpolation = "CONSTANT"
+    ramp.color_ramp.elements[0].position = 0.0
+    ramp.color_ramp.elements[1].position = 0.5
+    emit = nt.nodes.new("ShaderNodeEmission")
+    emit.inputs["Color"].default_value = (*RIM_RGB, 1.0)
+    add = nt.nodes.new("ShaderNodeAddShader")
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(fres.outputs[0], ramp.inputs[0])
+    nt.links.new(ramp.outputs[0], emit.inputs["Strength"])
+    nt.links.new(bsdf.outputs[0], add.inputs[0])
+    nt.links.new(emit.outputs[0], add.inputs[1])
+    nt.links.new(add.outputs[0], out.inputs[0])
+    return mat
+
+
 def main() -> None:
     a = load_args()
     w, h, fps, frames = int(a["width"]), int(a["height"]), int(a["fps"]), int(a["frames"])
@@ -435,6 +498,9 @@ def main() -> None:
         main_obj = o
         box_w, box_h = dims.x * scale, dims.y * scale
     del main_obj
+
+    if a.get("solid3d"):  # 統合版 T24 立体の文字・L1 3 点照明・L2 リム
+        solid3d(scene, root)
 
     if a.get("sun_beams"):  # 統合版 L3（予告編の題名）
         sun_beams(scene, mat)
