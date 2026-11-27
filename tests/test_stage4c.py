@@ -235,3 +235,20 @@ def test_load_long_and_unmatched_text_is_fast():
     pp.ingredients(["卵2個" * 500] * 50)
     pp.ranks(["第1位は" * 500] * 50)
     assert time.perf_counter() - t0 < 2.0
+
+
+def test_ranks_skip_preface_and_strip_endings():
+    """実機: 「第11位から第3位まで発表するわ」を 11 位と数え、名前に口調の語尾が残った。"""
+    rs = pp.ranks(
+        [
+            "第11位から第3位まで、順に発表するわ",
+            "第11位は長野県・松本城なのだ",
+            "第10位は北海道・小樽運河なの",
+            "第1位は東京・東京スカイツリーなのよ！",
+        ]
+    )
+    assert [(r.line, r.number, r.name) for r in rs] == [
+        (1, 11, "長野県・松本城"),
+        (2, 10, "北海道・小樽運河"),
+        (3, 1, "東京・東京スカイツリー"),
+    ]

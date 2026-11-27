@@ -614,15 +614,18 @@ async def test_lower_thirds_show_name_and_job_title(dclient):
     first = {}
     for x in segs:
         first.setdefault(x.speaker, x.start_frame)
-    assert [x["start_frame"] for x in lts] == [first["A"] + 15, first["B"] + 15]
+    # A の最初の発話の間は題名が出ている。題名と同時に動かさないので、A の帯は題名の後に回し、
+    # B の帯まで 1.5 秒も無ければ出さない（実機: 同時に 3 つ動いて検査で止まった）
+    title = next(x for x in tl["clips"] if roles.get(x["id"]) == "title_card")
+    assert all(x["start_frame"] >= title["end_frame"] for x in lts)
+    assert lts[-1]["start_frame"] == first["B"] + 15
     assert all(x["end_frame"] - x["start_frame"] <= 5 * 30 for x in lts)
-    assert lts[0]["end_frame"] <= lts[1]["start_frame"]  # 次の話者の帯が出たら前は消す
+    assert all(a["end_frame"] <= b["start_frame"] for a, b in zip(lts, lts[1:], strict=False))
     assets = {a["id"]: a for a in tl["assets"]}
-    a_img = Image.open(container.settings.data_dir / assets[lts[0]["asset_id"]]["path"])
-    b_img = Image.open(container.settings.data_dir / assets[lts[1]["asset_id"]]["path"])
-    assert b_img.height > a_img.height  # 肩書きの 2 行目がある
-    assert lts[0]["animation"]["preset"].startswith("slide_in_left")
-    assert lts[0]["transform"]["x"] < -0.3  # 左寄せ
+    b_img = Image.open(container.settings.data_dir / assets[lts[-1]["asset_id"]]["path"])
+    assert b_img.height > 90 * 360 / 1080  # 肩書きの 2 行目がある
+    assert lts[-1]["animation"]["preset"].startswith("slide_in_left")
+    assert lts[-1]["transform"]["x"] < -0.3  # 左寄せ
 
 
 async def _apply(c, pid, sid, purpose, **design):
@@ -696,6 +699,13 @@ async def test_ranking_numbers_board_and_first_place_silence(dclient):
     tl, by = await _apply(c, pid, sid, "ranking")
     nums = by["rank_number"]
     assert [x["start_frame"] for x in nums] == [s.start_frame for s in after[1:]]
+    # 数字の間に始まるカードは、数字が消えてから出す（同じ所に重ねない）
+    fig = next(t["id"] for t in tl["tracks"] if t["name"] == "演出・図")
+    for n in nums:
+        assert not any(
+            x["track_id"] == fig and n["start_frame"] < x["start_frame"] < n["end_frame"]
+            for x in tl["clips"]
+        )
     assert all(x["animation"]["preset"] for x in nums)
     boards = by.get("rank_board", [])
     for b in boards:
