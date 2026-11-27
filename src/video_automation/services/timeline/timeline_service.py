@@ -219,9 +219,20 @@ class TimelineService:
             fps=info.fps,
             has_audio=info.has_audio and kind != AssetKind.IMAGE,
             source="import",
+            caption=(req.caption or "").strip() or None,
         )
         async with self.db.session_factory() as s:
             s.add(row)
+            await s.commit()
+            return AssetRead.model_validate(row)
+
+    async def set_caption(self, asset_id: str, caption: str) -> AssetRead:
+        """統合版 N17: 素材に利用者の一言を付ける（空なら外す）。"""
+        async with self.db.session_factory() as s:
+            row = await s.get(Asset, asset_id)
+            if row is None:
+                raise TimelineNotFoundError("asset not found")
+            row.caption = caption.strip() or None
             await s.commit()
             return AssetRead.model_validate(row)
 

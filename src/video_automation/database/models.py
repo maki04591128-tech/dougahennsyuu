@@ -255,6 +255,7 @@ class Asset(Base):
     has_audio: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="import")
     audio_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    caption: Mapped[str | None] = mapped_column(String(200), nullable=True)  # 統合版 N17
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )

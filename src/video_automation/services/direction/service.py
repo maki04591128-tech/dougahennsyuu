@@ -397,6 +397,31 @@ def _reveal_steps(shot: Shot, lines: list, start: int, end: int, min_len: int) -
     return [(bounds[k], bounds[k + 1], k + 1) for k in range(n)]
 
 
+def _polaroid(src: Any, caption: str, h: int, box: float, font_path: str | None) -> Any:
+    """統合版 N17: 写真に白い縁（上左右 2%・下 7%）を付け、下の縁に一言を書いた画。
+    一言は M PLUS Rounded 1c / Medium・画面の高さの 4%・#333333（置いた後の大きさで）。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    iw, ih = src.size
+    side, bottom = round(ih * 0.02), round(ih * 0.07)
+    k = box * h / (ih + side + bottom)  # 置いた後の 1 画素 = 画面の何画素か
+    size = max(10, round(0.04 * h / k))
+    bottom = max(bottom, round(size * 1.6))
+    out = Image.new("RGBA", (iw + 2 * side, ih + side + bottom), (255, 255, 255, 255))
+    out.alpha_composite(src.convert("RGBA"), (side, side))
+    font = ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size)
+    d = ImageDraw.Draw(out)
+    full = caption.strip()
+    text = full
+    while text and d.textlength(text + ("…" if text != full else ""), font=font) > iw:
+        text = text[:-1]
+    if text != full:
+        text += "…"
+    d.text((out.size[0] / 2, ih + side + bottom / 2), text, font=font, fill=(0x33, 0x33, 0x33),
+           anchor="mm")  # fmt: skip
+    return out
+
+
 def _hex_rgb(c: str) -> tuple[int, int, int]:
     c = c.lstrip("#")
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
@@ -1079,6 +1104,21 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _photo_card(
+        self, project_id: str, img: AssetRead, caption: str, h: int, box: float
+    ) -> AssetRead:
+        """統合版 N17: 写真に白い縁と一言を付けた画（_polaroid）の素材。"""
+        from PIL import Image
+
+        path = self.titles.font_path("M PLUS Rounded 1c Medium")
+
+        def draw() -> Any:
+            src = Image.open(self.settings.data_dir / img.path).convert("RGBA")
+            return _polaroid(src, caption, h, box, path)
+
+        out = await asyncio.to_thread(draw)
+        return await self._png(project_id, out, f"写真と一言（N17）{img.name[:20]}")
 
     async def _sticker(self, project_id: str, img: AssetRead, h: int) -> AssetRead:
         """統合版 I3: 透過の画像の形に沿って白の縁（8px）と影を付けた画像。"""
@@ -1979,6 +2019,7 @@ class DirectionService:
 
         kb_index = 0  # 連続する画像のケン・バーンズの向き（B3）
         n_sticker = 0  # 統合版 I3: 何枚目のステッカーか（傾きの向き）
+        n_photo = 0  # 統合版 N17: 何枚目の写真か（傾きの向き）
 
         def ken_burns(clip_id: str, a: AssetRead, length: int, box: float) -> None:
             """画像のケン・バーンズ（統合版 B3）。拡大量 = 秒数 × 1.75%（最小 8%・最大 20%）。
@@ -2468,6 +2509,7 @@ class DirectionService:
                 shown.append((start, shown_end))
             else:  # IMAGE
                 img = assets[s.asset_id or ""]  # 置けるものだけ mains に残している
+                cap = img.caption  # 見た目を合わせた画は別の素材になるので、先に取っておく
                 if req.match_look and prof is not None:
                     img = await self._matched_image(p.id, img, prof, assets)
                 use(Component.IMAGE)
@@ -2479,6 +2521,14 @@ class DirectionService:
                 )
                 if sticker:  # 統合版 I3: 切り抜きの画像は白の縁と影を付けたステッカーにする
                     img = await self._sticker(p.id, img, h)
+                photo = (
+                    prof is not None
+                    and prof.purpose in (Purpose.DOCUMENTARY, Purpose.STORY, Purpose.VLOG)
+                    and bool(cap)
+                    and not sticker
+                )
+                if photo:  # 統合版 N17: 白い縁と一言を付けた写真にする
+                    img = await self._photo_card(p.id, img, cap or "", h, box)
                 cid = add(
                     fig_t,
                     img.id,
@@ -2488,7 +2538,23 @@ class DirectionService:
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
                 dx = parallax_dx(img, box) if prof is not None else 0.0
-                if sticker and length > 6:
+                if photo and length > 12:
+                    # 統合版 N17: 回転 −3°（次は ＋2°、以後交互）、上から y −6%→0・
+                    # scale 1.08→1.00 を 12f（easeOutCubic）
+                    n_photo += 1
+                    rot = -3.0 if n_photo % 2 else 2.0
+                    keys = [
+                        Keyframe(frame=0, y=-0.06, scale=1.08, rotation=rot, opacity=0.0,
+                                 easing=Easing.CUBIC_OUT),
+                        Keyframe(frame=12, y=0.0, scale=1.0, rotation=rot, opacity=1.0),
+                        Keyframe(frame=length - 7, opacity=1.0, rotation=rot,
+                                 easing=Easing.CUBIC_IN),
+                        Keyframe(frame=length - 1, opacity=0.0, rotation=rot),
+                    ]  # fmt: skip
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys))
+                    )
+                elif sticker and length > 6:
                     # 統合版 I3: scale 1.3→1.0・回転 +10°→（奇数番目 −6°、偶数番目 ＋6°）を 5f
                     n_sticker += 1
                     rot = -6.0 if n_sticker % 2 else 6.0

@@ -11,6 +11,7 @@ from video_automation.database.models import Asset
 from video_automation.schemas.common import JobRead
 from video_automation.schemas.project import ProjectRead
 from video_automation.schemas.timeline import (
+    AssetCaptionRequest,
     AssetImportRequest,
     AssetRead,
     CommandOrigin,
@@ -157,6 +158,14 @@ async def preview(
 @assets.post("/import", response_model=AssetRead, status_code=201)
 async def import_asset(body: AssetImportRequest, c: AppContainer = Depends(get_container)):
     return await c.timeline.import_asset(body)
+
+
+@assets.put("/{asset_id}/caption", response_model=AssetRead)
+async def set_caption(
+    asset_id: str, body: AssetCaptionRequest, c: AppContainer = Depends(get_container)
+):
+    """統合版 N17: 写真に一言を付ける（朗読・物語・ドキュメンタリー・Vlog で写真の下に書く）。"""
+    return await c.timeline.set_caption(asset_id, body.caption)
 
 
 @assets.post("/title_card", response_model=JobRead, status_code=202)

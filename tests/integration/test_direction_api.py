@@ -1566,3 +1566,47 @@ async def test_card_item_marks_icon_and_checklist(dclient):
     assert marks  # バッテリー・時間の絵
     marks, tl = await apply("news")
     assert not marks
+
+
+async def test_photo_with_caption(dclient, media_dir):
+    """統合版 N17: 一言の付いた写真は、白い縁と一言を付けて傾けて置く（解説では付けない）。"""
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    src = media_dir / "photo_n17.png"
+    Image.new("RGB", (400, 300), (40, 120, 200)).save(src)
+    a = (
+        await c.post(
+            "/assets/import",
+            json={"project_id": pid, "path": str(src), "caption": "夏の海で"},
+        )
+    ).json()
+    assert a["caption"] == "夏の海で"
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 2, "to_line": 4, "asset_id": a["id"]}],
+    }
+
+    async def image_clip(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        res = await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        roles = await c.app.state.container.design.clip_roles(pid)
+        clip = next((x for x in tl["clips"] if roles.get(x["id"]) == "image"), None)
+        assert clip is not None, res
+        return clip, {x["id"]: x for x in tl["assets"]}[clip["asset_id"]]
+
+    clip, asset = await image_clip("story")
+    assert asset["name"].startswith("写真と一言（N17）")
+    assert asset["height"] > 300 and asset["width"] > 400  # 白い縁の分だけ大きい
+    keys = clip["animation"]["keyframes"]
+    assert keys[0]["rotation"] == -3 and keys[0]["y"] == -0.06 and keys[1]["frame"] == 12
+    clip, asset = await image_clip("explainer")
+    assert not asset["name"].startswith("写真と一言")
+    # 一言を外すと普通の写真
+    r = await c.put(f"/assets/{a['id']}/caption", json={"caption": ""})
+    assert r.status_code == 200 and r.json()["caption"] is None
+    clip, asset = await image_clip("story")
+    assert not asset["name"].startswith("写真と一言")
