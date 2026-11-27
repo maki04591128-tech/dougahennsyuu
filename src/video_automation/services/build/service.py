@@ -151,6 +151,7 @@ MV_MOTIF_TRACKS = ("MV・形（白）", "MV・形（黒）")  # 統合版 V11
 MV_INK_TRACK = "MV・インク"  # 統合版 V6
 MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
 MV_KEY_TRACK = "MV・キーの一字"  # 統合版 T26
+X4_TRACK = "演出・擬音"  # 統合版 X4
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
@@ -1556,6 +1557,47 @@ class BuildService:
             )
         return notes
 
+    async def _onomatopoeia(
+        self,
+        project_id: str,
+        tl: Any,
+        pops: list[int],
+        total: int,
+        prof: Any,
+        cmds: list[Any],
+        work: Path,
+    ) -> list[str]:
+        """統合版 X4: 効果音（ポン）を鳴らす所に「ポン！」の吹き出し（右上寄り、24f）。"""
+        from video_automation.services.direction import effects as fx
+
+        c = self.c
+        fps = tl.fps_num / tl.fps_den
+        font = c.titles.font_path("M PLUS Rounded 1c ExtraBold") or c.titles.font_path(None)
+        fr = await asyncio.to_thread(
+            fx.onomatopoeia, fx.ONOMATOPOEIA["pop"], tl.height, prof.palette.accent, font
+        )
+        a_ = await self._alpha_mov(project_id, work, fr, fps, "擬音（X4）「ポン！」")
+        tr = next((t for t in tl.tracks if t.name == X4_TRACK), None)
+        if tr is not None:
+            cmds.extend(DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == tr.id)
+            tid = tr.id
+        else:
+            tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=X4_TRACK, track_id=tid))
+            cmds.append(MoveTrack(track_id=tid, index=1000))
+        bw, bh = fr[0].size
+        tf = native_transform(bw, bh, tl.width, tl.height, cx=0.78, cy=0.22, max_w=1.0)
+        last, n = -(10**9), 0
+        for at in pops:
+            if at < last or at + len(fr) > total:
+                continue
+            cmds.append(
+                AddClip(track_id=tid, asset_id=a_.id, start_frame=at, duration_frames=len(fr),
+                        clip_id=str(uuid4()), transform=tf)
+            )  # fmt: skip
+            last, n = at + len(fr), n + 1
+        return [f"効果音の所に擬音を {n} か所出しました"] if n else []
+
     async def _alpha_mov(
         self, project_id: str, work: Path, frames: list[Any], fps: float, label: str
     ) -> AssetRead:
@@ -1970,6 +2012,7 @@ class BuildService:
                 "効果音（強調）",
             )
             last = -(10**9)
+            pops: list[int] = []  # 統合版 X4: ゲーム実況・子ども向けは鳴らす所に擬音
             for start, kind, lead in cue:
                 a = whooshes[lead] if kind == "whoosh" else pop
                 length = max(1, int((a.duration_sec or 0.3) * fps))  # 素材の長さを超えない
@@ -1987,6 +2030,10 @@ class BuildService:
                     )
                 )
                 last = start + length
+                if kind == "pop":
+                    pops.append(start)
+            if pops and purpose in (Purpose.GAME, Purpose.KIDS):
+                notes += await self._onomatopoeia(project_id, tl, pops, total, prof, cmds, work)
             n = sum(1 for x in cmds if isinstance(x, AddClip) and x.track_id == tid[SFX_TRACK])
             if n:
                 await c.design.record(project_id, "build_audio", {"used": {"sfx": n}})

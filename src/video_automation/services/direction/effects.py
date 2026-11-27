@@ -205,3 +205,56 @@ def loading_done(h: int, accent: str, fps: float = 30) -> list[Any]:
                 d.line(xy, fill=(255, 255, 255, a), width=lw, joint="curve")
         out.append(im)
     return out
+
+
+ONOMATOPOEIA = {"pop": "ポン！", "don": "ドン！", "kira": "キラッ"}
+X4_FRAMES = 24  # 入り 8f・表示 12f・消える 4f
+
+
+def onomatopoeia(word: str, h: int, accent: str, font: str | None) -> list[Any]:
+    """X4: ぎざぎざの吹き出し（accent の面・#111111 の縁 6px）に語（画面の高さの 10%）。
+    scale 0→1.2→1（8f）、回転 −6°、12f 表示して 4f で消す。"""
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    size = round(h * 0.10)
+    f = (
+        ImageFont.truetype(font, size)
+        if font and Path(font).is_file()
+        else ImageFont.load_default(size)
+    )
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    tw = probe.textlength(word, font=f)
+    bw, bh = round(tw + size * 1.4), round(size * 2.0)
+    base = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(base)
+    pts = []
+    for i in range(28):  # ぎざぎざ（外と内を交互）
+        a = 2 * math.pi * i / 28
+        r = 1.0 if i % 2 == 0 else 0.82
+        pts.append(
+            (bw / 2 + math.cos(a) * bw / 2 * r * 0.96, bh / 2 + math.sin(a) * bh / 2 * r * 0.96)
+        )
+    lw = max(2, round(6 * h / 1080))
+    d.polygon(pts, fill=(*_rgb(accent), 255), outline=(0x11, 0x11, 0x11, 255), width=lw)
+    d.text((bw / 2, bh / 2), word, font=f, fill=(0x11, 0x11, 0x11, 255), anchor="mm")
+    pad = round(max(bw, bh) * 0.15)
+    out = []
+    for i in range(X4_FRAMES):
+        if i < 8:
+            u = i / 8
+            sc = 1.2 * math.sin(u * math.pi / 2) if u < 0.6 else 1.2 - 0.2 * (u - 0.6) / 0.4
+        else:
+            sc = 1.0
+        alpha = 1.0 if i < 20 else (X4_FRAMES - 1 - i) / 4
+        im = Image.new("RGBA", (bw + 2 * pad, bh + 2 * pad), (0, 0, 0, 0))
+        if sc > 0.02:
+            bic = Image.Resampling.BICUBIC
+            s_ = base.resize((max(1, round(bw * sc)), max(1, round(bh * sc))), bic)
+            s_ = s_.rotate(6, expand=True, resample=bic)
+            if alpha < 1:
+                s_.putalpha(s_.getchannel("A").point(lambda v, a_=alpha: round(v * a_)))
+            im.alpha_composite(s_, ((im.width - s_.width) // 2, (im.height - s_.height) // 2))
+        out.append(im)
+    return out

@@ -1256,3 +1256,27 @@ async def test_loading_done_in_tutorial(dclient):
     pid, sid = await _ready_script(c, lines)
     tl, _ = await _apply(c, pid, sid, "tutorial")
     assert "完了の印（I2）" in {a["name"] for a in tl["assets"]}
+
+
+async def test_onomatopoeia_at_pop_sounds(dclient):
+    """統合版 X4: ゲーム実況・子ども向けの「ポン」の効果音の所に「ポン！」の吹き出し（24f）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import AddClip, AddTrack
+    from video_automation.services.design.profiles import PROFILES
+    from video_automation.services.direction import effects as fx
+
+    fr = fx.onomatopoeia("ポン！", 360, "#FFC752", None)
+    assert len(fr) == 24 and fr[-1].getchannel("A").getextrema()[1] == 0
+    c = dclient
+    pid, _ = await _ready_script(c)
+    cont = c.app.state.container
+    tl = await cont.timeline.get_timeline(pid)
+    cmds: list = []
+    work = cont.settings.data_dir / "projects" / pid / "assets"
+    notes = await cont.build._onomatopoeia(
+        pid, tl, [10, 20, 60], 200, PROFILES[Purpose.GAME], cmds, work
+    )
+    clips = [x for x in cmds if isinstance(x, AddClip)]
+    assert [x.start_frame for x in clips] == [10, 60]  # 重なる 2 つ目は出さない
+    assert any(isinstance(x, AddTrack) and x.name == "演出・擬音" for x in cmds)
+    assert notes == ["効果音の所に擬音を 2 か所出しました"]
