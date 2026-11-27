@@ -714,8 +714,8 @@ def test_rich_direction_more_lyric_motions(tmp_path):
 
     clean = tmp_path / "clean.mp4"
     subprocess.run(
-        [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=6:r=30", "-f",
-         "lavfi", "-i", "sine=d=6", "-shortest", "-pix_fmt", "yuv420p", str(clean)],
+        [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=7:r=30", "-f",
+         "lavfi", "-i", "sine=d=7", "-shortest", "-pix_fmt", "yuv420p", str(clean)],
         check=True,
     )  # fmt: skip
     motions = [
@@ -727,6 +727,7 @@ def test_rich_direction_more_lyric_motions(tmp_path):
         ["gather", "static", "fall"],
         ["stack", "static", "rise_out"],  # 並べて動かす（同じ行を縦に 3 つ）
         ["fade_up", "outline_light", "fade"],  # T19 輪郭を走る光
+        ["morph", "static", "shrink"],  # T23 前の行（同じ字数）の形から変形
     ]
     cues = [
         {"segment": str(i), "text": "そら", "start_frame": 2 + 19 * i,
@@ -767,6 +768,7 @@ def test_rich_direction_more_lyric_motions(tmp_path):
     for m in motions:
         for name in m:
             assert got.get(name, 0) >= 1, (name, got)
+    assert rep.get("morphed") == 1, rep  # T23: 字数の同じ前の行から変形した
 
 
 @pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")

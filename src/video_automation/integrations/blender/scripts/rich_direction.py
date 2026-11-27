@@ -471,10 +471,12 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
                 _key(cp, "location", 1, yj + 0.08 * H * PX, 1)
                 _key(cp, "location", f0, yj + 0.08 * H * PX, 1)
                 _key(cp, "location", f0 + 8, yj, 1)
+        elif entrance == "morph":
+            pass  # T23: 形の変形は morph_line が受け持つ（行全体は動かさない）
         elif entrance == ent_a:
             pass  # ネオン（不透明度だけ）
         else:
-            entrance = "bounce"  # morph（T23）は未対応なので 1 文字ずつの弾み
+            entrance = "bounce"  # 作っていない入りは 1 文字ずつの弾み
         hold_end = max(12, out_at)
         if hold == "breathe":  # 呼吸: 1.000→1.015→1.000、周期 3.2 秒
             per = round(3.2 * FPS)
@@ -556,6 +558,144 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
             exit_ = "shrink_chars"
         used = [entrance, hold, exit_]
     return used
+
+
+T23_POINTS = 64
+T23_FRAMES = 12
+
+
+def _glyph_outlines(text, size, font_path):
+    """文字列の各文字の最も外側の輪郭（最も大きい閉じた線）を、T23_POINTS 点の列で返す。
+    文字の区切りは、輪郭の中心の x を字数で等分した帯で決める（和文はほぼ等幅のため）。"""
+    from mathutils import Vector
+    from mathutils.geometry import interpolate_bezier
+
+    cu = bpy.data.curves.new("t23_src", "FONT")
+    cu.body = text
+    cu.size = size
+    cu.align_x, cu.align_y = "CENTER", "CENTER"
+    if font_path:
+        cu.font = bpy.data.fonts.load(font_path, check_existing=True)
+    elif FONT:
+        cu.font = font()
+    ob = bpy.data.objects.new("t23_src", cu)
+    bpy.context.scene.collection.objects.link(ob)
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    tmp = ev.to_curve(dg)
+    loops = []
+    for sp in tmp.splines:
+        pts = []
+        bp = sp.bezier_points
+        if len(bp) >= 2:
+            for i in range(len(bp)):
+                a, b = bp[i], bp[(i + 1) % len(bp)]
+                seg = interpolate_bezier(a.co, a.handle_right, b.handle_left, b.co, 8)
+                pts += [Vector((v.x, v.y)) for v in seg[:-1]]
+        else:
+            pts = [Vector((q.co.x, q.co.y)) for q in sp.points]
+        if len(pts) >= 3:
+            loops.append(pts)
+    ev.to_curve_clear()
+    bpy.data.objects.remove(ob)
+    bpy.data.curves.remove(cu)
+    chars = [ch for ch in text if not ch.isspace()]
+    if not loops or not chars:
+        return []
+    xs = [p.x for lp in loops for p in lp]
+    x0, x1 = min(xs), max(xs)
+    bw = max(1e-6, (x1 - x0) / len(chars))
+
+    def area(lp):
+        return abs(sum(lp[i].x * lp[i - 1].y - lp[i - 1].x * lp[i].y for i in range(len(lp)))) / 2
+
+    out = []
+    for k in range(len(chars)):
+        mine = [
+            lp for lp in loops if x0 + bw * k <= sum(p.x for p in lp) / len(lp) < x0 + bw * (k + 1)
+        ]
+        if not mine:
+            c = Vector((x0 + bw * (k + 0.5), 0.0))
+            out.append([c.copy() for _ in range(T23_POINTS)])
+            continue
+        out.append(_resample(max(mine, key=area), T23_POINTS))
+    return out
+
+
+def _resample(lp, n):
+    """閉じた折れ線を周の長さで等間隔の n 点に（始点は最も上の点）。"""
+    top = max(range(len(lp)), key=lambda i: (lp[i].y, -lp[i].x))
+    lp = lp[top:] + lp[:top]
+    ring = lp + [lp[0]]
+    seg = [(ring[i + 1] - ring[i]).length for i in range(len(lp))]
+    total = sum(seg) or 1.0
+    out, j, acc = [], 0, 0.0
+    for k in range(n):
+        d = total * k / n
+        while j < len(seg) - 1 and acc + seg[j] < d:
+            acc += seg[j]
+            j += 1
+        u = (d - acc) / seg[j] if seg[j] else 0.0
+        out.append(ring[j].lerp(ring[j + 1], u))
+    return out
+
+
+def morph_line(sc, prev_text, text, size, y, color, font_path, length):
+    """統合版 T23: 前の行と次の行の各文字の輪郭を 64 点にそろえ、12f（easeInOutCubic）で点を
+    直線補間で移す。変形の間は輪郭を塗った形（シェイプキー）を見せ、終わったら本来の文字に
+    替える（本来の文字の物体は 12f まで隠す）。字数が違うときは何もしない。"""
+    a = _glyph_outlines(prev_text, size, font_path)
+    b = _glyph_outlines(text, size, font_path)
+    if not a or len(a) != len(b):
+        return False
+    mat = bpy.data.materials.new("t23")
+    bs = mat.node_tree.nodes["Principled BSDF"]
+    bs.inputs["Base Color"].default_value = (*color, 1)
+    bs.inputs["Emission Color"].default_value = (*color, 1)
+    bs.inputs["Emission Strength"].default_value = 1.0
+    cu = bpy.data.curves.new("t23_shape", "CURVE")
+    cu.dimensions = "2D"
+    cu.fill_mode = "BOTH"
+    for la in a:
+        sp = cu.splines.new("POLY")
+        sp.points.add(T23_POINTS - 1)
+        for q, v in zip(sp.points, la, strict=True):
+            q.co = (v.x, v.y, 0.0, 1.0)
+        sp.use_cyclic_u = True
+    cu.materials.append(mat)
+    ob = bpy.data.objects.new("t23_shape", cu)
+    sc.collection.objects.link(ob)
+    ob.location.y = y
+    ref = next((o for o in sc.objects if o.type == "MESH"), None)
+    if ref is not None:  # サビの斜め（M3）に合わせる
+        ob.rotation_euler = ref.rotation_euler
+    ob.shape_key_add(name="Basis")
+    key = ob.shape_key_add(name="Next")
+    i = 0
+    for lb in b:
+        for v in lb:
+            key.data[i].co = (v.x, v.y, 0.0)
+            i += 1
+    key.value = 0.0
+    key.keyframe_insert("value", frame=1)
+    key.value = 1.0
+    key.keyframe_insert("value", frame=1 + T23_FRAMES)
+    bag = channelbag(ob.data.shape_keys)
+    for fc in bag.fcurves if bag is not None else []:
+        for kp in fc.keyframe_points:
+            kp.interpolation, kp.easing = "CUBIC", "EASE_IN_OUT"
+    # 形は変形の間だけ見せ、本来の文字はその後から見せる
+    ob.hide_render = False
+    ob.keyframe_insert("hide_render", frame=1)
+    ob.hide_render = True
+    ob.keyframe_insert("hide_render", frame=2 + T23_FRAMES)
+    for o in sc.objects:
+        if o.type == "MESH":
+            o.hide_render = True
+            o.keyframe_insert("hide_render", frame=1)
+            o.hide_render = False
+            o.keyframe_insert("hide_render", frame=2 + T23_FRAMES)
+    return True
 
 
 def center_x(sc, name, frame):
@@ -1033,6 +1173,14 @@ def main():
                 center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
                 mo = c.get("motion")
                 alpha_keys = []
+                if mo and mo[0] == "morph" and i > 0 and len(rows) == 1:  # 統合版 T23
+                    prev_rows = [
+                        x for x in str(cues[i - 1].get("text") or "").split("\n") if x.strip()
+                    ]
+                    if prev_rows and morph_line(ksc, prev_rows[-1], row, size, ry, col,
+                                                LYRIC_FONT, length):  # fmt: skip
+                        REPORT.setdefault("morphed", 0)
+                        REPORT["morphed"] += 1
                 if mo:  # 統合版 V5 の改訂
                     out_at_ = max(8, length - 14)
                     beats_ = [F0 + int(b) - f0 + 1 for b in (A.get("beats") or [])
