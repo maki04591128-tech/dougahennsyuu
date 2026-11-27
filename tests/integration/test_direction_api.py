@@ -1232,3 +1232,20 @@ async def test_price_drop_in_product(dclient):
     pid, sid = await _ready_script(c, lines)
     tl, _ = await _apply(c, pid, sid, "product")
     assert "値下げ（P10）" in {a["name"] for a in tl["assets"]}
+
+
+async def test_loading_done_in_tutorial(dclient):
+    """統合版 I2: 操作説明で「できました」で終わる文に、右上の輪とチェック（1.5 秒）。"""
+    from video_automation.services.direction import effects as fx
+
+    fr = fx.loading_done(360, "#FFC752")
+    assert len(fr) == 45 and fr[-1].getchannel("A").getextrema()[1] == 0
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "設定を開いて保存を押します。"},
+        {"speaker": "B", "text": "これで設定の変更ができました。"},
+        {"speaker": "A", "text": "次は表示を変えましょう。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "tutorial")
+    assert "完了の印（I2）" in {a["name"] for a in tl["assets"]}

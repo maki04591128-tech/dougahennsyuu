@@ -1284,6 +1284,20 @@ class DirectionService:
             if at + n <= title_end:
                 tf = ClipTransform(fit=FitMode.FIT, scale=round(2 * size / h, 4), x=0.28, y=-0.12)
                 await put(fr, "きらめき（X2）", at, n, transform=tf)
+        if pv == Purpose.TUTORIAL:  # I2: 「完了です」「できました」で終わる文の終わりに右上の輪
+            sa = safe_area_for(prof, w, h)
+            done: list[Any] = []
+            for ln in lines:
+                t = ln.text.rstrip("。！!　 ")
+                if not t.endswith(("完了です", "できました")):
+                    continue
+                done = done or await asyncio.to_thread(fx.loading_done, h, prof.palette.accent, fps)
+                bw = done[0].size[0]
+                tf = native_transform(bw, bw, w, h, cx=1 - sa.right - bw / w / 2,
+                                      cy=sa.top + bw / h / 2, max_w=1.0)  # fmt: skip
+                at = max(0, ln.end - len(done) // 2)
+                if at + len(done) <= total:
+                    await put(done, "完了の印（I2）", at, len(done), transform=tf)
         if pv in (Purpose.SHORT, Purpose.GAME):  # 驚きの発話の頭（1 秒に最大 1 回）
             last = -(10**9)
             fl: list[Any] = []

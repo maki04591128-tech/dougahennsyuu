@@ -166,3 +166,42 @@ def embers(w: int, h: int, seed: int = 1) -> list[Any]:
         glow.alpha_composite(im)
         out.append(glow)
     return out
+
+
+def loading_done(h: int, accent: str, fps: float = 30) -> list[Any]:
+    """I2: 直径は画面の高さの 10% の輪。円弧が 1 周 18f で 2 周してから、輪を accent で塗り、
+    白のチェックを 8f で描く。1.5 秒で消す（最後の 6f で薄く）。"""
+    from PIL import Image, ImageDraw
+
+    d_ = round(h * 0.10)
+    pad = max(4, d_ // 10)
+    size = d_ + 2 * pad
+    lw = max(3, d_ // 12)
+    total = round(1.5 * fps)
+    col = _rgb(accent)
+    out = []
+    for f in range(total):
+        im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        box = [pad, pad, pad + d_, pad + d_]
+        fade = 1.0 if f < total - 6 else (total - 1 - f) / 6
+        a = round(255 * fade)
+        if f < 36:  # 2 周
+            start = (f % 18) / 18 * 360 - 90
+            d.arc(box, start, start + 270, fill=(*col, a), width=lw)
+        else:
+            d.ellipse(box, fill=(*col, a))
+            u = min(1.0, (f - 36) / 8)
+            p1, p2, p3 = (0.28, 0.52), (0.44, 0.68), (0.74, 0.36)
+            seg = u * 2
+            path = [p1]
+            if seg <= 1:
+                path.append((p1[0] + (p2[0] - p1[0]) * seg, p1[1] + (p2[1] - p1[1]) * seg))
+            else:
+                v = seg - 1
+                path += [p2, (p2[0] + (p3[0] - p2[0]) * v, p2[1] + (p3[1] - p2[1]) * v)]
+            xy = [(pad + x * d_, pad + y * d_) for x, y in path]
+            if len(xy) >= 2:
+                d.line(xy, fill=(255, 255, 255, a), width=lw, joint="curve")
+        out.append(im)
+    return out
