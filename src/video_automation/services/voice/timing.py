@@ -195,3 +195,23 @@ def level_speech(data: bytes) -> bytes:
         w.setparams(params)
         w.writeframes(y.tobytes())
     return buf.getvalue()
+
+
+def strongest_phrase_sec(query: AudioQuery) -> float | None:
+    """統合版 Q8: アクセントの最も強い句（モーラの音の高さの最大が最も高い句）の始まりの秒。"""
+    speed = query.speedScale if query.speedScale > 0 else 1.0
+    t = (query.prePhonemeLength or 0.0) / speed
+    best: tuple[float, float] | None = None
+    for ap in query.accent_phrases:
+        start = t
+        peak = max((m.pitch or 0.0 for m in ap.moras), default=0.0)
+        for m in ap.moras:
+            t += ((m.consonant_length or 0.0) + (m.vowel_length or 0.0)) / speed
+        if ap.pause_mora is not None:
+            pause = (
+                query.pauseLength if query.pauseLength is not None else ap.pause_mora.vowel_length
+            )
+            t += (pause or 0.0) * query.pauseLengthScale / speed
+        if peak > 0 and (best is None or peak > best[0]):
+            best = (peak, start)
+    return None if best is None else round(best[1], 4)

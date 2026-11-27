@@ -367,3 +367,23 @@ async def test_render_colors_bt709(mclient, media_settings, media_dir):
         px = raw[(32 * 64 + 32) * 3 : (32 * 64 + 32) * 3 + 3]
         want = bytes.fromhex(col[1:])
         assert max(abs(a - b) for a, b in zip(px, want, strict=True)) <= 3, (col, px.hex())
+
+
+async def test_draft_render_half_size_and_timings(mclient, media_dir, media_settings):
+    """統合版 W4: 下書きは解像度 50%・配置は同じ。処理ごとの書き出し時間を結果に出す。"""
+    c = mclient
+    pid = await _project_with_timeline(c, media_dir)
+    r = await c.post(
+        "/render", json={"project_id": pid, "quality": 35, "draft": True, "end_frame": 30}
+    )
+    job = await c.app.state.jobs.wait(r.json()["job_id"])
+    assert job.status == "SUCCEEDED", job.error
+    out = Path(media_settings.data_dir) / job.result["output_path"]
+    info = await FFmpeg().probe(out)
+    assert (info.width, info.height) == (960, 540) and "_draft" in out.name
+    t = job.result["timings"]
+    assert job.result["draft"] is True and t["ffmpeg"] >= 0 and t["total"] >= t["ffmpeg"]
+    assert "flash_check" in t
+    r = await c.post("/render", json={"project_id": pid, "quality": 35, "end_frame": 30})
+    job = await c.app.state.jobs.wait(r.json()["job_id"])
+    assert job.result["draft"] is False and set(job.result["timings"]) >= {"ffmpeg", "total"}

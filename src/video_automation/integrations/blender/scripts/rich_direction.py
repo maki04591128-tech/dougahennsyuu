@@ -35,6 +35,7 @@ import bpy  # type: ignore[import-not-found]
 
 A = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text(encoding="utf-8"))
 W, H = int(A["width"]), int(A["height"])
+DRAFT = bool(A.get("draft"))  # 統合版 W4: 下書き
 U = min(W, H) / 1080  # 1080p を基準にした大きさの倍率
 FPS_NUM, FPS_DEN = int(A.get("fps_num", 30)), int(A.get("fps_den", 1))
 FPS = FPS_NUM / FPS_DEN
@@ -174,7 +175,7 @@ def eevee_scene(name, length, samples=16):
         if eng in engines:
             sc.render.engine = eng
             break
-    sc.eevee.taa_render_samples = samples
+    sc.eevee.taa_render_samples = 1 if DRAFT else samples  # 統合版 W4
     sc.render.film_transparent = True
     sc.view_settings.view_transform = "Standard"
     cd = bpy.data.cameras.new(name)
@@ -899,7 +900,7 @@ def main():
                     font_path=LYRIC_FONT,
                     texture=LYRIC_TEXTURE,
                 )
-                ksc.eevee.taa_render_samples = 8
+                ksc.eevee.taa_render_samples = 1 if DRAFT else 8
                 if sec in ("chorus", "chorus_first"):  # 統合版 M3: サビは斜め（−8°）
                     for ob_ in ksc.objects:
                         ob_.rotation_euler.z = math.radians(-8.0)

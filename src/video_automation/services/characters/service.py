@@ -62,7 +62,7 @@ from video_automation.services.timeline.timeline_service import (
 log = get_logger("characters")
 TRACK = "立ち絵"
 TEXT_TRACK = "演出・文字"  # 演出の文字トラック（direction の TRACKS と同じ名前）
-OVERLAY_VERSION = 1
+OVERLAY_VERSION = 2  # 統合版 F1・Q8 でまばたき・うなずきが変わった
 ProgressFn = Callable[[float], Awaitable[None]]
 
 
@@ -247,6 +247,7 @@ class CharacterService:
                 seg.start_frame,
                 seg.end_frame,
                 await asyncio.to_thread(self._levels, af, fps, seg.end_frame - seg.start_frame),
+                self._accent(af, fps),
             )
             for seg, af in lines
         ]
@@ -306,6 +307,20 @@ class CharacterService:
         )
         log.info("tachie_applied", project=p.id, frames=total, cast=[c.name for c in cast])
         return {"applied": True, "cached": False, "clip_id": cid, "asset_id": asset.id}
+
+    @staticmethod
+    def _accent(af: AudioFile | None, fps: float) -> int | None:
+        """統合版 Q8: アクセントの最も強い句の頭（発話の始まりからのフレーム）。"""
+        if af is None or not af.query:
+            return None
+        try:
+            from video_automation.schemas.voice import AudioQuery
+            from video_automation.services.voice.timing import strongest_phrase_sec
+
+            sec = strongest_phrase_sec(AudioQuery.model_validate(af.query))
+        except Exception:  # noqa: BLE001 - 読めない音声はうなずかない
+            return None
+        return None if sec is None else round(sec * fps)
 
     def _levels(self, af: AudioFile | None, fps: float, frames: int) -> list[int] | None:
         if af is None:

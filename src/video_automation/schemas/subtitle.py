@@ -154,3 +154,12 @@ class SubtitleExportResult(BaseModel):
     path: str
     content: str
     cue_count: int
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SubtitleTranslateRequest(BaseModel):
+    """統合版 W5: 字幕を訳して、別の字幕ファイル（SRT）に書き出す。"""
+
+    script_id: str
+    language: Literal["en"] = "en"
+    model_key: str | None = Field(default=None, max_length=200)

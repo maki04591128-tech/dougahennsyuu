@@ -408,3 +408,14 @@ def test_emotion_subtitles_k4():
     # 感情を渡さなければ変えない
     plain = build_ass(rows, Fraction(30), 640, 360, st)
     assert "\\fad(400" not in plain and "\\pos(" not in plain
+
+
+def test_translation_wrap_and_speed():
+    """統合版 W5: 英語は 1 行 42 字・2 行は下が長い形。読む速さ。"""
+    from video_automation.services.subtitle.translate import reading_speed, wrap
+
+    assert wrap("Hello there.") == "Hello there."
+    two = wrap("This is a fairly long subtitle line that needs to be split in two")
+    top, bottom = two.split("\n")
+    assert len(top) <= 42 and len(bottom) <= 42 and len(bottom) >= len(top)
+    assert reading_speed("abc\ndef", 0.3) == 20.0
