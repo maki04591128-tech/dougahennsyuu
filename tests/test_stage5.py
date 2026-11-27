@@ -812,3 +812,54 @@ def test_title_solid3d_lit(tmp_path):
     assert lum.std() > 12  # 平らな発光ではなく、照明で明暗がある
     blue = (a[..., 2] - a[..., 0])[m]
     assert (blue > 25).mean() > 0.01  # リム（#6FC3FF）の縁
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_vertical(tmp_path):
+    """統合版 T11（Y10 の題名）: 縦書きで上から下へ並び、1 文字ずつ現れる。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"
+    args = {
+        "text": "夜明けの街",
+        "width": 320,
+        "height": 180,
+        "fps": 30,
+        "frames": 16,
+        "font_path": font if Path(font).is_file() else None,
+        "text_color": [0.9, 0.9, 0.9, 1],
+        "outline": False,
+        "outline_color": [0, 0, 0, 1],
+        "size": 1.0,
+        "position": "center",
+        "output_dir": str(tmp_path / "out"),
+        "animation": "stroke",
+        "vertical": True,
+        "result_path": str(tmp_path / "r.json"),
+        "samples": 1,
+    }
+    (tmp_path / "out").mkdir()
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    frames = sorted((tmp_path / "out").glob("frame_*.png"))
+
+    def box(p):
+        a = np.asarray(Image.open(p).convert("RGBA"))[..., 3] > 128
+        ys, xs = np.where(a)
+        return (xs.min(), ys.min(), xs.max(), ys.max()) if len(xs) else None
+
+    last = box(frames[-1])
+    assert last is not None and (last[3] - last[1]) > 2.5 * (last[2] - last[0])  # 縦に長い
+    early = box(frames[3])
+    assert early is None or early[3] < last[3]  # 上から順に現れる

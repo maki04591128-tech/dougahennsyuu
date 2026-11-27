@@ -32,6 +32,8 @@ from _common import (  # noqa: E402
     write_result,
 )
 
+VERT_SMALL = "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ"  # 統合版 T11
+VERT_ROTATE = "ー〜～…―‐-「」『』（）()［］[]【】〈〉《》"
 PER_CHAR = ("typewriter", "bounce", "decode", "tracking", "flip3d", "mask_rise", "stroke")
 CURSOR = "▍"
 GLOSS_ALPHA = 0.40
@@ -332,7 +334,45 @@ def main() -> None:
                     if back is not None:
                         kp.back = back
 
-    if anim in PER_CHAR and len(text.replace("\n", "")) > 1 and "\n" not in text:
+    if a.get("vertical") and len(text.replace("\n", "")) > 1:
+        # 統合版 T11 縦書き（Y10 墨と和紙の題名）: 上から下へ字送り 1.0、行は右から左。
+        # 1 文字ずつ 2f ずらし、各 6f で不透明度 0→1
+        cols = [c for c in text.split("\n") if c] or [text]
+        longest = max(len(c) for c in cols)
+        unit = min(0.85 * vh / max(longest, 1), 0.8 * vw / max(len(cols) * 1.4, 1)) * size
+        gp = text_object("gprobe", "国", font, mat)
+        bpy.context.view_layer.update()
+        g_h = max(gp.dimensions.y, 1e-3)
+        bpy.data.objects.remove(gp, do_unlink=True)
+        scale_v = unit * 0.9 / g_h  # 字の高さを字送りの 90% に
+        tc = a.get("text_color", [1, 1, 1, 1])
+        k = 0
+        for ci, col in enumerate(cols):
+            x = (len(cols) - 1) / 2 * unit * 1.4 - ci * unit * 1.4
+            for j, ch in enumerate(col):
+                y = ((longest - 1) / 2 - j) * unit
+                cm = fade_material(f"v{k}", tc)
+                o = text_object(f"v{k}", ch, font, cm)
+                o.parent = root
+                dx, dy, rot = 0.0, 0.0, 0.0
+                if ch in VERT_SMALL:  # 小書きの仮名: 右へ 0.1・上へ 0.1
+                    dx, dy = 0.1 * unit, 0.1 * unit
+                elif ch in "、。":  # 句読点: 右へ 0.6・上へ 0.6
+                    dx, dy = 0.6 * unit, 0.6 * unit
+                elif ch in VERT_ROTATE:  # 長音・波線・括弧: 時計回りに 90°
+                    rot = math.radians(-90.0)
+                o.location = (x + dx, y + dy, 0)
+                o.rotation_euler.z = rot
+                o.scale = (scale_v,) * 3
+                st = 1 + 2 * k
+                key_alpha([cm], 1, 0.0)
+                if st > 1:
+                    key_alpha([cm], st, 0.0)
+                key_alpha([cm], st + 6, 1.0)
+                k += 1
+        box_w, box_h = len(cols) * unit * 1.4, longest * unit
+        main_obj = root
+    elif anim in PER_CHAR and len(text.replace("\n", "")) > 1 and "\n" not in text:
         # 1文字ずつのオブジェクト。位置は先頭からの部分文字列の幅で決める
         widths = []
         for i in range(1, len(text) + 1):

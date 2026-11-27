@@ -2651,6 +2651,7 @@ class DirectionService:
                         gloss=gloss,
                         sun_beams=beams,
                         solid3d=prof is not None and prof.purpose == Purpose.TRAILER,  # T24
+                        vertical=prof is not None and prof.look == "Y10",  # T11（墨と和紙）
                     )
                 )
             t_len = min(title_end, media_frames(t_asset, title_end))
