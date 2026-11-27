@@ -1350,3 +1350,26 @@ async def test_charts_from_llm_items(dclient):
     n12 = [a["name"] for a in tl["assets"]].count("図表（D12）")
     tl, _ = await _apply(c, pid, sid, "promo")  # PR は D6 だけ（D12 は作らない）
     assert [a["name"] for a in tl["assets"]].count("図表（D12）") == n12
+
+
+async def test_pros_cons_and_cycle(dclient):
+    """統合版 N9（メリットとデメリット）・N2（手順の後に「繰り返」で循環の図）。"""
+    from video_automation.services.rendering import n_cards as nc
+
+    t = ["メリットは三つあります。", "軽いことです。", "安いことです。", "デメリットもあります。",
+         "壊れやすいです。"]  # fmt: skip
+    assert nc.pros_cons_items(t) == ([1, 2], [4])
+    c = dclient
+    pid, sid = await _ready_script(c, [{"speaker": "A", "text": x} for x in t])
+    tl, _ = await _apply(c, pid, sid, "explainer")
+    assert "長所と短所（N9）" in {a["name"] for a in tl["assets"]}
+    lines = [
+        {"speaker": "A", "text": "まず水が蒸発します。"},
+        {"speaker": "B", "text": "次に雲になります。"},
+        {"speaker": "A", "text": "最後に雨が降ります。"},
+        {"speaker": "B", "text": "これを繰り返すのです。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "explainer")
+    names = {a["name"] for a in tl["assets"]}
+    assert "循環の図（N2）" in names and "手順の流れ（N1）" in names  # 手順の後に円周

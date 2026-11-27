@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -406,4 +407,76 @@ def compare_table(w: int, h: int, names: list[str], rows: list[dict[str, Any]],
         k = 1 if wins["a"] > wins["b"] else 2
         d.line([(cols[k] + 10, y0 + rh * 0.88), (cols[k + 1] - 10, y0 + rh * 0.88)],
                fill=(*_rgb(accent), 255), width=max(2, round(h / 270)))  # fmt: skip
+    return im
+
+
+CYCLE_WORDS = ("繰り返", "循環", "サイクル")
+
+
+def pros_cons_items(texts: list[str]) -> tuple[list[int], list[int]] | None:
+    """N9: 「メリット」と「デメリット」（または「長所」と「短所」）の両方がある台本で、
+    それぞれの語が出た文から次の語が出るまでの文（各列最大 4 つ）。"""
+    pi = next((i for i, t in enumerate(texts) if ("メリット" in t and "デメリット" not in t)
+               or "長所" in t), None)  # fmt: skip
+    ci = next((i for i, t in enumerate(texts) if "デメリット" in t or "短所" in t), None)
+    if pi is None or ci is None or pi == ci:
+        return None
+    a0, b0 = sorted((pi, ci))
+    first = list(range(a0 + 1, b0))[:4]
+    second = list(range(b0 + 1, len(texts)))[:4]
+    pros, cons = (first, second) if pi < ci else (second, first)
+    if not pros or not cons:
+        return None
+    return pros, cons
+
+
+def pros_cons(w: int, h: int, pros: list[str], cons: list[str], font: str | None, main: str,
+              ink: str, surface: str) -> Any:  # fmt: skip
+    """N9: 2 列。左の見出しに ○、右に △。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    fh, fi = _font(font, round(h * 0.06)), _font(font, round(h * 0.045))
+    for k, (mark, items) in enumerate((("○ メリット", pros), ("△ デメリット", cons))):
+        x0 = w * (0.08 + 0.44 * k)
+        d.rounded_rectangle([x0, h * 0.18, x0 + w * 0.40, h * 0.82], radius=round(h * 0.02),
+                            fill=(*_rgb(surface), 235), outline=(*_rgb(main), 255),
+                            width=max(2, round(h / 360)))  # fmt: skip
+        d.text((x0 + w * 0.2, h * 0.26), mark, font=fh, fill=(*_rgb(main), 255), anchor="mm")
+        for i, t in enumerate(items[:4]):
+            d.text((x0 + w * 0.03, h * (0.38 + 0.11 * i)), "・" + t, font=fi,
+                   fill=(*_rgb(ink), 255), anchor="lm")  # fmt: skip
+    return im
+
+
+def cycle(w: int, h: int, labels: list[str], font: str | None, main: str, accent: str, ink: str,
+          surface: str) -> Any:  # fmt: skip
+    """N2: N1 の箱を円周（半径は高さの 28%）に並べ、時計回りの矢印の円弧でつなぐ。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    n = len(labels)
+    r = h * 0.28
+    cx, cy = w / 2, h / 2
+    lw = max(2, round(3 * h / 1080))
+    d.arc([cx - r, cy - r, cx + r, cy + r], 0, 360, fill=(*_rgb(main), 255), width=lw)
+    f = _font(font, round(h * 0.04))
+    bw, bh = w * 0.16, h * 0.10
+    for i, t in enumerate(labels):
+        a = -math.pi / 2 + 2 * math.pi * i / n
+        x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+        box = [x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2]
+        d.rounded_rectangle(box, radius=round(h / 90), fill=(*_rgb(surface), 255),
+                            outline=(*_rgb(main), 255), width=lw)  # fmt: skip
+        d.text((x, y), t[:8], font=f, fill=(*_rgb(ink), 255), anchor="mm")
+        # 次の箱への向きの矢じり（円周の中ほど）
+        a2 = a + math.pi / n
+        ax, ay = cx + r * math.cos(a2), cy + r * math.sin(a2)
+        tx, ty = -math.sin(a2), math.cos(a2)
+        s = h * 0.02
+        d.polygon([(ax + tx * s, ay + ty * s), (ax - tx * s * 0.2 + ty * s * 0.6,
+                    ay - ty * s * 0.2 - tx * s * 0.6), (ax - tx * s * 0.2 - ty * s * 0.6,
+                    ay - ty * s * 0.2 + tx * s * 0.6)], fill=(*_rgb(accent), 255))  # fmt: skip
     return im

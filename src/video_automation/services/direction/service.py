@@ -1213,12 +1213,24 @@ class DirectionService:
                                                   pal.accent, ink)  # fmt: skip
                     a_ = await self._png(project_id, img, "引用カード（N11）")
                     put(a_, ln.start, end - ln.start, fade(end - ln.start))
-        if runs:  # N1
+        if runs:  # N1（後の 3 文以内に「繰り返」「循環」「サイクル」があれば N2 の円周）
             for run in runs:
                 labels = [nc.first_phrase(lines[i].text) for i in run]
+                near = range(run[-1] + 1, min(len(lines), run[-1] + 4))
+                cyc = next(
+                    (i for i in near if any(k_ in lines[i].text for k_ in nc.CYCLE_WORDS)), None
+                )
                 starts = [lines[i].start for i in run]
                 end = min(total, lines[run[-1]].end + one_sec)
-                if not free(starts[0], end):
+                if cyc is not None:  # N2: 「繰り返」の文の頭で、手順の箱を円周に並べ直す
+                    c_st, c_end = lines[cyc].start, min(total, lines[cyc].end + one_sec)
+                    end = min(end, c_st)
+                    if free(c_st, c_end):
+                        img = await asyncio.to_thread(nc.cycle, w, h, labels, font, pal.main,
+                                                      pal.accent, ink, pal.surface)  # fmt: skip
+                        put(await self._png(project_id, img, "循環の図（N2）"), c_st,
+                            c_end - c_st, fade(c_end - c_st))  # fmt: skip
+                if end <= starts[0] or not free(starts[0], end):
                     continue
                 for k, st in enumerate(starts):
                     nx = starts[k + 1] if k + 1 < len(starts) else end
@@ -1333,6 +1345,27 @@ class DirectionService:
                                                   pal.accent, ink, pal.surface)  # fmt: skip
                     a_ = await self._png(project_id, img, "仕様の比較表（P11）")
                     put(a_, ln.start, end - ln.start, fade(end - ln.start))
+        pc = (
+            nc.pros_cons_items([x.text for x in lines])
+            if pv in (Purpose.EXPLAINER, Purpose.PRODUCT)
+            else None
+        )
+        if pc:  # N9 長所と短所: 話す時刻に各列へ 1 項目ずつ足す
+            pros_i, cons_i = pc
+            order = sorted([(i, "p") for i in pros_i] + [(i, "c") for i in cons_i])
+            st0, end0 = lines[order[0][0]].start, min(total, lines[order[-1][0]].end + one_sec)
+            if free(st0, end0):
+                for k_, (i, _side) in enumerate(order):
+                    shown = [x for x, _ in order[: k_ + 1]]
+                    p_ = [nc.first_phrase(lines[x].text) for x in pros_i if x in shown]
+                    c_ = [nc.first_phrase(lines[x].text) for x in cons_i if x in shown]
+                    a0 = lines[i].start
+                    b0 = lines[order[k_ + 1][0]].start if k_ + 1 < len(order) else end0
+                    if b0 <= a0:
+                        continue
+                    img = await asyncio.to_thread(nc.pros_cons, w, h, p_, c_, font, pal.main,
+                                                  ink, pal.surface)  # fmt: skip
+                    put(await self._png(project_id, img, "長所と短所（N9）"), a0, b0 - a0, None)
         if pv == Purpose.PRODUCT:  # P10 値下げ: 前の価格に線、後の価格を回し、止まったら X2
             from video_automation.services.direction import effects as fx
             from video_automation.services.rendering import numbers as nb
