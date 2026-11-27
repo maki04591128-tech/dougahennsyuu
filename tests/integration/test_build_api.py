@@ -402,3 +402,68 @@ async def test_music_video_from_song_and_lyrics(bclient, media_dir):
     job = await c.app.state.jobs.wait(r.json()["id"])
     assert job.status == "SUCCEEDED", job.error
     assert calls == []
+
+
+async def test_music_video_shots_from_image(bclient, media_dir):
+    """統合版 V1・V2: 絵を渡すと、拍に合わせて 8 種のショットを切り替える。"""
+    import wave
+
+    import numpy as np
+    from PIL import Image
+
+    from video_automation.services.transcribe.align import Word
+    from video_automation.services.transcribe.service import Recognized
+
+    sr, sec = 22050, 16
+    t = np.arange(sr * sec) / sr
+    x = np.zeros_like(t)
+    n = int(0.08 * sr)
+    for k in range(int(sec / 0.5)):  # 120 BPM のキック
+        s = int(k * 0.5 * sr)
+        x[s : s + n] += np.sin(2 * np.pi * 70 * t[:n]) * np.exp(-t[:n] * 30)
+    song = media_dir / "beat.wav"
+    with wave.open(str(song), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        f.writeframes((np.clip(x, -1, 1) * 30000).astype("<i2").tobytes())
+    img = Image.new("RGBA", (400, 600), (0, 0, 0, 0))
+    img.paste((240, 120, 160, 255), (100, 50, 300, 580))
+    img.save(media_dir / "chara.png")
+    c = bclient
+    await c.post("/providers/discover")
+    plan = (
+        await c.post(
+            "/build/plan",
+            json={
+                "instruction": "この曲の MV を作って",
+                "music": str(song),
+                "lyrics": "夜をこえて\n光のほうへ",
+                "image": str(media_dir / "chara.png"),
+            },
+        )
+    ).json()
+    assert any("ショット" in n for n in plan["notes"])
+
+    def fake(audio, language):
+        return Recognized(
+            words=[Word("よるを", 4.1, 4.8), Word("こえて", 4.8, 6.2), Word("ほうへ", 8.3, 9.9)],
+            segments=[("夜を越えて", 4.1, 6.2), ("方へ", 8.3, 9.9)],
+            language="ja",
+            duration=16.0,
+        )
+
+    c.app.state.container.transcriber._recognizer = fake
+    r = await c.post(f"/build/{plan['project_id']}/run", json={"script_id": plan["script_id"]})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert any("カットに切り替えました" in n for n in job.result["notes"]), job.result["notes"]
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    tr = next(t for t in tl["tracks"] if t["name"] == "MV・ショット")
+    shots = sorted(
+        (x for x in tl["clips"] if x["track_id"] == tr["id"]), key=lambda x: x["start_frame"]
+    )
+    assert len(shots) >= 8 and shots[0]["start_frame"] == 0
+    assert all(a["end_frame"] == b["start_frame"] for a, b in zip(shots, shots[1:], strict=False))
+    # 統合版 V10: 最初のサビが無い短い歌詞なので、黒帯は付かない（イントロの黒帯はサビの頭で開く）
+    assert not any(t["name"] == "MV・黒帯" for t in tl["tracks"])

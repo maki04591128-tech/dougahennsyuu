@@ -23,6 +23,8 @@ class BuildRequest(BaseModel):
     # 分かっていれば歌詞（1 行 1 字幕。利用者が持っている歌詞を貼る）
     music: str = Field(default="", max_length=1000)
     lyrics: str = Field(default="", max_length=20000)
+    # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
+    image: str = Field(default="", max_length=1000)
 
 
 class BuildCharacter(BaseModel):
