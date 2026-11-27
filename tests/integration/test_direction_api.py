@@ -1381,3 +1381,81 @@ async def test_pros_cons_and_cycle(dclient):
     tl, _ = await _apply(c, pid, sid, "explainer")
     names = {a["name"] for a in tl["assets"]}
     assert "循環の図（N2）" in names and "手順の流れ（N1）" in names  # 手順の後に円周
+
+
+async def test_title_text_extras(dclient):
+    """統合版 T47・T50（イベントの題名の後ろの帯と円周）・T49（縦型ショートの残響）・
+    T45（PR の「／」の語の入れ替え）・T44（予告編の最初の台詞を奥へ流す）。"""
+    c = dclient
+    pid, sid = await _ready_script(c)
+    tl, by = await _apply(c, pid, sid, "event")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    order = [t["name"] for t in tl["tracks"]]
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    back = [x for x in tl["clips"] if tracks[x["track_id"]].startswith("演出・題名の")]
+    assert sorted(names[x["asset_id"]] for x in back) == [
+        "円周を回る文字（T50）", "流れる帯（T47）1", "流れる帯（T47）2",
+    ]  # fmt: skip
+    title = by["title_card"][0]
+    assert all(x["start_frame"] == title["start_frame"] for x in back)
+    # 題名（演出・文字）の下に置く
+    assert max(order.index(n) for n in ("演出・題名の後ろ", "演出・題名の円周")) < order.index(
+        "演出・文字"
+    )
+    ring = next(x for x in back if "T50" in names[x["asset_id"]])
+    rots = [k["rotation"] for k in ring["animation"]["keyframes"]]
+    assert rots[0] == 0 and 0 < rots[-1] < 360
+    band = next(x for x in back if names[x["asset_id"]].endswith("1"))
+    xs = [k["x"] for k in band["animation"]["keyframes"]]
+    assert xs[-1] < xs[0]  # 上の帯は左へ
+
+    tl, _ = await _apply(c, pid, sid, "short")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    echo = sorted(
+        (x["start_frame"], names[x["asset_id"]])
+        for x in tl["clips"]
+        if tracks[x["track_id"]].startswith("演出・題名の残響")
+    )
+    assert [n for _s, n in echo] == ["段々の残響（T49）1 段目", "段々の残響（T49）2 段目"]
+    assert echo[1][0] - echo[0][0] == 4
+    # 前の用途の帯は外す
+    assert not [x for x in tl["clips"] if tracks[x["track_id"]].startswith("演出・題名の後ろ")]
+
+    await c.put(f"/projects/{pid}/design", json={"purpose": "promo"})
+    plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
+        "plan"
+    ]
+    plan["title"] = "速い／軽い／安い"
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    roles = await c.app.state.container.design.clip_roles(pid)
+    t_clip = next(x for x in tl["clips"] if roles.get(x["id"]) == "title_card")
+    assert names[t_clip["asset_id"]].startswith("回る語の見出し（T45）")
+
+    tl, _ = await _apply(c, pid, sid, "trailer")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    crawl = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・奥へ流れる文字"]
+    assert [names[x["asset_id"]] for x in crawl] == ["奥へ流れる文字（T44）"]
+
+
+async def test_game_chapter_title_outline_then_fill(dclient):
+    """統合版 T48: ゲーム実況の章の題（H1）は縁だけで出してから塗る（動画の素材）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.direction import DirectionPlan
+    from video_automation.schemas.timeline import AddClip
+    from video_automation.services.design.profiles import PROFILES
+
+    c = dclient
+    pid, _ = await _ready_script(c)
+    d = c.app.state.container.direction
+    cmds: list = []
+    await d._h_cards(pid, PROFILES[Purpose.GAME], DirectionPlan(), [], [(0, "序盤"),
+                     (300, "ボス戦")], cmds, lambda n: n, 900, 30.0, 640, 360,
+                     None, "#FFFFFF")  # fmt: skip
+    (card,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    a = next(x for x in tl["assets"] if x["id"] == card.asset_id)
+    assert a["kind"] == "video" and "T48" in a["name"] and card.duration_frames == 75

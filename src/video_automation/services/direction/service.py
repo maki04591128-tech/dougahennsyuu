@@ -14,6 +14,7 @@ import json
 import math
 import re
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -94,6 +95,7 @@ from video_automation.services.direction.plan import (
     rule_plan,
 )
 from video_automation.services.llm_tasks.gateway import LLMError, LLMGateway
+from video_automation.services.rendering import t_extras as tx
 from video_automation.services.rendering.card import card_layout
 from video_automation.services.rendering.end_screen import END_SCREEN_SEC, draw_end_screen
 from video_automation.services.rendering.lower_third import draw_lower_third
@@ -205,6 +207,11 @@ CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
 DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
 YEAR_TRACK = "演出・年号"  # 統合版 T43
 PLACE_TRACK = "演出・場所"  # 統合版 H2
+TITLE_BACK_TRACK, TITLE_BACK2_TRACK = "演出・題名の後ろ", "演出・題名の後ろ2"  # 統合版 T47
+TITLE_RING_TRACK = "演出・題名の円周"  # 統合版 T50
+BEHIND_TITLE = (TITLE_BACK_TRACK, TITLE_BACK2_TRACK, TITLE_RING_TRACK)  # 立ち絵と題名の下に置く
+TITLE_ECHO_TRACK, TITLE_ECHO2_TRACK = "演出・題名の残響", "演出・題名の残響2"  # 統合版 T49
+CRAWL_TRACK = "演出・奥へ流れる文字"  # 統合版 T44
 # 統合版 段階5d: LLM の chart の種類 → 図、用途 → 使ってよい図
 D_KIND = {
     "number": "D6", "share": "D7", "progress": "D12", "bars": "D3", "race": "D5",
@@ -225,6 +232,10 @@ H1_PURPOSES = {
     Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
 }  # fmt: skip
 EXTRA_TRACKS = (
+    *BEHIND_TITLE,
+    TITLE_ECHO_TRACK,
+    TITLE_ECHO2_TRACK,
+    CRAWL_TRACK,
     PLACE_TRACK,
     YEAR_TRACK,
     CHAPTER_TRACK,
@@ -985,6 +996,23 @@ class DirectionService:
                 at = at0 + (toc_n if len(chapters) >= 3 else 0)  # N6 の後
                 if at < last or at + n > total:
                     continue
+                if pv == Purpose.GAME:  # T48: 題を縁だけで出してから、左から塗る
+                    num, ttl, mask = await asyncio.to_thread(
+                        hc.chapter_parts, w, h, k, text[:30], font, prof.palette.accent, ink
+                    )
+                    a = await self._overlay(
+                        project_id,
+                        tx.chapter_outline_fill(num, ttl, mask, prof.palette.accent, n, h),
+                        f"章の題名（H1・T48）「{text[:12]}」",
+                        fps,
+                    )
+                    cid = clip(lane(CHAPTER_TRACK), a, at, n, ClipTransform(fit=FitMode.FIT))
+                    anim(cid, [Keyframe(frame=0, opacity=1.0),
+                               Keyframe(frame=n - 7, opacity=1.0, scale=1.0,
+                                        easing=Easing.CUBIC_IN),
+                               Keyframe(frame=n - 1, opacity=0.0, scale=0.96)])  # fmt: skip
+                    last = at + n
+                    continue
                 img = await asyncio.to_thread(
                     hc.chapter_card, w, h, k, text[:30], font, prof.palette.accent, ink
                 )
@@ -1411,17 +1439,28 @@ class DirectionService:
         return notes
 
     async def _overlay(
-        self, project_id: str, frames_: list[Any], name: str, fps: float
+        self, project_id: str, frames_: Iterable[Any], name: str, fps: float
     ) -> AssetRead:
-        """透過の画の列を 1 本の動画（PNG の mov）にして素材にする（最後に透明の 1 枚を足す）。"""
+        """透過の画の列を 1 本の動画（PNG の mov）にして素材にする（最後に透明の 1 枚を足す）。
+        画の列は生成器でもよい（1 枚ずつ描いて書き出すので、長い列でもメモリに溜めない）。"""
         from PIL import Image
 
         out_dir = self.settings.data_dir / "projects" / project_id / "assets"
         work = out_dir / f"ov_{uuid4().hex[:8]}"
         work.mkdir(parents=True, exist_ok=True)
-        blank = Image.new("RGBA", frames_[0].size, (0, 0, 0, 0))
-        for i, fr in enumerate([*frames_, blank]):
-            await asyncio.to_thread(fr.save, work / f"{i:04d}.png")
+
+        def save_all() -> None:
+            size = None
+            i = 0
+            for i, fr in enumerate(frames_):  # noqa: B007
+                size = fr.size
+                fr.save(work / f"{i:04d}.png")
+            if size is None:
+                shutil.rmtree(work, True)
+                raise CommandError("no overlay frames")
+            Image.new("RGBA", size, (0, 0, 0, 0)).save(work / f"{i + 1:04d}.png")
+
+        await asyncio.to_thread(save_all)
         mov = work.with_suffix(".mov")
         await self.ffmpeg.run(
             ["-y", "-framerate", f"{fps:.6f}", "-i", str(work / "%04d.png"),
@@ -1432,6 +1471,86 @@ class DirectionService:
             project_id, mov, AssetKind.VIDEO, "pillow", name
         )
         return AssetRead.model_validate(row)
+
+    async def _title_extras(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        title: str,
+        cmds: list[Any],
+        lane: Any,
+        at: int,
+        n: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+        size: float,
+        dy: float,
+    ) -> None:
+        """統合版 T47（ランキング・イベントの帯）・T49（縦型ショートの残響）・
+        T50（イベントの円周）。
+        題名を出している間（at から n フレーム）だけ置く。"""
+        pv = prof.purpose
+        pal = prof.palette
+        if n <= 0 or not title.strip():
+            return
+
+        def add(track: str, a: AssetRead, start: int, length: int, tf: ClipTransform,
+                keys: list[Keyframe]) -> None:  # fmt: skip
+            cid = str(uuid4())
+            cmds.append(AddClip(track_id=lane(track), asset_id=a.id, start_frame=start,
+                                duration_frames=length, clip_id=cid, transform=tf))  # fmt: skip
+            cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+
+        sec = n / fps
+        if pv in (Purpose.RANKING, Purpose.EVENT):  # T47: −8°（左へ）と ＋8°（右へ）の帯
+            move = tx.BAND_SPEED * sec
+            for k, (face, angle, y, sign) in enumerate(
+                ((pal.accent, tx.BAND_ANGLE, -0.06, -1), (pal.main, -tx.BAND_ANGLE, 0.06, 1))
+            ):
+                img = await asyncio.to_thread(tx.title_band, w, h, title, font, face, ink, angle)
+                a = await self._png(project_id, img, f"流れる帯（T47）{k + 1}")
+                tf = native_transform(img.size[0], img.size[1], w, h, cx=0.5, cy=0.5 + dy + y,
+                                      max_w=10.0)  # fmt: skip
+                x0 = -sign * move / 2
+                keys = [Keyframe(frame=0, opacity=0.0, x=x0, easing=Easing.LINEAR),
+                        Keyframe(frame=min(6, n - 1), opacity=1.0,
+                                 x=x0 + sign * move * min(6, n - 1) / n, easing=Easing.LINEAR),
+                        Keyframe(frame=max(7, n - 7), opacity=1.0,
+                                 x=x0 + sign * move * max(7, n - 7) / n, easing=Easing.LINEAR),
+                        Keyframe(frame=n - 1, opacity=0.0, x=x0 + sign * move)]  # fmt: skip
+                add(TITLE_BACK_TRACK if k == 0 else TITLE_BACK2_TRACK, a, at, n, tf, keys)
+        if pv == Purpose.EVENT:  # T50: 画面の高さの 38% の円周に題名を並べ、20 秒で 1 周
+            img = await asyncio.to_thread(tx.ring_text, round(h * 0.38), title, font,
+                                          pal.text_muted, h)  # fmt: skip
+            a = await self._png(project_id, img, "円周を回る文字（T50）")
+            tf = native_transform(img.size[0], img.size[1], w, h, cx=0.5, cy=0.5 + dy,
+                                  max_w=10.0, max_h=10.0)  # fmt: skip
+            turn = 360.0 * sec / tx.RING_SEC
+            keys = [Keyframe(frame=0, opacity=0.0, rotation=0.0, easing=Easing.LINEAR),
+                    Keyframe(frame=min(6, n - 1), opacity=1.0,
+                             rotation=turn * min(6, n - 1) / n, easing=Easing.LINEAR),
+                    Keyframe(frame=max(7, n - 7), opacity=1.0,
+                             rotation=turn * max(7, n - 7) / n, easing=Easing.LINEAR),
+                    Keyframe(frame=n - 1, opacity=0.0, rotation=turn)]  # fmt: skip
+            add(TITLE_RING_TRACK, a, at, n, tf, keys)
+        if pv == Purpose.SHORT:  # T49: 上下に縁だけの文字を 2 段ずつ、題名に近い段から 4f ずらし
+            for k in (1, 2):
+                st = 4 * (k - 1)
+                m = n - st
+                if m < 8:
+                    continue
+                img = await asyncio.to_thread(tx.echo_pair, w, h, title, font, pal.text, size, k,
+                                              dy)  # fmt: skip
+                a = await self._png(project_id, img, f"段々の残響（T49）{k} 段目")
+                keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
+                        Keyframe(frame=6, opacity=1.0),
+                        Keyframe(frame=max(7, m - 7), opacity=1.0, easing=Easing.CUBIC_IN),
+                        Keyframe(frame=m - 1, opacity=0.0)]  # fmt: skip
+                add(TITLE_ECHO_TRACK if k == 1 else TITLE_ECHO2_TRACK, a, at + st, m,
+                    ClipTransform(fit=FitMode.FIT), keys)  # fmt: skip
 
     async def _effects(
         self,
@@ -1893,27 +2012,43 @@ class DirectionService:
             beams = prof is not None and prof.allows(Component.SUN_BEAMS)  # 統合版 L3
             if beams:
                 use(Component.SUN_BEAMS)
-            t_asset = await self.titles.create(
-                TitleCardRequest(
-                    project_id=p.id,
-                    text=plan.title[:100],
-                    duration_sec=dur,
-                    animation=title_entrance(prof, plan.title, kinetic),  # type: ignore[arg-type]
-                    # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
-                    fade_out_sec=0.0,
-                    # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
-                    # 題名の幅は画面幅の 80%×size（title_card.py）。題名は立ち絵の頭と同じ高さに
-                    # 出るので、縁取りの分も含めて列の 85% に収める（実機: 18 文字の題名が
-                    # ずんだもんの頭に重なった）
-                    size=min(0.95, main_w * (0.85 if tachie else 0.95) / 0.8 * ts),
-                    position="center",
-                    text_color=ink,
-                    outline_color=title_outline,
-                    font=heading_font,
-                    gloss=gloss,
-                    sun_beams=beams,
-                )
+            t_size = min(0.95, main_w * (0.85 if tachie else 0.95) / 0.8 * ts)
+            t45 = (
+                tx.rotating_words(plan.title[:100])
+                if prof is not None and prof.purpose == Purpose.PROMO
+                else None
             )
+            if t45 is not None:  # 統合版 T45: 「／」で区切った語を同じ位置で入れ替える
+                t_asset = await self._overlay(
+                    p.id,
+                    tx.rotating_frames(w, h, t45[0], t45[1], max(1, round(dur * fps)),
+                                       self.titles.font_path(heading_font), ink,
+                                       prof.palette.accent if prof else accent, t_size),
+                    f"回る語の見出し（T45）「{plan.title[:20]}」",
+                    fps,
+                )  # fmt: skip
+            else:
+                t_asset = await self.titles.create(
+                    TitleCardRequest(
+                        project_id=p.id,
+                        text=plan.title[:100],
+                        duration_sec=dur,
+                        animation=title_entrance(prof, plan.title, kinetic),  # type: ignore[arg-type]
+                        # 出は direction 側で付ける（不透明度 1→0 と 0.96 倍への縮小。統合版 A2）
+                        fade_out_sec=0.0,
+                        # 立ち絵があるときは、題名を中央の列（立ち絵の間）に収める。
+                        # 題名の幅は画面幅の 80%×size（title_card.py）。題名は立ち絵の頭と同じ
+                        # 高さに出るので、縁取りの分も含めて列の 85% に収める（実機: 18 文字の
+                        # 題名がずんだもんの頭に重なった）
+                        size=t_size,
+                        position="center",
+                        text_color=ink,
+                        outline_color=title_outline,
+                        font=heading_font,
+                        gloss=gloss,
+                        sun_beams=beams,
+                    )
+                )
             t_len = min(title_end, media_frames(t_asset, title_end))
             t_cid = add(
                 txt_t,
@@ -1924,6 +2059,11 @@ class DirectionService:
                 **({"transform": ClipTransform(y=title_dy)} if title_dy else {}),
             )
             animate(t_cid, t_len, None, title_exit=True)
+            if prof is not None:  # 統合版 T47・T49・T50: 題名のまわりの文字
+                await self._title_extras(
+                    p.id, prof, plan.title[:100], cmds, lane, t_at, t_len, fps, w, h,
+                    self.titles.font_path(heading_font), ink, t_size, title_dy,
+                )  # fmt: skip
             if plan.subtitle:
                 sreq = CardRequest(
                     project_id=p.id,
@@ -2553,6 +2693,21 @@ class DirectionService:
             # 予告編の題名は台詞の後（t_at から tr_title フレーム）。他の用途は 0〜title_end
             t_end = t_at + tr_title if tr_title else title_end
             await self._effects(p.id, prof, lines, cmds, lane, t_at, t_end, total, fps, w, h)
+            if prof.purpose in (Purpose.TRAILER, Purpose.STORY) and lines:  # 統合版 T44
+                ln0 = lines[0]
+                n0 = min(total, ln0.end) - ln0.start
+                if n0 > 6:
+                    a0 = await self._overlay(
+                        p.id,
+                        tx.crawl_frames(w, h, ln0.text, self.titles.font_path(heading_font),
+                                        ink, n0, fps),
+                        "奥へ流れる文字（T44）",
+                        fps,
+                    )  # fmt: skip
+                    c0 = str(uuid4())
+                    cmds.append(AddClip(track_id=lane(CRAWL_TRACK), asset_id=a0.id,
+                                        start_frame=ln0.start, duration_frames=n0, clip_id=c0,
+                                        transform=ClipTransform(fit=FitMode.FIT)))  # fmt: skip
 
         # 統合版 H3・H4・H6: ニュースの帯・クレジットロール・中間字幕のカード
         if prof is not None:
@@ -2606,6 +2761,17 @@ class DirectionService:
             )
             cid = add(fig_t, row.id, total + ed, es, role="end_screen")
             animate(cid, es)
+        if any(x in track for x in BEHIND_TITLE):  # 統合版 T47・T50: 立ち絵と題名の下へ
+            for name in BEHIND_TITLE:
+                if name in track:
+                    cmds.append(MoveTrack(track_id=track[name], index=1000))
+            for t_ in tl.tracks:
+                if t_.name == TACHIE_TRACK and t_.kind == TrackKind.VIDEO:
+                    cmds.append(MoveTrack(track_id=t_.id, index=1000))
+            cmds.append(MoveTrack(track_id=txt_t, index=1000))
+            for name in EXTRA_TRACKS:
+                if name in track and name not in BEHIND_TITLE:
+                    cmds.append(MoveTrack(track_id=track[name], index=1000))
         res = await self.timeline.submit(
             p.id,
             CommandRequest(
