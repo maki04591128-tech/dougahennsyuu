@@ -45,7 +45,7 @@ async def test_music_generate_records_and_places_bgm(music_client):
     assert asset["kind"] == "audio" and asset["source"] == "acestep"
     assert abs(asset["duration_sec"] - 4.0) < 0.1
     body = fake.acestep.released[-1]
-    assert body["lyrics"] == "[Instrumental]" and body["audio_duration"] == 30
+    assert body["lyrics"] == "[intro]\n[inst]\n[outro]" and body["audio_duration"] == 30
     assert body["bpm"] == 80 and body["use_random_seed"] is True and "seed" not in body
     assert body["audio_format"] == "wav" and body["batch_size"] == 1
     assert fake.ollama_loaded == set()  # 生成前に LLM をアンロード
