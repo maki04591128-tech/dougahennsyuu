@@ -592,7 +592,9 @@ async def test_end_screen_fills_the_last_15_seconds(dclient):
     log_ = Path(c.app.state.container.settings.blender_path).parent / "calls.jsonl"
     titles = [json.loads(x) for x in log_.read_text("utf-8").splitlines()]
     titles = [x for x in titles if x["script"] == "title_card"]
-    assert titles[-1]["gloss_at"] > 0 and titles[0]["gloss_at"] == 0
+    promo = [x for x in titles if x["animation"] == "tracking"]  # PR の題名（T7）
+    assert promo[-1]["gloss_at"] > 0 and titles[0]["gloss_at"] == 0
+    assert titles[-1]["animation"] == "slam"  # 統合版 H5: 最後の 3 秒の締め
 
 
 async def test_lower_thirds_show_name_and_job_title(dclient):
@@ -1147,7 +1149,10 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
                      (300, "仕組み"), (600, "まとめ")], cmds, lambda n: n, 900, 30.0, 640, 360,
                      None, "#FFFFFF")  # fmt: skip
     cards = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
-    assert [x.start_frame for x in cards] == [300, 600] and cards[0].duration_frames == 75
+    # 章が 3 つ以上なので、目次（N6・2 秒）の後に章の題名カード（H1・2.5 秒）
+    assert [(x.start_frame, x.duration_frames) for x in cards] == [
+        (300, 60), (600, 60), (360, 75), (660, 75),
+    ]  # fmt: skip
     anims = [x for x in cmds if isinstance(x, SetClipAnimation)]
     assert anims[0].animation.keyframes[-1].opacity == 0.0
     cmds = []
