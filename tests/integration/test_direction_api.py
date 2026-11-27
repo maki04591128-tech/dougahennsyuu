@@ -1219,3 +1219,16 @@ async def test_year_roll_in_documentary(dclient):
     pid, sid = await _ready_script(c, lines)
     tl, _ = await _apply(c, pid, sid, "documentary")
     assert "年表（N4）" in {a["name"] for a in tl["assets"]}
+
+
+async def test_price_drop_in_product(dclient):
+    """統合版 P10: 「（数字）円」が 2 つで後が小さい文に、値下げ（回る価格ときらめき）。"""
+    from video_automation.services.rendering import numbers as nb
+
+    assert nb.price_drop("通常12,800円が今だけ9,800円です") == ("12,800", "9,800")
+    assert nb.price_drop("500円と800円") is None
+    c = dclient
+    lines = [{"speaker": "A", "text": "通常12,800円のところ、今だけ9,800円になります。"}]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "product")
+    assert "値下げ（P10）" in {a["name"] for a in tl["assets"]}

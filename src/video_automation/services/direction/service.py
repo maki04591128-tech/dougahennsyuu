@@ -1173,6 +1173,30 @@ class DirectionService:
                         keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
                                 Keyframe(frame=min(10, nx - st - 1), opacity=1.0)]  # fmt: skip
                     put(a_, st, nx - st, keys)
+        if pv == Purpose.PRODUCT:  # P10 値下げ: 前の価格に線、後の価格を回し、止まったら X2
+            from video_automation.services.direction import effects as fx
+            from video_automation.services.rendering import numbers as nb
+
+            for ln in lines:
+                pr = nb.price_drop(ln.text)
+                end = min(total, ln.end + one_sec)
+                if not pr or not free(ln.start, end):
+                    continue
+                fr = await asyncio.to_thread(nb.price_frames, pr[0], pr[1], w, h, font, ink,
+                                             pal.accent)  # fmt: skip
+                star = await asyncio.to_thread(fx.sparkle, round(h * 0.16 * 0.6))
+                spark = []  # 止まった時にきらめき（価格の右上）
+                for s_ in star:
+                    base_ = fr[-1].copy()
+                    base_.alpha_composite(s_, (round(w * 0.62), round(h * 0.30)))
+                    spark.append(base_)
+                seq = fr + spark
+                n_mov = min(len(seq), end - ln.start)
+                a_ = await self._overlay(project_id, seq[:n_mov], "値下げ（P10）", fps)
+                put(a_, ln.start, n_mov, None)
+                if end - ln.start > n_mov:
+                    still = await self._png(project_id, fr[-1], "値下げ（P10）")
+                    put(still, ln.start + n_mov, end - ln.start - n_mov, None)
         if pv in (Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE):
             # N4 年表: 年が 3 つ以上出たら、最後の文で並べる（章の区切りが無いので動画全体で 1 つ）
             from video_automation.services.rendering import numbers as nb

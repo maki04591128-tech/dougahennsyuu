@@ -71,3 +71,44 @@ def year_frames(year: str, h: int, font: str | None, ink: str, base: str, roll: 
                stroke_width=stroke, stroke_fill=(*_rgb(base), 255))  # fmt: skip
         out.append(im)
     return out
+
+
+PRICE = re.compile(r"([0-9][0-9,]*)円")
+
+
+def price_drop(text: str) -> tuple[str, str] | None:
+    """統合版 P10: 文に「（数字）円」が 2 つあり、後の方が小さいとき (前の価格, 後の価格)。"""
+    ps = PRICE.findall(text)
+    if len(ps) < 2:
+        return None
+    a, b = ps[0], ps[1]
+    try:
+        if int(b.replace(",", "")) < int(a.replace(",", "")):
+            return a, b
+    except ValueError:
+        return None
+    return None
+
+
+def price_frames(old: str, new: str, w: int, h: int, font: str | None, ink: str,
+                 accent: str) -> list[Any]:  # fmt: skip
+    """P10: 前の価格（取り消し線・不透明度 45%・×0.7・上）と、T35 で回る後の価格（高さの 16%）。"""
+    from PIL import Image, ImageDraw
+
+    n = roll_frames_count(new.replace(",", ""))
+    big, small = round(h * 0.16), round(h * 0.16 * 0.7 * 0.5)
+    fb, fs = _font(font, big), _font(font, small)
+    out = []
+    for i in range(n):
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        ot = f"{old}円"
+        d.text((w / 2, h * 0.30), ot, font=fs, fill=(*_rgb(ink), round(255 * 0.45)), anchor="mm")
+        tw = d.textlength(ot, font=fs)
+        lw = max(2, round(small * 0.08))
+        d.line([(w / 2 - tw / 2, h * 0.30), (w / 2 + tw / 2, h * 0.30)],
+               fill=(0xE0, 0x3A, 0x3A, 255), width=lw)  # fmt: skip
+        d.text((w / 2, h * 0.52), roll_text(new, i) + "円", font=fb, fill=(*_rgb(accent), 255),
+               anchor="mm", stroke_width=max(2, big // 20), stroke_fill=(0, 0, 0, 200))  # fmt: skip
+        out.append(im)
+    return out
