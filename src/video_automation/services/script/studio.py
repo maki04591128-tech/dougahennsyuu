@@ -75,6 +75,12 @@ log = get_logger("script")
 _SPACE = re.compile(r"[\s「」『』（）()、。・…！？!?,.\-]")
 
 
+def _items(t: dict[str, Any]) -> str | None:
+    """統合版 段階5d: LLM が発話に付けた項目（place・venn・answer・features・compare・chart）。"""
+    d = {k: t[k] for k in P.ITEM_KEYS if t.get(k) not in (None, "", [], {})}
+    return json.dumps(d, ensure_ascii=False)[:4000] if d else None
+
+
 class ScriptStudioError(Exception):
     code = "script_error"
     public_message = True
@@ -631,6 +637,7 @@ class ScriptStudio:
                     "speaker": t["speaker"],
                     "text": t["text"],
                     **({"emotion": t["emotion"]} if t.get("emotion") else {}),
+                    **{k: t[k] for k in P.ITEM_KEYS if t.get(k) not in (None, "", [], {})},
                 }
                 for t in sc_.get("turns") or []
             ]
@@ -872,6 +879,7 @@ class ScriptStudio:
                     "original_text": x.original_text,
                     "anchor_sec": x.anchor_sec,
                     "emotion": x.emotion,
+                    "items": x.items,
                 }
                 for x in segs
             ],
@@ -1399,6 +1407,7 @@ class ScriptStudio:
         if req.instruction:
             user.append(f"追加の指示: {req.instruction}")
         user.append(P.EMOTION_TEXT)
+        user.append(P.ITEMS_TEXT)
         user.append("speaker には上のキャラクター名だけを使い、指定のJSONで出力してください。")
         msgs = [
             ChatMessage(role="system", content=P.COMMON),
@@ -1585,6 +1594,7 @@ class ScriptStudio:
                             (t["speaker"], t.get("emotion") or ""), voice.get(t["speaker"])
                         ),
                         emotion=t.get("emotion") if t.get("emotion") in EMOTIONS else None,
+                        items=_items(t),
                         generation_run_id=run.id,
                     )
                     s.add(seg)

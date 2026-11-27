@@ -34,6 +34,7 @@ from video_automation.services.design.guard import (
     TextUse,
     check,
 )
+from video_automation.services.design.looks import allowed, apply_look
 from video_automation.services.design.profiles import PROFILES
 from video_automation.services.design.series import (
     SeriesNotFoundError,
@@ -129,6 +130,7 @@ class DesignService:
                 series_id=p.series_id,
                 genre=p.music_genre if p.music_genre in GENRES else None,  # type: ignore[arg-type]
                 hearing_aid=bool(p.hearing_aid),
+                look=p.look or "",
             )
 
     async def set(self, project_id: str, design: ProjectDesign) -> ProjectDesign:
@@ -144,6 +146,9 @@ class DesignService:
                 p.music_genre = design.genre
             if design.hearing_aid is not None:
                 p.hearing_aid = design.hearing_aid
+            if design.look is not None:  # 統合版 Y: 選べない型は保存しない
+                ok = design.purpose is not None and allowed(design.purpose, design.look)
+                p.look = design.look if ok else None
             await s.commit()
         return await self.get(project_id)
 
@@ -182,7 +187,8 @@ class DesignService:
         if not d.purpose:
             return None
         s = await self.series_for(project_id)
-        return apply_series(PROFILES[d.purpose], s) if s else PROFILES[d.purpose]
+        prof = apply_series(PROFILES[d.purpose], s) if s else PROFILES[d.purpose]
+        return apply_look(prof, d.look)  # 統合版 Y1〜Y10
 
     # ---------- 記録 ----------
     async def record(self, project_id: str, source: str, data: dict[str, Any] | None) -> None:

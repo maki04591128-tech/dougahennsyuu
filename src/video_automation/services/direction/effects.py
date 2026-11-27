@@ -166,3 +166,167 @@ def embers(w: int, h: int, seed: int = 1) -> list[Any]:
         glow.alpha_composite(im)
         out.append(glow)
     return out
+
+
+def loading_done(h: int, accent: str, fps: float = 30) -> list[Any]:
+    """I2: 直径は画面の高さの 10% の輪。円弧が 1 周 18f で 2 周してから、輪を accent で塗り、
+    白のチェックを 8f で描く。1.5 秒で消す（最後の 6f で薄く）。"""
+    from PIL import Image, ImageDraw
+
+    d_ = round(h * 0.10)
+    pad = max(4, d_ // 10)
+    size = d_ + 2 * pad
+    lw = max(3, d_ // 12)
+    total = round(1.5 * fps)
+    col = _rgb(accent)
+    out = []
+    for f in range(total):
+        im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        box = [pad, pad, pad + d_, pad + d_]
+        fade = 1.0 if f < total - 6 else (total - 1 - f) / 6
+        a = round(255 * fade)
+        if f < 36:  # 2 周
+            start = (f % 18) / 18 * 360 - 90
+            d.arc(box, start, start + 270, fill=(*col, a), width=lw)
+        else:
+            d.ellipse(box, fill=(*col, a))
+            u = min(1.0, (f - 36) / 8)
+            p1, p2, p3 = (0.28, 0.52), (0.44, 0.68), (0.74, 0.36)
+            seg = u * 2
+            path = [p1]
+            if seg <= 1:
+                path.append((p1[0] + (p2[0] - p1[0]) * seg, p1[1] + (p2[1] - p1[1]) * seg))
+            else:
+                v = seg - 1
+                path += [p2, (p2[0] + (p3[0] - p2[0]) * v, p2[1] + (p3[1] - p2[1]) * v)]
+            xy = [(pad + x * d_, pad + y * d_) for x, y in path]
+            if len(xy) >= 2:
+                d.line(xy, fill=(255, 255, 255, a), width=lw, joint="curve")
+        out.append(im)
+    return out
+
+
+ONOMATOPOEIA = {"pop": "ポン！", "don": "ドン！", "kira": "キラッ"}
+X4_FRAMES = 24  # 入り 8f・表示 12f・消える 4f
+
+
+def onomatopoeia(word: str, h: int, accent: str, font: str | None) -> list[Any]:
+    """X4: ぎざぎざの吹き出し（accent の面・#111111 の縁 6px）に語（画面の高さの 10%）。
+    scale 0→1.2→1（8f）、回転 −6°、12f 表示して 4f で消す。"""
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    size = round(h * 0.10)
+    f = (
+        ImageFont.truetype(font, size)
+        if font and Path(font).is_file()
+        else ImageFont.load_default(size)
+    )
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    tw = probe.textlength(word, font=f)
+    bw, bh = round(tw + size * 1.4), round(size * 2.0)
+    base = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(base)
+    pts = []
+    for i in range(28):  # ぎざぎざ（外と内を交互）
+        a = 2 * math.pi * i / 28
+        r = 1.0 if i % 2 == 0 else 0.82
+        pts.append(
+            (bw / 2 + math.cos(a) * bw / 2 * r * 0.96, bh / 2 + math.sin(a) * bh / 2 * r * 0.96)
+        )
+    lw = max(2, round(6 * h / 1080))
+    d.polygon(pts, fill=(*_rgb(accent), 255), outline=(0x11, 0x11, 0x11, 255), width=lw)
+    d.text((bw / 2, bh / 2), word, font=f, fill=(0x11, 0x11, 0x11, 255), anchor="mm")
+    pad = round(max(bw, bh) * 0.15)
+    out = []
+    for i in range(X4_FRAMES):
+        if i < 8:
+            u = i / 8
+            sc = 1.2 * math.sin(u * math.pi / 2) if u < 0.6 else 1.2 - 0.2 * (u - 0.6) / 0.4
+        else:
+            sc = 1.0
+        alpha = 1.0 if i < 20 else (X4_FRAMES - 1 - i) / 4
+        im = Image.new("RGBA", (bw + 2 * pad, bh + 2 * pad), (0, 0, 0, 0))
+        if sc > 0.02:
+            bic = Image.Resampling.BICUBIC
+            s_ = base.resize((max(1, round(bw * sc)), max(1, round(bh * sc))), bic)
+            s_ = s_.rotate(6, expand=True, resample=bic)
+            if alpha < 1:
+                s_.putalpha(s_.getchannel("A").point(lambda v, a_=alpha: round(v * a_)))
+            im.alpha_composite(s_, ((im.width - s_.width) // 2, (im.height - s_.height) // 2))
+        out.append(im)
+    return out
+
+
+X7_LOOP = 150
+
+
+def drop_particles(genre: str, w: int, h: int, accent: str, seed: int = 3) -> list[Any]:
+    """X7 落ちサビの粒（ジャンルごと。粒は 30・不透明度の最大 70%。150f で繰り返す）。
+
+    バラード: 花びら（#FFD6E4、右下へ）。シティポップ: ボケ。ロック: 残り火。
+    EDM: 縦の光の線（accent・幅 2px が上へ）。ボカロ: 四角の欠片（8px、2f ごとに位置を変える）。
+    アイドル: 白の星。ポップ: 紙吹雪。
+    流れる量は 150f で画面の 1 周（ずれずに繰り返す）。"""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    if genre == "rock":
+        return embers(w, h, seed)
+    rnd = random.Random(seed)
+    k = h / 1080
+    pts = [(rnd.random(), rnd.random(), rnd.random()) for _ in range(30)]
+    cols = ["#FF5A5F", "#2EC4B6", "#FFC82E", "#FFFFFF"]
+    out = []
+    for f in range(X7_LOOP):
+        u = f / X7_LOOP
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        for i, (x, y, ph) in enumerate(pts):
+            a = round(255 * 0.7)
+            if genre == "ballad":  # 花びら: 右下へ
+                px, py = ((x + u) % 1) * w, ((y + u) % 1) * h
+                r = 8 * k
+                d.ellipse([px - r * 1.4, py - r * 0.7, px + r * 1.4, py + r * 0.7],
+                          fill=(0xFF, 0xD6, 0xE4, a))  # fmt: skip
+            elif genre == "citypop":  # ボケ: ゆっくり上へ
+                px, py = x * w, ((y - u) % 1) * h
+                r = (10 + 20 * ph) * k
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(*_rgb(accent), round(a * 0.4)))
+            elif genre == "edm":  # 縦の光の線: 上へ
+                px, py = x * w, ((y - u) % 1) * h
+                d.line(
+                    [(px, py), (px, py + 60 * k)],
+                    fill=(*_rgb(accent), a),
+                    width=max(1, round(2 * k)),
+                )
+            elif genre == "vocaloid":  # 四角の欠片: 2f ごとに位置を変える
+                r2 = random.Random(seed * 1000 + i * 100 + f // 2)
+                px, py = r2.random() * w, r2.random() * h
+                s = 8 * k
+                d.rectangle([px, py, px + s, py + s], fill=(*_rgb(accent), a))
+            elif genre == "idol":  # 星: ゆっくり下へ、明滅
+                px, py = x * w, ((y + u) % 1) * h
+                r = 10 * k * (0.5 + 0.5 * math.sin(2 * math.pi * (2 * u + ph)))
+                if r > 1:
+                    q = r * 0.25
+                    star = [
+                        (px, py - r),
+                        (px + q, py - q),
+                        (px + r, py),
+                        (px + q, py + q),
+                        (px, py + r),
+                        (px - q, py + q),
+                        (px - r, py),
+                        (px - q, py - q),
+                    ]
+                    d.polygon(star, fill=(255, 255, 255, a))
+            else:  # ポップ: 紙吹雪
+                px, py = (x + 0.02 * math.sin(2 * math.pi * (u + ph))) * w, ((y + u) % 1) * h
+                c = cols[i % len(cols)]
+                d.rectangle([px - 4 * k, py - 8 * k, px + 4 * k, py + 8 * k], fill=(*_rgb(c), a))
+        if genre in ("citypop", "edm"):
+            im = im.filter(ImageFilter.GaussianBlur(2 * k))
+        out.append(im)
+    return out

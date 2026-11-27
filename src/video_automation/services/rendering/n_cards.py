@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -267,4 +268,215 @@ def quote_card(w: int, h: int, text: str, speaker: str, font: str | None, accent
         fs = _font(font, round(h * 0.035))
         d.text((w * 0.85, top + lh * len(rows) + h * 0.04), f"— {speaker}", font=fs,
                fill=(*_rgb(ink), 230), anchor="rm")  # fmt: skip
+    return im
+
+
+def timeline(w: int, h: int, items: list[tuple[str, str]], font: str | None, main: str,
+             accent: str, ink: str) -> Any:  # fmt: skip
+    """N4 年表: 横線に年を等間隔に並べ、各年の点（直径 16px）と、下に一言。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    k = h / 1080
+    y = h * 0.5
+    x0, x1 = w * 0.1, w * 0.9
+    d.line([(x0, y), (x1, y)], fill=(*_rgb(main), 255), width=max(2, round(4 * k)))
+    n = len(items)
+    fy, fl = _font(font, round(h * 0.06)), _font(font, round(h * 0.035))
+    for i, (year, label) in enumerate(items):
+        x = x0 + (x1 - x0) * (i + 0.5) / n
+        r = 8 * k
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(*_rgb(accent), 255))
+        d.text((x, y - h * 0.06), year, font=fy, fill=(*_rgb(ink), 255), anchor="mm",
+               stroke_width=max(1, round(2 * k)), stroke_fill=(0, 0, 0, 160))  # fmt: skip
+        d.text((x, y + h * 0.06), label[: max(2, int((x1 - x0) / n / (h * 0.035)))], font=fl,
+               fill=(*_rgb(ink), 255), anchor="mm", stroke_width=max(1, round(2 * k)),
+               stroke_fill=(0, 0, 0, 160))  # fmt: skip
+    return im
+
+
+def place_tag(w: int, h: int, place: str, font: str | None, accent: str, ink: str) -> Any:
+    """H2 場所のタグ: ピン（文字の 1.2 倍・accent）と地名（画面の高さの 5%）。小さな画。"""
+    from PIL import Image, ImageDraw
+
+    size = round(h * 0.05)
+    f = _font(font, size)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    tw = probe.textlength(place, font=f)
+    ph = size * 1.2
+    im = Image.new("RGBA", (round(ph + tw + size), round(ph * 1.3)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    r = ph * 0.38
+    cx, cy = ph / 2, r + 2
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*_rgb(accent), 255))
+    d.polygon([(cx - r * 0.7, cy + r * 0.5), (cx + r * 0.7, cy + r * 0.5), (cx, ph)],
+              fill=(*_rgb(accent), 255))  # fmt: skip
+    d.ellipse([cx - r * 0.4, cy - r * 0.4, cx + r * 0.4, cy + r * 0.4], fill=(255, 255, 255, 255))
+    d.text((ph + size * 0.3, ph / 2), place, font=f, fill=(*_rgb(ink), 255), anchor="lm",
+           stroke_width=max(1, size // 12), stroke_fill=(0, 0, 0, 180))  # fmt: skip
+    return im
+
+
+def venn(w: int, h: int, a: str, b: str, both: str, font: str | None, c1: str, c2: str,
+         accent: str, ink: str) -> Any:  # fmt: skip
+    """N3 ベン図: 円 2 つ（半径は高さの 24%、中心の間は半径の 1.2 倍、55%）、重なりは accent。"""
+    from PIL import Image, ImageChops, ImageDraw
+
+    r = h * 0.24
+    cx, cy = w / 2, h * 0.48
+    off = r * 0.6
+    m1, m2 = Image.new("L", (w, h), 0), Image.new("L", (w, h), 0)
+    ImageDraw.Draw(m1).ellipse([cx - off - r, cy - r, cx - off + r, cy + r], fill=255)
+    ImageDraw.Draw(m2).ellipse([cx + off - r, cy - r, cx + off + r, cy + r], fill=255)
+    both_m = ImageChops.multiply(m1, m2)
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    for m, c in ((m1, c1), (m2, c2)):
+        lay = Image.new("RGBA", (w, h), (*_rgb(c), 0))
+        lay.putalpha(m.point(lambda v: round(v * 0.55)))
+        im.alpha_composite(lay)
+    lay = Image.new("RGBA", (w, h), (*_rgb(accent), 0))
+    lay.putalpha(both_m)
+    im.alpha_composite(lay)
+    d = ImageDraw.Draw(im)
+    f = _font(font, round(h * 0.05))
+    st: dict[str, Any] = {"stroke_width": max(1, round(h / 400)), "stroke_fill": (0, 0, 0, 180)}
+    d.text((cx - off - r * 1.05, cy), a, font=f, fill=(*_rgb(ink), 255), anchor="rm", **st)
+    d.text((cx + off + r * 1.05, cy), b, font=f, fill=(*_rgb(ink), 255), anchor="lm", **st)
+    if both:
+        d.text((cx, cy), both[:6], font=f, fill=(*_rgb(ink), 255), anchor="mm", **st)
+    return im
+
+
+def quiz(w: int, h: int, question: str, count: int | None, answer: str, font: str | None,
+         accent: str, ink: str, surface: str) -> Any:  # fmt: skip
+    """N10 クイズ: 問いを中央のカードに、右上に 3→2→1、終わったら答えの最初の文節。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    x0, y0, x1, y1 = w * 0.12, h * 0.22, w * 0.88, h * 0.62
+    d.rounded_rectangle([x0, y0, x1, y1], radius=round(h * 0.02), fill=(*_rgb(surface), 240))
+    f = _font(font, round(h * 0.055))
+    rows = _wrap(d, question, f, (x1 - x0) * 0.86)[:3]
+    lh = h * 0.055 * 1.4
+    for i, r in enumerate(rows):
+        d.text((w / 2, (y0 + y1) / 2 + lh * (i - (len(rows) - 1) / 2)), r, font=f,
+               fill=(*_rgb(ink), 255), anchor="mm")  # fmt: skip
+    if count:
+        fc = _font(font, round(h * 0.12))
+        d.text((x1 - h * 0.02, y0 - h * 0.02), str(count), font=fc, fill=(*_rgb(accent), 255),
+               anchor="rb", stroke_width=max(2, h // 180), stroke_fill=(0, 0, 0, 200))  # fmt: skip
+    if answer:
+        fa = _font(font, round(h * 0.09))
+        d.text((w / 2, y1 + h * 0.12), answer, font=fa, fill=(*_rgb(accent), 255), anchor="mm",
+               stroke_width=max(2, h // 160), stroke_fill=(0, 0, 0, 220))  # fmt: skip
+    return im
+
+
+def compare_table(w: int, h: int, names: list[str], rows: list[dict[str, Any]],
+                  font: str | None, accent: str, ink: str, surface: str) -> Any:  # fmt: skip
+    """P11 仕様の比較表: 3 列（項目・1 者目・2 者目）、良い方の升を accent の面（不透明度 25%）、
+    良い升が多い方の列の見出しに下線。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    n = len(rows) + 1
+    x0, x1 = w * 0.12, w * 0.88
+    rh = min(h * 0.11, h * 0.72 / n)
+    y0 = h * 0.5 - rh * n / 2
+    cols = [x0, x0 + (x1 - x0) * 0.4, x0 + (x1 - x0) * 0.7, x1]
+    f = _font(font, round(rh * 0.42))
+    d.rectangle([x0, y0, x1, y0 + rh * n], fill=(*_rgb(surface), 235))
+    wins = {"a": 0, "b": 0}
+    for i, row in enumerate(rows):
+        y = y0 + rh * (i + 1)
+        better = row.get("better")
+        if better in wins:
+            wins[better] += 1
+            k = 1 if better == "a" else 2
+            d.rectangle([cols[k], y, cols[k + 1], y + rh], fill=(*_rgb(accent), 64))
+        for k, key in enumerate(("item", "a", "b")):
+            d.text(((cols[k] + cols[k + 1]) / 2, y + rh / 2), str(row.get(key, ""))[:14], font=f,
+                   fill=(*_rgb(ink), 255), anchor="mm")  # fmt: skip
+    for k, nm in enumerate(["", *names[:2]]):
+        d.text(((cols[k] + cols[k + 1]) / 2, y0 + rh / 2), nm[:12], font=f,
+               fill=(*_rgb(ink), 255), anchor="mm")  # fmt: skip
+    if wins["a"] != wins["b"]:
+        k = 1 if wins["a"] > wins["b"] else 2
+        d.line([(cols[k] + 10, y0 + rh * 0.88), (cols[k + 1] - 10, y0 + rh * 0.88)],
+               fill=(*_rgb(accent), 255), width=max(2, round(h / 270)))  # fmt: skip
+    return im
+
+
+CYCLE_WORDS = ("繰り返", "循環", "サイクル")
+
+
+def pros_cons_items(texts: list[str]) -> tuple[list[int], list[int]] | None:
+    """N9: 「メリット」と「デメリット」（または「長所」と「短所」）の両方がある台本で、
+    それぞれの語が出た文から次の語が出るまでの文（各列最大 4 つ）。"""
+    pi = next((i for i, t in enumerate(texts) if ("メリット" in t and "デメリット" not in t)
+               or "長所" in t), None)  # fmt: skip
+    ci = next((i for i, t in enumerate(texts) if "デメリット" in t or "短所" in t), None)
+    if pi is None or ci is None or pi == ci:
+        return None
+    a0, b0 = sorted((pi, ci))
+    first = list(range(a0 + 1, b0))[:4]
+    second = list(range(b0 + 1, len(texts)))[:4]
+    pros, cons = (first, second) if pi < ci else (second, first)
+    if not pros or not cons:
+        return None
+    return pros, cons
+
+
+def pros_cons(w: int, h: int, pros: list[str], cons: list[str], font: str | None, main: str,
+              ink: str, surface: str) -> Any:  # fmt: skip
+    """N9: 2 列。左の見出しに ○、右に △。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    fh, fi = _font(font, round(h * 0.06)), _font(font, round(h * 0.045))
+    for k, (mark, items) in enumerate((("○ メリット", pros), ("△ デメリット", cons))):
+        x0 = w * (0.08 + 0.44 * k)
+        d.rounded_rectangle([x0, h * 0.18, x0 + w * 0.40, h * 0.82], radius=round(h * 0.02),
+                            fill=(*_rgb(surface), 235), outline=(*_rgb(main), 255),
+                            width=max(2, round(h / 360)))  # fmt: skip
+        d.text((x0 + w * 0.2, h * 0.26), mark, font=fh, fill=(*_rgb(main), 255), anchor="mm")
+        for i, t in enumerate(items[:4]):
+            d.text((x0 + w * 0.03, h * (0.38 + 0.11 * i)), "・" + t, font=fi,
+                   fill=(*_rgb(ink), 255), anchor="lm")  # fmt: skip
+    return im
+
+
+def cycle(w: int, h: int, labels: list[str], font: str | None, main: str, accent: str, ink: str,
+          surface: str) -> Any:  # fmt: skip
+    """N2: N1 の箱を円周（半径は高さの 28%）に並べ、時計回りの矢印の円弧でつなぐ。"""
+    from PIL import ImageDraw
+
+    im = _canvas(w, h)
+    d = ImageDraw.Draw(im)
+    n = len(labels)
+    r = h * 0.28
+    cx, cy = w / 2, h / 2
+    lw = max(2, round(3 * h / 1080))
+    d.arc([cx - r, cy - r, cx + r, cy + r], 0, 360, fill=(*_rgb(main), 255), width=lw)
+    f = _font(font, round(h * 0.04))
+    bw, bh = w * 0.16, h * 0.10
+    for i, t in enumerate(labels):
+        a = -math.pi / 2 + 2 * math.pi * i / n
+        x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+        box = [x - bw / 2, y - bh / 2, x + bw / 2, y + bh / 2]
+        d.rounded_rectangle(box, radius=round(h / 90), fill=(*_rgb(surface), 255),
+                            outline=(*_rgb(main), 255), width=lw)  # fmt: skip
+        d.text((x, y), t[:8], font=f, fill=(*_rgb(ink), 255), anchor="mm")
+        # 次の箱への向きの矢じり（円周の中ほど）
+        a2 = a + math.pi / n
+        ax, ay = cx + r * math.cos(a2), cy + r * math.sin(a2)
+        tx, ty = -math.sin(a2), math.cos(a2)
+        s = h * 0.02
+        d.polygon([(ax + tx * s, ay + ty * s), (ax - tx * s * 0.2 + ty * s * 0.6,
+                    ay - ty * s * 0.2 - tx * s * 0.6), (ax - tx * s * 0.2 - ty * s * 0.6,
+                    ay - ty * s * 0.2 + tx * s * 0.6)], fill=(*_rgb(accent), 255))  # fmt: skip
     return im

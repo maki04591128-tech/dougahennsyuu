@@ -635,7 +635,10 @@ async def test_music_video_ink_and_motif(bclient, media_dir):
     by = {t["name"]: t["id"] for t in tl["tracks"]}
     names = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
     i = names.index("MV・ショット")
-    assert names[i + 1 : i + 4] == ["MV・形（白）", "MV・形（黒）", "MV・インク"]
+    assert names[i + 1 : i + 5] == ["MV・キーの一字", "MV・形（白）", "MV・形（黒）", "MV・インク"]
+    # 統合版 T26: サビの間、背景に巨大な一字
+    key = [x for x in tl["clips"] if x["track_id"] == by["MV・キーの一字"]]
+    assert key and all(x["end_frame"] > x["start_frame"] for x in key)
     ink = sorted(
         (x for x in tl["clips"] if x["track_id"] == by["MV・インク"]),
         key=lambda x: x["start_frame"],

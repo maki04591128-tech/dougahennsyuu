@@ -177,6 +177,7 @@ class DesignProfile(BaseModel):
     # 背景だけ（図・カード・画像・題名が無い）時間の上限（秒）。None は映像そのものが主役で制限なし
     max_empty_sec: float | None = None
     keywords: list[str] = Field(default_factory=list)  # 指示文から用途を判定する語
+    look: str | None = None  # 統合版 Y1〜Y10: 利用者が選んだ見た目の型（既定はなし）
 
     def allowance(self, c: Component) -> int:
         return self.components.get(c, DENY)
@@ -231,6 +232,8 @@ class ProjectDesign(BaseModel):
     # 統合版 Q7: 聴覚補助の字幕（字幕動画・インタビュー・ニュースで選べる。既定はオフ）。
     # None は変えない（設定のときだけ使う）
     hearing_aid: bool | None = None
+    # 統合版 Y1〜Y10: 見た目の型（用途ごとに選べるものだけ。""は「なし」に戻す。None は変えない）
+    look: str | None = Field(default=None, pattern=r"^(|Y([1-9]|10))$")
 
 
 SERIES_COLOR_KEYS = ("base", "base2", "surface", "main", "accent", "text", "text_muted")

@@ -265,7 +265,15 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         "series_id": None,
         "genre": None,
         "hearing_aid": False,
+        "look": "",
     }
+    # 統合版 Y: 用途で選べない見た目の型は保存しない
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "lecture", "look": "Y5"})
+    assert r.json()["look"] == ""
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "lecture", "look": "Y1"})
+    assert r.json()["look"] == "Y1"
+    assert (await c.put(f"/projects/{pid}/design", json={"look": "Y99"})).status_code == 422
+    await c.put(f"/projects/{pid}/design", json={"purpose": None, "look": ""})
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
     ]
@@ -1007,6 +1015,13 @@ async def test_story_cutout_image_gets_parallax(dclient, media_dir):
     # 解説（2.5D を使わない用途）では今までどおりケン・バーンズ
     clip = await image_clip("explainer")
     assert not [k for k in clip["animation"]["keyframes"] if k.get("x")]
+    # 統合版 I3: Vlog では白の縁と影のステッカーにして、傾けて貼る
+    clip = await image_clip("vlog")
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a_["id"]: a_["name"] for a_ in tl["assets"]}
+    assert names[clip["asset_id"]].endswith("（ステッカー）")
+    keys = clip["animation"]["keyframes"]
+    assert keys[0]["scale"] == 1.3 and keys[0]["rotation"] == 10 and keys[1]["rotation"] == -6
 
 
 async def test_kids_background_is_memphis_then_liquid(dclient, monkeypatch):
@@ -1194,3 +1209,175 @@ async def test_n_cards_from_script_words(dclient):
     tl, _ = await _apply(c, pid, sid, "interview")
     names = {a["id"]: a["name"] for a in tl["assets"]}
     assert "引用カード（N11）" in names.values()
+
+
+async def test_year_roll_in_documentary(dclient):
+    """統合版 T43: 1 回目の年はフェード、2 回目からは前の年から回して右上に出す。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "1964年に東京で大会が開かれました。"},
+        {"speaker": "B", "text": "そして2021年に再び開かれました。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "documentary")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    ys = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・年号"),
+        key=lambda x: x["start_frame"],
+    )
+    got = [names[x["asset_id"]] for x in ys]
+    assert got == ["年号（T43）1964", "年号が回る（T43）2021", "年号（T43）2021"]
+    assert ys[0]["transform"]["x"] > 0.3 and ys[0]["transform"]["y"] < -0.3  # 右上
+    # 統合版 N4: 年が 3 つ以上なら、最後の文で年表
+    lines.append({"speaker": "A", "text": "2030年にはまた新しい計画があります。"})
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "documentary")
+    assert "年表（N4）" in {a["name"] for a in tl["assets"]}
+
+
+async def test_price_drop_in_product(dclient):
+    """統合版 P10: 「（数字）円」が 2 つで後が小さい文に、値下げ（回る価格ときらめき）。"""
+    from video_automation.services.rendering import numbers as nb
+
+    assert nb.price_drop("通常12,800円が今だけ9,800円です") == ("12,800", "9,800")
+    assert nb.price_drop("500円と800円") is None
+    c = dclient
+    lines = [{"speaker": "A", "text": "通常12,800円のところ、今だけ9,800円になります。"}]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "product")
+    assert "値下げ（P10）" in {a["name"] for a in tl["assets"]}
+
+
+async def test_loading_done_in_tutorial(dclient):
+    """統合版 I2: 操作説明で「できました」で終わる文に、右上の輪とチェック（1.5 秒）。"""
+    from video_automation.services.direction import effects as fx
+
+    fr = fx.loading_done(360, "#FFC752")
+    assert len(fr) == 45 and fr[-1].getchannel("A").getextrema()[1] == 0
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "設定を開いて保存を押します。"},
+        {"speaker": "B", "text": "これで設定の変更ができました。"},
+        {"speaker": "A", "text": "次は表示を変えましょう。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "tutorial")
+    assert "完了の印（I2）" in {a["name"] for a in tl["assets"]}
+
+
+async def test_onomatopoeia_at_pop_sounds(dclient):
+    """統合版 X4: ゲーム実況・子ども向けの「ポン」の効果音の所に「ポン！」の吹き出し（24f）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import AddClip, AddTrack
+    from video_automation.services.design.profiles import PROFILES
+    from video_automation.services.direction import effects as fx
+
+    fr = fx.onomatopoeia("ポン！", 360, "#FFC752", None)
+    assert len(fr) == 24 and fr[-1].getchannel("A").getextrema()[1] == 0
+    c = dclient
+    pid, _ = await _ready_script(c)
+    cont = c.app.state.container
+    tl = await cont.timeline.get_timeline(pid)
+    cmds: list = []
+    work = cont.settings.data_dir / "projects" / pid / "assets"
+    notes = await cont.build._onomatopoeia(
+        pid, tl, [10, 20, 60], 200, PROFILES[Purpose.GAME], cmds, work
+    )
+    clips = [x for x in cmds if isinstance(x, AddClip)]
+    assert [x.start_frame for x in clips] == [10, 60]  # 重なる 2 つ目は出さない
+    assert any(isinstance(x, AddTrack) and x.name == "演出・擬音" for x in cmds)
+    assert notes == ["効果音の所に擬音を 2 か所出しました"]
+
+
+async def _set_items(c, sid, items_by_index):
+    import json as _j
+
+    from sqlalchemy import select
+
+    from video_automation.database.models import ScriptSegment
+
+    async with c.app.state.container.db.session_factory() as s:
+        segs = (
+            (await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sid)))
+            .scalars()
+            .all()
+        )
+        segs = sorted(segs, key=lambda x: (x.scene_index, x.sequence))
+        for i, d in items_by_index.items():
+            segs[i].items = _j.dumps(d, ensure_ascii=False)
+        await s.commit()
+
+
+async def test_llm_items_parts(dclient):
+    """統合版 段階5d: LLM の項目から H2（場所）・N10（クイズ）・P11（比較表）・N3（ベン図）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "今日はパリに来ています。"},
+        {"speaker": "B", "text": "フランスの首都はどこでしょう？"},
+        {"speaker": "A", "text": "パリです。花の都と呼ばれます。"},
+        {"speaker": "B", "text": "犬と猫の両方に共通する点があります。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {
+        0: {"place": "パリ"},
+        2: {"answer": True},
+        3: {"venn": ["犬", "猫"], "compare": {"names": ["A社", "B社"], "rows": [
+            {"item": "重さ", "a": "1kg", "b": "2kg", "better": "a"},
+            {"item": "値段", "a": "1万円", "b": "8千円", "better": "b"},
+            {"item": "電池", "a": "10時間", "b": "8時間", "better": "a"},
+        ]}},
+    })  # fmt: skip
+    for purpose, name in (("vlog", "場所のタグ（H2）「パリ」"), ("lecture", "クイズ（N10）"),
+                          ("product", "仕様の比較表（P11）"), ("explainer", "ベン図（N3）")):  # fmt: skip
+        tl, _ = await _apply(c, pid, sid, purpose)
+        assert name in {a["name"] for a in tl["assets"]}, purpose
+
+
+async def test_charts_from_llm_items(dclient):
+    """統合版 D6（大きな数字を回す）・D12（輪）: LLM の chart から図表。用途に無い図は出さない。"""
+    from video_automation.services.rendering import d_charts as dc
+
+    assert not dc.valid({"kind": "share", "labels": ["A"], "values": [100]})
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "来場者は1280万人でした。"},
+        {"speaker": "B", "text": "達成率は72パーセントです。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    await _set_items(c, sid, {
+        0: {"chart": {"kind": "number", "values": ["1280"], "unit": "万人"}},
+        1: {"chart": {"kind": "progress", "values": [72]}},
+    })  # fmt: skip
+    tl, _ = await _apply(c, pid, sid, "lecture")
+    assert "大きな数字（D6）" in {a["name"] for a in tl["assets"]}
+    # 前の図が出ている間（文の終わり＋1 秒）は次の図を重ねない。1 つ目を外すと D12 が出る
+    await _set_items(c, sid, {0: {}, 1: {"chart": {"kind": "progress", "values": [72]}}})
+    tl, _ = await _apply(c, pid, sid, "lecture")
+    assert "図表（D12）" in {a["name"] for a in tl["assets"]}
+    n12 = [a["name"] for a in tl["assets"]].count("図表（D12）")
+    tl, _ = await _apply(c, pid, sid, "promo")  # PR は D6 だけ（D12 は作らない）
+    assert [a["name"] for a in tl["assets"]].count("図表（D12）") == n12
+
+
+async def test_pros_cons_and_cycle(dclient):
+    """統合版 N9（メリットとデメリット）・N2（手順の後に「繰り返」で循環の図）。"""
+    from video_automation.services.rendering import n_cards as nc
+
+    t = ["メリットは三つあります。", "軽いことです。", "安いことです。", "デメリットもあります。",
+         "壊れやすいです。"]  # fmt: skip
+    assert nc.pros_cons_items(t) == ([1, 2], [4])
+    c = dclient
+    pid, sid = await _ready_script(c, [{"speaker": "A", "text": x} for x in t])
+    tl, _ = await _apply(c, pid, sid, "explainer")
+    assert "長所と短所（N9）" in {a["name"] for a in tl["assets"]}
+    lines = [
+        {"speaker": "A", "text": "まず水が蒸発します。"},
+        {"speaker": "B", "text": "次に雲になります。"},
+        {"speaker": "A", "text": "最後に雨が降ります。"},
+        {"speaker": "B", "text": "これを繰り返すのです。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "explainer")
+    names = {a["name"] for a in tl["assets"]}
+    assert "循環の図（N2）" in names and "手順の流れ（N1）" in names  # 手順の後に円周

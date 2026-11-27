@@ -530,3 +530,31 @@ async def test_generation_retries_once_after_timeout_and_caps_output(client, fak
     assert r.status_code == 200, r.text
     assert len(calls) >= 2
     assert calls[0]["options"]["num_predict"] == 6000
+
+
+async def test_generation_keeps_llm_items(client, fake):
+    """統合版 段階5d: LLM が発話に付けた項目（place など）を発話に保存し、指示にも書く。"""
+    import json
+
+    from sqlalchemy import select
+
+    from video_automation.database.models import ScriptSegment
+
+    sc = await _setup(client)
+    rep = full_reply()
+    rep["scenes"][0]["turns"][0]["place"] = "東京"
+    rep["scenes"][0]["turns"][1]["features"] = []  # 空は保存しない
+    fake.chat_responder = lambda b: rep if kind_of(b) == "scenes" else None
+    r = await client.post(f"/scripts/{sc['id']}/generate", json={})
+    assert r.status_code == 200, r.text
+    async with client.app.state.container.db.session_factory() as s:
+        segs = (
+            (await s.execute(select(ScriptSegment).where(ScriptSegment.script_id == sc["id"])))
+            .scalars()
+            .all()
+        )
+    items = sorted((x.sequence, x.scene_index, x.items) for x in segs)
+    got = [json.loads(i) for _q, _s, i in items if i]
+    assert got == [{"place": "東京"}]
+    p = prompt_of(next(b for b in reversed(fake.chat_bodies) if kind_of(b) == "scenes"))
+    assert "place" in p and "compare" in p

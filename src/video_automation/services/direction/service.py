@@ -14,7 +14,7 @@ import json
 import math
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -203,11 +203,30 @@ FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
 CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
 DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
+YEAR_TRACK = "演出・年号"  # 統合版 T43
+PLACE_TRACK = "演出・場所"  # 統合版 H2
+# 統合版 段階5d: LLM の chart の種類 → 図、用途 → 使ってよい図
+D_KIND = {
+    "number": "D6", "share": "D7", "progress": "D12", "bars": "D3", "race": "D5",
+    "pair": "D8", "radar": "D9", "flow": "D10", "funnel": "D11",
+}  # fmt: skip
+D_PURPOSES: dict[Purpose, set[str]] = {
+    Purpose.EXPLAINER: {"D3", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12"},
+    Purpose.LECTURE: {"D6", "D12"},
+    Purpose.NEWS: {"D5", "D7", "D8"},
+    Purpose.CORPORATE: {"D6", "D11", "D12"},
+    Purpose.PRODUCT: {"D6", "D9"},
+    Purpose.PROMO: {"D6"},
+    Purpose.RANKING: {"D5"},
+}
+T43_PURPOSES = {Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE}
 N6_PURPOSES = {Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL}
 H1_PURPOSES = {
     Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
 }  # fmt: skip
 EXTRA_TRACKS = (
+    PLACE_TRACK,
+    YEAR_TRACK,
     CHAPTER_TRACK,
     DIAGRAM_TRACK,
     CLOSE_TRACK,
@@ -252,6 +271,16 @@ HOLD_LINES = 2  # 図・カードを説明の範囲の後に出し続ける発�
 REVEAL_MIN_SEC = 1.2  # カードの項目を順に出すとき、1 項目を出しておく最短の時間
 
 
+def _json_items(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
 @dataclass
 class _Line:
     speaker: str
@@ -259,6 +288,7 @@ class _Line:
     start: int
     end: int
     emotion: str = ""
+    items: dict[str, Any] = field(default_factory=dict)  # 統合版 段階5d: LLM が付けた項目
 
 
 # 統合版 T16: 用途ごとの題名の入り（MV・リリックは V5 の曲名のまま。1 文字ずつの入りは、
@@ -597,7 +627,14 @@ class DirectionService:
                 .all()
             )
         lines = [
-            _Line(x.speaker or "", x.text, x.start_frame or 0, x.end_frame or 0, x.emotion or "")
+            _Line(
+                x.speaker or "",
+                x.text,
+                x.start_frame or 0,
+                x.end_frame or 0,
+                x.emotion or "",
+                _json_items(x.items),
+            )
             for x in segs
         ]
         return p, sc, lines
@@ -1012,6 +1049,87 @@ class DirectionService:
             )
         return notes
 
+    async def _sticker(self, project_id: str, img: AssetRead, h: int) -> AssetRead:
+        """統合版 I3: 透過の画像の形に沿って白の縁（8px）と影を付けた画像。"""
+        from PIL import Image, ImageFilter
+
+        src = Path(self.settings.data_dir) / img.path
+        im = await asyncio.to_thread(lambda: Image.open(src).convert("RGBA"))
+        k = max(1.0, im.height / max(1, h))  # 画面に置いたときに縁が 8px になるよう、素材の画素で
+        b = max(2, round(8 * k))
+        pad = b * 3
+        big = Image.new("RGBA", (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+        big.alpha_composite(im, (pad, pad))
+        a = big.getchannel("A").point(lambda v: 255 if v > 32 else 0)
+        edge = a.filter(ImageFilter.MaxFilter(2 * b + 1))
+        shadow = edge.filter(ImageFilter.GaussianBlur(b)).point(lambda v: round(v * 0.35))
+        out = Image.new("RGBA", big.size, (0, 0, 0, 0))
+        sh = Image.new("RGBA", big.size, (0, 0, 0, 255))
+        sh.putalpha(shadow)
+        out.alpha_composite(sh, (b // 2, b))
+        white = Image.new("RGBA", big.size, (255, 255, 255, 255))
+        white.putalpha(edge)
+        out.alpha_composite(white)
+        out.alpha_composite(big)
+        dst = src.with_name(f"{src.stem}_sticker.png")
+        await asyncio.to_thread(out.save, dst)
+        row = await self.timeline.register_generated(
+            project_id, dst, AssetKind.IMAGE, "pillow", f"{img.name}（ステッカー）"
+        )
+        return AssetRead.model_validate(row)
+
+    async def _years(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+    ) -> None:
+        """統合版 T43（ドキュメンタリー・解説・講義）。"""
+        from video_automation.services.rendering import numbers as nb
+
+        sa = safe_area_for(prof, w, h)
+        first = True
+        for ln in lines:
+            year = nb.find_year(ln.text)
+            n_all = min(ln.end, total) - ln.start
+            if not year or n_all < 12:
+                continue
+            frames_ = await asyncio.to_thread(
+                nb.year_frames, year, h, font, ink, prof.palette.base, not first
+            )
+            bw, bh = frames_[0].size
+            tf = native_transform(bw, bh, w, h, cx=1 - sa.right - bw / w / 2,
+                                  cy=sa.top + bh / h / 2, max_w=1.0)  # fmt: skip
+            tid = lane(YEAR_TRACK)
+            at = ln.start
+            if len(frames_) > 1 and len(frames_) < n_all:  # 回る間（動画）→ 止まった後（静止画）
+                a_ = await self._overlay(project_id, frames_, f"年号が回る（T43）{year}", fps)
+                cmds.append(AddClip(track_id=tid, asset_id=a_.id, start_frame=at,
+                                    duration_frames=len(frames_), clip_id=str(uuid4()),
+                                    transform=tf))  # fmt: skip
+                at += len(frames_)
+            still = await self._png(project_id, frames_[-1], f"年号（T43）{year}")
+            n = ln.start + n_all - at
+            cid = str(uuid4())
+            cmds.append(AddClip(track_id=tid, asset_id=still.id, start_frame=at,
+                                duration_frames=n, clip_id=cid, transform=tf))  # fmt: skip
+            keys = []
+            if first:
+                keys += [Keyframe(frame=0, opacity=0.0), Keyframe(frame=min(6, n - 1), opacity=1.0)]
+            if n > 14:
+                keys += [Keyframe(frame=n - 7, opacity=1.0), Keyframe(frame=n - 1, opacity=0.0)]
+            if len(keys) >= 2 and len({k.frame for k in keys}) == len(keys):
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+            first = False
+
     async def _n_cards(
         self,
         project_id: str,
@@ -1095,12 +1213,24 @@ class DirectionService:
                                                   pal.accent, ink)  # fmt: skip
                     a_ = await self._png(project_id, img, "引用カード（N11）")
                     put(a_, ln.start, end - ln.start, fade(end - ln.start))
-        if runs:  # N1
+        if runs:  # N1（後の 3 文以内に「繰り返」「循環」「サイクル」があれば N2 の円周）
             for run in runs:
                 labels = [nc.first_phrase(lines[i].text) for i in run]
+                near = range(run[-1] + 1, min(len(lines), run[-1] + 4))
+                cyc = next(
+                    (i for i in near if any(k_ in lines[i].text for k_ in nc.CYCLE_WORDS)), None
+                )
                 starts = [lines[i].start for i in run]
                 end = min(total, lines[run[-1]].end + one_sec)
-                if not free(starts[0], end):
+                if cyc is not None:  # N2: 「繰り返」の文の頭で、手順の箱を円周に並べ直す
+                    c_st, c_end = lines[cyc].start, min(total, lines[cyc].end + one_sec)
+                    end = min(end, c_st)
+                    if free(c_st, c_end):
+                        img = await asyncio.to_thread(nc.cycle, w, h, labels, font, pal.main,
+                                                      pal.accent, ink, pal.surface)  # fmt: skip
+                        put(await self._png(project_id, img, "循環の図（N2）"), c_st,
+                            c_end - c_st, fade(c_end - c_st))  # fmt: skip
+                if end <= starts[0] or not free(starts[0], end):
                     continue
                 for k, st in enumerate(starts):
                     nx = starts[k + 1] if k + 1 < len(starts) else end
@@ -1118,6 +1248,164 @@ class DirectionService:
                         keys = [Keyframe(frame=0, opacity=0.0, easing=Easing.CUBIC_OUT),
                                 Keyframe(frame=min(10, nx - st - 1), opacity=1.0)]  # fmt: skip
                     put(a_, st, nx - st, keys)
+        # 統合版 段階5d: LLM が発話に付けた項目から出す部品（H2・N3・N10・P11）
+        sa = safe_area_for(prof, w, h)
+        placed_place: set[str] = set()
+        for i, ln in enumerate(lines):
+            it = ln.items
+            end = min(total, ln.end + one_sec)
+            pl = str(it.get("place") or "").strip()
+            if (
+                pl
+                and pv in (Purpose.DOCUMENTARY, Purpose.NEWS, Purpose.VLOG)
+                and pl not in placed_place
+            ):
+                # H2: 左上に場所のタグ（4 秒。ピンが落ちる 8f）
+                n = min(round(4 * fps), total - ln.start)
+                img = await asyncio.to_thread(nc.place_tag, w, h, pl[:20], font, pal.accent, ink)
+                a_ = await self._png(project_id, img, f"場所のタグ（H2）「{pl[:12]}」")
+                bw_, bh_ = img.size
+                tf = native_transform(bw_, bh_, w, h, cx=sa.left + bw_ / w / 2,
+                                      cy=sa.top + bh_ / h / 2, max_w=1.0)  # fmt: skip
+                cid = str(uuid4())
+                cmds.append(AddClip(track_id=lane(PLACE_TRACK), asset_id=a_.id,
+                                    start_frame=ln.start, duration_frames=n, clip_id=cid,
+                                    transform=tf))  # fmt: skip
+                if n > 14:
+                    cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=[
+                        Keyframe(frame=0, y=-20 / h, opacity=0.0, easing=Easing.BACK_OUT),
+                        Keyframe(frame=8, y=0.0, opacity=1.0),
+                        Keyframe(frame=n - 7, y=0.0, opacity=1.0),
+                        Keyframe(frame=n - 1, y=0.0, opacity=0.0),
+                    ])))  # fmt: skip
+                placed_place.add(pl)
+            vn = it.get("venn")
+            if (pv in (Purpose.EXPLAINER, Purpose.LECTURE) and isinstance(vn, list) and len(vn) == 2
+                    and any(k_ in ln.text for k_ in ("両方", "共通", "重なる"))
+                    and free(ln.start, end)):  # fmt: skip
+                img = await asyncio.to_thread(nc.venn, w, h, str(vn[0])[:8], str(vn[1])[:8], "",
+                                              font, pal.chart[0], pal.chart[1 % len(pal.chart)],
+                                              pal.accent, ink)  # fmt: skip
+                a_ = await self._png(project_id, img, "ベン図（N3）")
+                put(a_, ln.start, end - ln.start, fade(end - ln.start))
+            if (
+                pv in (Purpose.LECTURE, Purpose.SHORT, Purpose.KIDS)
+                and i + 1 < len(lines)
+                and ln.text.rstrip().endswith(("？", "?"))
+                and lines[i + 1].items.get("answer")
+            ):
+                # N10: 問いのカード、右上に 3→2→1（1 つ 20f）、その後に答えの最初の文節
+                ans = lines[i + 1]
+                st, cd = ln.start, 20
+                q_end = min(total, ans.end + one_sec)
+                if free(st, q_end) and ans.start - st >= 3 * cd:
+                    c0 = ans.start - 3 * cd
+                    if c0 > st:
+                        img = await asyncio.to_thread(nc.quiz, w, h, ln.text, None, "", font,
+                                                      pal.accent, ink, pal.surface)  # fmt: skip
+                        put(await self._png(project_id, img, "クイズ（N10）"), st, c0 - st, None)
+                    for k_ in range(3):
+                        img = await asyncio.to_thread(nc.quiz, w, h, ln.text, 3 - k_, "", font,
+                                                      pal.accent, ink, pal.surface)  # fmt: skip
+                        put(await self._png(project_id, img, "クイズ（N10）"), c0 + cd * k_, cd,
+                            None)  # fmt: skip
+                    img = await asyncio.to_thread(nc.quiz, w, h, ln.text, None,
+                                                  nc.first_phrase(ans.text), font, pal.accent,
+                                                  ink, pal.surface)  # fmt: skip
+                    put(await self._png(project_id, img, "クイズ（N10）"), ans.start,
+                        q_end - ans.start, None)  # fmt: skip
+            ch_ = it.get("chart")
+            if isinstance(ch_, dict) and free(ln.start, end):
+                from video_automation.services.rendering import d_charts as dc
+
+                did = D_KIND.get(str(ch_.get("kind")))
+                if did and did in D_PURPOSES.get(pv, set()) and dc.valid(ch_):
+                    pal_d = pal.model_dump()
+                    if did == "D6":  # 大きな数字を回す（動画）→ 止まった後（静止画）
+                        cap = nc.first_phrase(ln.text)
+                        fr = await asyncio.to_thread(
+                            dc.number_frames, ch_, w, h, font, pal.accent, ink, cap
+                        )
+                        n_mov = min(len(fr), end - ln.start)
+                        put(await self._overlay(project_id, fr[:n_mov], "大きな数字（D6）", fps),
+                            ln.start, n_mov, None)  # fmt: skip
+                        if end - ln.start > n_mov:
+                            put(await self._png(project_id, fr[-1], "大きな数字（D6）"),
+                                ln.start + n_mov, end - ln.start - n_mov, None)  # fmt: skip
+                    else:
+                        img = await asyncio.to_thread(dc.draw, ch_, w, h, font, pal_d, ink)
+                        a_ = await self._png(project_id, img, f"図表（{did}）")
+                        put(a_, ln.start, end - ln.start, fade(end - ln.start))
+            cp = it.get("compare")
+            if pv == Purpose.PRODUCT and isinstance(cp, dict) and free(ln.start, end):
+                names_ = [str(x) for x in (cp.get("names") or [])][:2]
+                rows_ = [r for r in (cp.get("rows") or []) if isinstance(r, dict)][:5]
+                if len(names_) == 2 and len(rows_) >= 3:  # P11 仕様の比較表
+                    img = await asyncio.to_thread(nc.compare_table, w, h, names_, rows_, font,
+                                                  pal.accent, ink, pal.surface)  # fmt: skip
+                    a_ = await self._png(project_id, img, "仕様の比較表（P11）")
+                    put(a_, ln.start, end - ln.start, fade(end - ln.start))
+        pc = (
+            nc.pros_cons_items([x.text for x in lines])
+            if pv in (Purpose.EXPLAINER, Purpose.PRODUCT)
+            else None
+        )
+        if pc:  # N9 長所と短所: 話す時刻に各列へ 1 項目ずつ足す
+            pros_i, cons_i = pc
+            order = sorted([(i, "p") for i in pros_i] + [(i, "c") for i in cons_i])
+            st0, end0 = lines[order[0][0]].start, min(total, lines[order[-1][0]].end + one_sec)
+            if free(st0, end0):
+                for k_, (i, _side) in enumerate(order):
+                    shown = [x for x, _ in order[: k_ + 1]]
+                    p_ = [nc.first_phrase(lines[x].text) for x in pros_i if x in shown]
+                    c_ = [nc.first_phrase(lines[x].text) for x in cons_i if x in shown]
+                    a0 = lines[i].start
+                    b0 = lines[order[k_ + 1][0]].start if k_ + 1 < len(order) else end0
+                    if b0 <= a0:
+                        continue
+                    img = await asyncio.to_thread(nc.pros_cons, w, h, p_, c_, font, pal.main,
+                                                  ink, pal.surface)  # fmt: skip
+                    put(await self._png(project_id, img, "長所と短所（N9）"), a0, b0 - a0, None)
+        if pv == Purpose.PRODUCT:  # P10 値下げ: 前の価格に線、後の価格を回し、止まったら X2
+            from video_automation.services.direction import effects as fx
+            from video_automation.services.rendering import numbers as nb
+
+            for ln in lines:
+                pr = nb.price_drop(ln.text)
+                end = min(total, ln.end + one_sec)
+                if not pr or not free(ln.start, end):
+                    continue
+                fr = await asyncio.to_thread(nb.price_frames, pr[0], pr[1], w, h, font, ink,
+                                             pal.accent)  # fmt: skip
+                star = await asyncio.to_thread(fx.sparkle, round(h * 0.16 * 0.6))
+                spark = []  # 止まった時にきらめき（価格の右上）
+                for s_ in star:
+                    base_ = fr[-1].copy()
+                    base_.alpha_composite(s_, (round(w * 0.62), round(h * 0.30)))
+                    spark.append(base_)
+                seq = fr + spark
+                n_mov = min(len(seq), end - ln.start)
+                a_ = await self._overlay(project_id, seq[:n_mov], "値下げ（P10）", fps)
+                put(a_, ln.start, n_mov, None)
+                if end - ln.start > n_mov:
+                    still = await self._png(project_id, fr[-1], "値下げ（P10）")
+                    put(still, ln.start + n_mov, end - ln.start - n_mov, None)
+        if pv in (Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.CORPORATE):
+            # N4 年表: 年が 3 つ以上出たら、最後の文で並べる（章の区切りが無いので動画全体で 1 つ）
+            from video_automation.services.rendering import numbers as nb
+
+            ys0 = [(nb.find_year(x.text), x) for x in lines]
+            ys = [(y_, x) for y_, x in ys0 if y_]
+            if len({y_ for y_, _x in ys}) >= 3:
+                items = [(y_, nc.first_phrase(x.text.split("年", 1)[-1] or x.text, 6))
+                         for y_, x in ys][:8]  # fmt: skip
+                last = lines[-1]
+                end = min(total, last.end + one_sec)
+                if free(last.start, end):
+                    img = await asyncio.to_thread(nc.timeline, w, h, items, font, pal.main,
+                                                  pal.accent, ink)  # fmt: skip
+                    a_ = await self._png(project_id, img, "年表（N4）")
+                    put(a_, last.start, end - last.start, fade(end - last.start))
         if used:
             notes.append("図解（N1・N7・N8・N11）は、出ている間も字幕を出しています")
         return notes
@@ -1189,6 +1477,20 @@ class DirectionService:
             if at + n <= title_end:
                 tf = ClipTransform(fit=FitMode.FIT, scale=round(2 * size / h, 4), x=0.28, y=-0.12)
                 await put(fr, "きらめき（X2）", at, n, transform=tf)
+        if pv == Purpose.TUTORIAL:  # I2: 「完了です」「できました」で終わる文の終わりに右上の輪
+            sa = safe_area_for(prof, w, h)
+            done: list[Any] = []
+            for ln in lines:
+                t = ln.text.rstrip("。！!　 ")
+                if not t.endswith(("完了です", "できました")):
+                    continue
+                done = done or await asyncio.to_thread(fx.loading_done, h, prof.palette.accent, fps)
+                bw = done[0].size[0]
+                tf = native_transform(bw, bw, w, h, cx=1 - sa.right - bw / w / 2,
+                                      cy=sa.top + bw / h / 2, max_w=1.0)  # fmt: skip
+                at = max(0, ln.end - len(done) // 2)
+                if at + len(done) <= total:
+                    await put(done, "完了の印（I2）", at, len(done), transform=tf)
         if pv in (Purpose.SHORT, Purpose.GAME):  # 驚きの発話の頭（1 秒に最大 1 回）
             last = -(10**9)
             fl: list[Any] = []
@@ -1311,6 +1613,11 @@ class DirectionService:
         from video_automation.services.rendering import backgrounds as rb
 
         style = PURPOSE_BACKGROUND[prof.purpose.value]
+        if prof.look:  # 統合版 Y: 見た目の型の背景
+            from video_automation.services.design.looks import LOOKS
+
+            lk = LOOKS.get(prof.look)
+            style = lk.background if lk and lk.background else style
         pal = prof.palette.model_dump()
         p = await self.timeline.get_timeline(project_id)
         fps = p.fps_num / p.fps_den
@@ -1381,6 +1688,7 @@ class DirectionService:
                 cmds.append(SetClipAnimation(clip_id=clip_id, animation=anim))
 
         kb_index = 0  # 連続する画像のケン・バーンズの向き（B3）
+        n_sticker = 0  # 統合版 I3: 何枚目のステッカーか（傾きの向き）
 
         def ken_burns(clip_id: str, a: AssetRead, length: int, box: float) -> None:
             """画像のケン・バーンズ（統合版 B3）。拡大量 = 秒数 × 1.75%（最小 8%・最大 20%）。
@@ -1838,6 +2146,13 @@ class DirectionService:
                     img = await self._matched_image(p.id, img, prof, assets)
                 use(Component.IMAGE)
                 box = min(zone_h, main_w)
+                sticker = (
+                    prof is not None
+                    and prof.purpose in (Purpose.VLOG, Purpose.SHORT)
+                    and parallax_dx(img, box) > 0
+                )
+                if sticker:  # 統合版 I3: 切り抜きの画像は白の縁と影を付けたステッカーにする
+                    img = await self._sticker(p.id, img, h)
                 cid = add(
                     fig_t,
                     img.id,
@@ -1847,7 +2162,18 @@ class DirectionService:
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
                 dx = parallax_dx(img, box) if prof is not None else 0.0
-                if dx and prof is not None and prof.allows(Component.PARALLAX):
+                if sticker and length > 6:
+                    # 統合版 I3: scale 1.3→1.0・回転 +10°→（奇数番目 −6°、偶数番目 ＋6°）を 5f
+                    n_sticker += 1
+                    rot = -6.0 if n_sticker % 2 else 6.0
+                    keys = [
+                        Keyframe(frame=0, scale=1.3, rotation=10.0, easing=Easing.CUBIC_OUT),
+                        Keyframe(frame=5, scale=1.0, rotation=rot),
+                    ]
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys))
+                    )
+                elif dx and prof is not None and prof.allows(Component.PARALLAX):
                     # 統合版 M8: 切り抜いた絵（透明の部分がある）は、ケン・バーンズの代わりに
                     # 絵を横へ被写体の幅の 3% だけ動かし、後ろの背景との間に奥行きを出す
                     use(Component.PARALLAX)
@@ -2239,6 +2565,11 @@ class DirectionService:
             skipped += await self._h_cards(
                 p.id, prof, plan, lines, chap, cmds, lane, total, fps, w, h, font, ink
             )
+
+        # 統合版 T43: 台詞の年号を右上に（2 回目からは前の年から回す）
+        if prof is not None and prof.purpose in T43_PURPOSES:
+            await self._years(p.id, prof, lines, cmds, lane, total, fps, w, h,
+                              self.titles.font_path(heading_font), ink)  # fmt: skip
 
         # 統合版 N1・N7・N8・N11: 台本の語だけで出せる図解
         if prof is not None:
