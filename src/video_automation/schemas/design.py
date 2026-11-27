@@ -74,6 +74,10 @@ class Component(StrEnum):
     BEAT_CUT = "beat_cut"  # 拍に合わせたカット
     SFX = "sfx"  # 演出の効果音
     CHARACTER = "character"  # 立ち絵・キャラ
+    # 段階5: 仕上げ（統合版 M9・L4・L5。使う用途は 2.3 の表）
+    GRAIN = "grain"  # M9: グレイン・周辺減光・色収差
+    GLOW = "glow"  # L4: 明るい所の光のにじみ
+    HALATION = "halation"  # L5: 赤いにじみ（フィルムの質感）
 
 
 # 部品の許可: 0=使わない、-1=制限なし、n>0=1 本の動画で n 回まで

@@ -10,6 +10,8 @@ RenderService から JSON 引数で呼ばれる同梱スクリプト。字幕は
   chapters: [[開始フレーム(0 始まり), 章の名前], ...]
   cues: [{"segment": 台本の行 id, "text": 字幕, "start_frame": 0 始まり, "end_frame"}, ...]
   beats: [拍のフレーム（0 始まり）, ...]（MV の拍に合わせた脈動。無ければ使わない）
+  bars, peaks, consonants: [フレーム, ...]（統合版 M1 の音ハメ。無ければ beats の 4 拍ごと）
+  kick: [フレームごとの拡大率, ...]（統合版 M2 のキックの音反応。1.00〜1.02）
   parts: {intro, letterbox, transitions, sfx, chapter_labels, ken_burns, look, punch, glitch,
           flash, iris, lyrics}: bool（lyrics は字幕を動く文字で出す。呼び出し側は焼き込まない）
   params: {intro_frames, ken_burns, bloom, diffusion, dispersion, vignette, flash_alpha}
@@ -658,21 +660,47 @@ def main():
     if on("punch"):
         emph = emphasis() or []
 
-    # 6.4) 拍に合わせて画面を軽く脈打たせる（MV。2 拍に 1 回・強調や切り替えの近くは避ける）
+    # 6.4) 音ハメ（統合版 M1）と、キックの音反応（M2）で画面全体を動かす（MV・リリック）
+    # 拍頭（1 小節に 1 回）は 1.018 倍、ピーク・子音は 1.035 倍の脈動。キックは 1.00→1.02 倍。
+    # 強調や切り替えの近くの脈動は避ける。主役の文字は動かさない（調整レイヤーで画面全体だけ）
     @part("beat_pulse")
     def beat_pulse():
-        beats = [F0 + int(b) for b in (A.get("beats") or [])][::2]
         busy = list(emph) + list(tr_frames)
-        hits = [b for b in beats if 1 < b < end - 8 and all(abs(b - x) > 10 for x in busy)]
-        if not hits:
+        bars = [F0 + int(b) for b in (A.get("bars") or (A.get("beats") or [])[::4])]
+        strong = [F0 + int(b) for b in (A.get("peaks") or []) + (A.get("consonants") or [])]
+        kick = [float(x) for x in (A.get("kick") or [])]
+
+        def free(b):
+            return 1 < b < end - 8 and all(abs(b - x) > 10 for x in busy)
+
+        pulse = {}
+        for b in bars:
+            if free(b):
+                pulse[b] = 1.018
+        for b in strong:
+            if free(b):
+                pulse[b] = 1.035
+        if not pulse and not kick:
             return
+        vals = [1.0] * (end + 8)
+        for i, k in enumerate(kick):
+            if 0 <= F0 + i < len(vals):
+                vals[F0 + i] = k
+        for b, amt in pulse.items():  # 1f 前から立ち上げ、6f で戻す
+            for j in range(7):
+                f = b + j
+                if f < len(vals):
+                    vals[f] *= 1 + (amt - 1) * (1 - j / 6)
         bp = se.strips.new_effect("beat_pulse", "ADJUSTMENT", 29, 1, length=end)
-        k = bp.transform.scale_x
-        for b in hits:
-            for p_, v in ((b - 1, k), (b, k * 1.018), (b + 6, k)):
-                kt(bp, "scale_x", p_, v)
-                kt(bp, "scale_y", p_, v)
-        use("beat_cut", len(hits))
+        k0 = bp.transform.scale_x
+        last = None
+        for f in range(1, end):
+            v = vals[f]
+            if last is None or abs(v - last) > 0.0008 or f in pulse or f + 1 in pulse:
+                kt(bp, "scale_x", f, k0 * v)
+                kt(bp, "scale_y", f, k0 * v)
+                last = v
+        use("beat_cut", len(pulse))
 
     if on("beat_pulse"):
         beat_pulse()

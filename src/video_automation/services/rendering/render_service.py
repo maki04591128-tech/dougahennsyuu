@@ -48,7 +48,9 @@ from video_automation.services.animation.render_anim import (
     defaults_only,
 )
 from video_automation.services.design.service import DesignService, DesignViolationError
+from video_automation.services.rendering import sync as sync_audio
 from video_automation.services.rendering.beats import detect_file
+from video_automation.services.rendering.finish import finish_chain
 from video_automation.services.rendering.flash_check import check_video
 from video_automation.services.rendering.rich import RichPlan, max_level, plan_rich
 from video_automation.services.subtitle.formats import ass_color, build_ass
@@ -352,6 +354,7 @@ class RenderService:
         loudnorm: bool = True,
         fast: bool = False,
         single_frame: int | None = None,
+        finish: str = "",
     ) -> RenderPlan:
         async with self.db.session_factory() as s:
             p = await s.get(Project, project_id)
@@ -563,6 +566,9 @@ class RenderService:
             audio_labels.append(f"[a{i}]")
 
         vout = base
+        if finish:  # 統合版 段階5 の仕上げ（字幕の前。文字にグレイン・色収差を掛けない）
+            filters.append(f"[{vout}]{finish}[vfin]")
+            vout = "vfin"
         if ass_path is not None:
             filters.append(f"[{vout}]ass='{filter_path(ass_path)}'{self._fontsdir()}[vsub]")
             vout = "vsub"
@@ -887,6 +893,7 @@ class RenderService:
             end_frame=req.end_frame,
             ass_path=ass,
             loudnorm=req.loudnorm,
+            finish=await self._finish(req.project_id, prof.width, prof.height),
         )
         await self.ffmpeg.run(plan.args, total_sec=plan.duration_sec, progress=progress)
         warnings = plan.warnings + await self._flash_guard(out, req.project_id)
@@ -911,6 +918,11 @@ class RenderService:
             "credits_path": credits_path,
             "warnings": warnings,
         }
+
+    async def _finish(self, project_id: str, width: int, height: int) -> str:
+        """用途の型の仕上げ（統合版 M9・L4・L5・S7）のフィルター。型が無いときは付けない。"""
+        prof = await self.design.profile_for(project_id) if self.design else None
+        return finish_chain(prof, width, height)
 
     async def _render_rich(
         self,
@@ -979,6 +991,7 @@ class RenderService:
             rich.params["intro_frames"] = 0
             rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
         beats: list[int] = []
+        sync_args: dict[str, Any] = {}
         if rich.parts.get("beat_pulse"):
             # 曲の拍（MV・リリック）。テンポがはっきりしない曲では使わない
             try:
@@ -989,6 +1002,23 @@ class RenderService:
             if bt is not None and bt.confidence >= 0.2:
                 beats = [round(t * fps_num / fps_den) for t in bt.times]
                 rich.notes.append(f"曲の拍（毎分 {bt.bpm:g} 拍）に合わせて画面を動かしました")
+            # 統合版 M1（拍頭・ピーク・子音の音ハメ）と M2（キックで画面全体の拡大）
+            try:
+                fps_f = fps_num / fps_den
+                wave_ = await sync_audio.load(self.ffmpeg, clean)
+                words = [c["start_frame"] / fps_f for c in cues if c.get("start_frame") is not None]
+                hx = sync_audio.hits(
+                    wave_, sync_audio.SR, fps_f, bt.times if bt and beats else [], words
+                )
+                kick = sync_audio.band_curves(wave_, sync_audio.SR, fps_f, ("kick",))["kick"]
+                sync_args = {
+                    "bars": hx.bars,
+                    "peaks": hx.peaks,
+                    "consonants": hx.consonants,
+                    "kick": kick,
+                }
+            except Exception as exc:  # noqa: BLE001 - 音ハメが取れなくても書き出す
+                log.info("sync_failed", error=str(exc)[:200])
         await progress(0.3)
         timeout = max(1800.0, plan.duration_sec * 40)
         try:
@@ -1010,6 +1040,7 @@ class RenderService:
                     "chapters": chapters,
                     "cues": cues,
                     "beats": beats,
+                    **sync_args,
                     "colors": {
                         "base": pal.base,
                         "main": pal.main,
@@ -1047,12 +1078,13 @@ class RenderService:
                     subs.append(r.path)
         info0 = await self.ffmpeg.probe(rich_out)
         args = ["-i", str(rich_out)]
+        fin = await self._finish(req.project_id, prof.width, prof.height)
+        vf = [fin] if fin else []
         if ass is not None:
-            args += [
-                "-vf",
-                f"ass='{filter_path(ass)}'{self._fontsdir()}",
-                *video_codec_args(encoder, req.quality),
-            ]
+            vf.append(f"ass='{filter_path(ass)}'{self._fontsdir()}")
+        if vf:
+            vf.append(TO_YUV)
+            args += ["-vf", ",".join(vf), *video_codec_args(encoder, req.quality)]
         else:
             args += ["-c:v", "copy"]
         args += ["-c:a", "copy", "-movflags", "+faststart", str(out)]
