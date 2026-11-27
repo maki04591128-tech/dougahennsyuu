@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field
 from video_automation.schemas.timeline import RichLevel
 
 
+class PlayLine(BaseModel):
+    """ゲーム実況: 遊んだ AI が書いた自分のセリフと、それを言う録画の時刻（秒）。"""
+
+    at_sec: float = Field(ge=0)
+    text: str = Field(min_length=1, max_length=300)
+
+
 class BuildRequest(BaseModel):
     """作りたいものの文章と、分かっていれば少しの希望（無ければ用途から自動で決める）。"""
 
@@ -25,6 +32,11 @@ class BuildRequest(BaseModel):
     lyrics: str = Field(default="", max_length=20000)
     # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
     image: str = Field(default="", max_length=1000)
+    # ゲーム実況の掛け合い: play_lines があると、1 人目（実況・解説役、既定「Claude」）のセリフを
+    # 時刻つきで固定し、2 人目（質問・ガヤ役、既定「Qwen」）のセリフをローカル LLM に作らせる。
+    # 声は characters（VOICEVOX の話者名、[1 人目, 2 人目]）。空なら四国めたん・ずんだもん
+    play_lines: list[PlayLine] = Field(default_factory=list, max_length=400)
+    cast: list[str] = Field(default_factory=list, max_length=2)
 
 
 class BuildCharacter(BaseModel):
@@ -85,3 +97,5 @@ class BuildRunRequest(BaseModel):
     keep_script: bool = False
     rich_direction: RichLevel = RichLevel.AUTO
     use_llm_direction: bool = True
+    # 台本（相手役のセリフ）を作るモデル（例: Qwen）。None はタスク別の割り当て
+    script_model: str | None = Field(default=None, max_length=200)

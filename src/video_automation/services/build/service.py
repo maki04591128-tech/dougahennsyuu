@@ -39,6 +39,8 @@ from video_automation.schemas.direction import DirectionApplyRequest, DirectionP
 from video_automation.schemas.provider import TaskType
 from video_automation.schemas.script_studio import (
     CharacterIn,
+    DialogueInput,
+    DialogueLine,
     ScriptGenerateRequest,
     ScriptMode,
     ScriptSettings,
@@ -101,6 +103,15 @@ CAST: dict[Purpose, list[tuple[str, str]]] = {
     Purpose.NEWS: [("青山龍星", "キャスター")],
 }
 _NARRATOR = [("四国めたん", "ナレーター（落ち着いて説明する）")]
+# ゲーム実況の掛け合い（play_lines があるとき）: (表示名, 役割, 既定の声)
+GAME_DUO = [
+    (
+        "Claude",
+        "実況と機能の解説役（このゲームを遊んだ本人。遊びながら仕組みを説明する）",
+        "四国めたん",
+    ),
+    ("Qwen", "質問とガヤ役（素朴な疑問を言い、驚き、茶々を入れる。説明はしない）", "ずんだもん"),
+]
 # 曲（音源）が要る用途。文章だけでは作れない
 NEEDS_MUSIC = {Purpose.MV, Purpose.LYRIC}
 SHORT_PURPOSES = {Purpose.SHORT, Purpose.PROMO, Purpose.TRAILER, Purpose.PRODUCT}
@@ -138,6 +149,8 @@ REC_CY = 0.44
 REC_H = 0.66
 REC_W = 0.9
 REC_W_TACHIE = 0.69
+# ゲーム実況: プレイ録画の音（BGM・効果音）を声の下に小さく残す（約 −12 dB）。寄りは作らない
+GAME_REC_VOLUME = 0.25
 
 
 class BuildError(Exception):
@@ -324,8 +337,8 @@ class BuildService:
             ClassifyRequest(text=req.instruction, has_script=False, vertical=vertical)
         )
         purpose = cls.purpose
-        if rec_path is not None:  # 画面録画がある = 操作説明
-            purpose = Purpose.TUTORIAL
+        if rec_path is not None and purpose != Purpose.GAME:  # 画面録画がある = 操作説明
+            purpose = Purpose.TUTORIAL  # ただしゲーム実況（プレイ録画）はゲーム実況のまま
         if music_path is not None and purpose not in NEEDS_MUSIC:  # 曲がある = MV
             purpose = Purpose.LYRIC if req.lyrics.strip() else Purpose.MV
         prof = PROFILES[purpose]
@@ -340,11 +353,30 @@ class BuildService:
         if rec_sec and not req.duration_sec:  # 録画の長さに合わせて話す
             dur = int(min(1800, max(15, round(rec_sec))))
         styles = await self._style_ids()
+        duo = bool(req.play_lines)  # ゲーム実況の掛け合い（1 人目のセリフは遊んだ AI が書く）
+        if duo:
+            purpose = Purpose.GAME
+            prof = PROFILES[purpose]
         cast = [(n, "話し手") for n in req.characters] or CAST.get(purpose, _NARRATOR)
         if music_path is not None:  # 曲から作るときは話し手はいない
             cast = []
         chars: list[BuildCharacter] = []
-        for name, role in cast:
+        if duo:
+            for i, (label, role, voice0) in enumerate(GAME_DUO):
+                voice = req.characters[i] if i < len(req.characters) else voice0
+                label = req.cast[i] if i < len(req.cast) and req.cast[i].strip() else label
+                sid = styles.get(voice)
+                if styles and sid is None:
+                    notes.append(f"「{voice}」の声が見つからないため、使える声で代わりに作ります")
+                    voice, sid = list(styles.items())[i % len(styles)]
+                chars.append(
+                    BuildCharacter(
+                        name=label, role=role, voice_style_id=sid, tachie_pack=self._pack_for(voice)
+                    )
+                )
+            if len({x.name for x in chars}) < 2:
+                raise BuildError("掛け合いの 2 人の名前が同じです")
+        for name, role in [] if duo else cast:
             sid = styles.get(name)
             if styles and sid is None:
                 notes.append(f"「{name}」の声が見つからないため、使える声で代わりに作ります")
@@ -407,7 +439,9 @@ class BuildService:
                 project_id=pid,
                 title=title,
                 # 曲から作るときは AI に台本を書かせない（歌詞の台本は文字起こしで作る）
-                mode=ScriptMode.MANUAL if music_path is not None else ScriptMode.FULL_AI,
+                mode=ScriptMode.MANUAL
+                if music_path is not None
+                else (ScriptMode.USER_ONE_SIDE if duo else ScriptMode.FULL_AI),
                 settings=ScriptSettings(
                     topic=req.instruction[:500],
                     purpose=prof.label,
@@ -425,11 +459,27 @@ class BuildService:
                         role=x.role,
                         voice=VoiceSettings(style_id=x.voice_style_id),
                         tachie_pack=x.tachie_pack,
+                        is_user=duo and k == 0,
                     )
-                    for x in chars
+                    for k, x in enumerate(chars)
                 ],
             )
         )
+        if duo:  # 遊んだ AI のセリフを、言う時刻つきで固定して入れる
+            lines = sorted(req.play_lines, key=lambda x: x.at_sec)
+            await c.studio.add_dialogue(
+                detail.id,
+                DialogueInput(
+                    lines=[
+                        DialogueLine(text=x.text, speaker=chars[0].name, at_sec=x.at_sec)
+                        for x in lines
+                    ]
+                ),
+            )
+            notes.append(
+                f"{chars[0].name}のセリフ {len(lines)} 件を録画の時刻に合わせて置き、"
+                f"{chars[1].name}のセリフを AI が作ります"
+            )
         return await self._view(pid, detail.id, notes=notes, uncertain=cls.needs_confirmation)
 
     async def _view(
@@ -638,7 +688,13 @@ class BuildService:
         return True
 
     async def _script_to_tachie(
-        self, sid: str, has_tachie: bool, redo: str, at: Any, notes: list[str]
+        self,
+        sid: str,
+        has_tachie: bool,
+        redo: str,
+        at: Any,
+        notes: list[str],
+        model_key: str | None = None,
     ) -> None:
         """台本 → 音声 → 字幕 → 立ち絵（redo は直したいこと。台本の生成に渡す）。"""
         c = self.c
@@ -652,7 +708,9 @@ class BuildService:
                 prev = prev[: max(0, 2000 - len(tail) - 12)]
                 redo = f"前に作った台本:\n{prev}{tail}"
         try:
-            d = await c.studio.generate(sid, ScriptGenerateRequest(instruction=redo[:2000]))
+            d = await c.studio.generate(
+                sid, ScriptGenerateRequest(instruction=redo[:2000], model_key=model_key)
+            )
         except Exception as exc:  # noqa: BLE001
             raise BuildError(f"台本を作れませんでした: {type(exc).__name__}") from exc
         notes += list(getattr(d, "notes", []) or [])[:5]
@@ -703,9 +761,14 @@ class BuildService:
         """画面録画の場面を画像の分かる AI に読ませ、台本の参考資料に足す。"""
         c = self.c
         await at("script")
+        d0 = await c.studio.detail(sid)
+        if recording_reader.PLAY_LOG_HEAD in (d0.settings.reference or ""):
+            # 遊んだ AI のプレイ記録がある: 画面から読み取るより正確なので、それを使う
+            return ["プレイ記録を台本の参考にしました（画面からの読み取りは省きました）"]
+        game = await self._is_game(sid)
         try:
             text = await recording_reader.describe(
-                c.llm, c.ffmpeg, c.settings.data_dir / rec.path, rec.duration_sec or 0.0
+                c.llm, c.ffmpeg, c.settings.data_dir / rec.path, rec.duration_sec or 0.0, game=game
             )
         except Exception as exc:  # noqa: BLE001 - 画像の分かるモデルが無くても台本は作る
             log.info("recording_read_skipped", error=type(exc).__name__, detail=str(exc)[-300:])
@@ -722,6 +785,35 @@ class BuildService:
             sid, ScriptUpdate(settings=d.settings.model_copy(update={"reference": ref[:20000]}))
         )
         return [f"画面録画の {text.count(chr(10)) + 1} 場面を読み取り、台本の参考にしました"]
+
+    async def _anchor_lag(self, project_id: str, sid: str, limit_sec: float = 3.0) -> list[str]:
+        """時刻つきのセリフが、置きたい時刻より大きく遅れていないか（遅れは前のセリフが長いため）。"""
+        d = await self.c.studio.detail(sid)
+        tl = await self.c.timeline.get_timeline(project_id)
+        fps = tl.fps_num / tl.fps_den
+        late = [
+            (x.start_frame / fps - x.anchor_sec, x.text)
+            for x in d.segments
+            if x.anchor_sec is not None
+            and x.start_frame is not None
+            and x.start_frame / fps - x.anchor_sec > limit_sec
+        ]
+        if not late:
+            return []
+        worst = max(late)
+        return [
+            f"時刻より {limit_sec:.0f} 秒以上遅れたセリフが {len(late)} 件あります"
+            f"（最大 {worst[0]:.1f} 秒: 「{worst[1][:20]}」）。前のセリフを短くすると合います"
+        ]
+
+    async def _is_game(self, sid: str) -> bool:
+        """台本のプロジェクトの用途がゲーム実況か。"""
+        try:
+            pid = (await self.c.studio.detail(sid)).project_id
+            design = await self.c.design.get(pid)
+            return design.purpose is not None and str(design.purpose) == Purpose.GAME.value
+        except Exception:  # noqa: BLE001 - 分からなければ操作説明として扱う
+            return False
 
     def _allowed_file(self, path: str, label: str) -> Path:
         """利用者が渡したファイル（取り込みを許可したフォルダの中だけ）。"""
@@ -759,11 +851,15 @@ class BuildService:
         async def zp(v: float) -> None:
             await at("recording", v * 0.9)
 
-        try:
-            zoomed = await c.screencast.zoom(project_id, rec.id, None, 1.8, zp)
-        except Exception as exc:  # noqa: BLE001 - 寄れなくても録画はそのまま置く
-            notes.append(f"操作箇所へのズームを作れませんでした（{type(exc).__name__}）")
+        game = await self._is_game(sid)
+        if game:  # ゲーム実況: プレイ画面全体を見せる（操作箇所へは寄らない）
             zoomed = rec
+        else:
+            try:
+                zoomed = await c.screencast.zoom(project_id, rec.id, None, 1.8, zp)
+            except Exception as exc:  # noqa: BLE001 - 寄れなくても録画はそのまま置く
+                notes.append(f"操作箇所へのズームを作れませんでした（{type(exc).__name__}）")
+                zoomed = rec
         tl = await c.timeline.get_timeline(project_id)
         p = tl
         fps = tl.fps_num / tl.fps_den
@@ -798,7 +894,8 @@ class BuildService:
                 start_frame=0,
                 duration_frames=length,
                 transform=transform,
-                volume=0.0,  # 録画の音は使わない（話すのはキャラクター）
+                # 録画の音は使わない（話すのはキャラクター）。ゲーム実況はゲームの音を小さく残す
+                volume=GAME_REC_VOLUME if game else 0.0,
                 fade_in_frames=min(10, length // 4),
             )
         )
@@ -1408,10 +1505,11 @@ class BuildService:
         if not req.keep_script:
             if rec is not None:
                 notes += await self._read_recording(sid, rec, at)
-            await self._script_to_tachie(sid, has_tachie, redo, at, notes)
+            await self._script_to_tachie(sid, has_tachie, redo, at, notes, req.script_model)
             if rec is not None:
                 await at("recording")
                 notes += await self._place_recording(project_id, sid, rec, at)
+            notes += await self._anchor_lag(project_id, sid)
         # キャラクターの声を「ナレーション」トラックに置く（立ち絵の動画には音が無い）
         notes += await self._place_narration(project_id, sid)
 

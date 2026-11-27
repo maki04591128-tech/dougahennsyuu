@@ -115,6 +115,8 @@ class DialogueLine(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     speaker: str | None = Field(default=None, max_length=100)  # 省略時はユーザー担当キャラクター
     scene_index: int | None = Field(default=None, ge=0)
+    # ゲーム実況: このセリフを置きたい録画の時刻（秒、録画の頭から）
+    at_sec: float | None = Field(default=None, ge=0)
 
 
 class DialogueInput(BaseModel):
@@ -172,6 +174,7 @@ class TurnRead(BaseModel):
     audio_file_id: str | None
     start_frame: int | None
     end_frame: int | None
+    anchor_sec: float | None = None
     estimated_sec: float = 0.0
 
 

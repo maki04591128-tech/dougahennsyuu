@@ -436,6 +436,9 @@ class SubtitleService:
                         )
                         cursor += sec_to_frame(g, fps)
                 prev = seg
+                anchor = getattr(seg, "anchor_sec", None)
+                if anchor is not None:  # ゲーム実況: 録画の出来事の時刻より前には言わない
+                    cursor = max(cursor, sec_to_frame(anchor, fps))
                 audio = await s.get(AudioFile, seg.audio_file_id)
                 if audio is None:
                     raise SubtitleStateError(f"audio file missing for segment {seg.sequence}")

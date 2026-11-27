@@ -869,6 +869,7 @@ class ScriptStudio:
                     "locked": x.locked,
                     "voice_style_id": x.voice_style_id,
                     "original_text": x.original_text,
+                    "anchor_sec": x.anchor_sec,
                 }
                 for x in segs
             ],
@@ -1161,6 +1162,7 @@ class ScriptStudio:
                         generation_source=GenerationSource.USER.value,
                         locked=True,
                         voice_style_id=by_name[name].voice_style_id,
+                        anchor_sec=line.at_sec,
                     )
                 )
                 seq += 1

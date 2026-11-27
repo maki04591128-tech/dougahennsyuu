@@ -339,6 +339,111 @@ async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path
     assert not any("ズーム" in n for n in job.result["notes"])
 
 
+async def test_game_play_from_recording_and_play_log(bclient, fake, media_dir):
+    """プレイ録画＋プレイ記録を渡すとゲーム実況のまま作り、録画は寄らずにゲームの音を小さく残す。"""
+    c = bclient
+    await c.post("/providers/discover")
+    r = await c.post(
+        "/build/plan",
+        json={
+            "instruction": "AIが自作ゲームを遊んだゲーム実況のプレイ動画",
+            "screen_recording": str(media_dir / "clip.mp4"),
+            "reference": "プレイ記録（時刻は録画の頭から）:\n[0:01] 迷宮の1階に入った",
+        },
+    )
+    assert r.status_code == 201, r.text
+    plan = r.json()
+    assert plan["purpose"] == "game" and "画面録画を置く" in plan["steps"]
+    names = [ch["name"] for ch in plan["characters"]]
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "scenes" not in props:
+            return None
+        return {
+            "scenes": [
+                {
+                    "purpose": "導入",
+                    "turns": [
+                        {"speaker": names[0], "text": "迷宮の一階に入ったよ。"},
+                        {"speaker": names[-1], "text": "暗くてどきどきするのだ。"},
+                    ],
+                }
+            ],
+            "notes": [],
+        }
+
+    fake.chat_responder = responder
+    r = await c.post(
+        f"/build/{plan['project_id']}/run",
+        json={"script_id": plan["script_id"], "use_llm_direction": False},
+    )
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert any("プレイ記録" in n for n in job.result["notes"]), job.result["notes"]
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    tracks = {t["name"]: t for t in tl["tracks"]}
+    rec = [x for x in tl["clips"] if x["track_id"] == tracks["画面録画"]["id"]]
+    assert rec and rec[0]["volume"] == 0.25
+    assert not any("ズーム" in n for n in job.result["notes"])
+
+
+async def test_game_duo_with_timed_lines(bclient, fake, media_dir):
+    """遊んだ AI のセリフ（時刻つき）を固定し、相手役を AI が作り、セリフを時刻より前に置かない。"""
+    c = bclient
+    await c.post("/providers/discover")
+    r = await c.post(
+        "/build/plan",
+        json={
+            "instruction": "AIが自作ゲームを遊んだゲーム実況",
+            "screen_recording": str(media_dir / "clip.mp4"),
+            "play_lines": [
+                {"at_sec": 6.0, "text": "ここで一階の階段を見つけました。"},
+                {"at_sec": 0.0, "text": "今日はわくわく生活シミュレーターを遊びます。"},
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    plan = r.json()
+    assert plan["purpose"] == "game"
+    assert [ch["name"] for ch in plan["characters"]] == ["Claude", "Qwen"]
+    assert any("時刻に合わせて" in n for n in plan["notes"])
+    d = (await c.get(f"/scripts/{plan['script_id']}/detail")).json()
+    assert d["mode"] == "USER_ONE_SIDE"
+    assert [x["anchor_sec"] for x in d["segments"]] == [0.0, 6.0]  # 時刻の順に並ぶ
+    assert all(x["locked"] for x in d["segments"])
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "replies" not in props:
+            return None
+        return {
+            "replies": [
+                {"after": "L1", "turns": [{"text": "どんなゲームなのだ？"}]},
+                {"after": "L2", "turns": [{"text": "階段、どこまで続くのだ？"}]},
+            ],
+            "notes": [],
+        }
+
+    fake.chat_responder = responder
+    r = await c.post(
+        f"/build/{plan['project_id']}/run",
+        json={"script_id": plan["script_id"], "use_llm_direction": False, "script_model": None},
+    )
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    d = (await c.get(f"/scripts/{plan['script_id']}/detail")).json()
+    speakers = [x["speaker"] for x in d["segments"]]
+    assert speakers == ["Claude", "Qwen", "Claude", "Qwen"]
+    # 固定セリフは一字一句そのまま
+    assert d["segments"][2]["text"] == "ここで一階の階段を見つけました。"
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    fps = tl["fps_num"] / tl["fps_den"]
+    second = d["segments"][2]
+    assert second["start_frame"] >= round(6.0 * fps) - 1  # 6 秒より前には言わない
+    assert d["segments"][1]["start_frame"] < round(6.0 * fps)  # 相手役は前のセリフに続く
+
+
 async def test_music_video_from_song_and_lyrics(bclient, media_dir):
     """曲と歌詞を渡すとリリックビデオになり、歌の時刻を文字起こしで取って書き出す。"""
     from video_automation.services.transcribe.align import Word

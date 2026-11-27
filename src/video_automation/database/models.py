@@ -188,6 +188,9 @@ class ScriptSegment(Base):
     # 同期後のタイムライン上の位置（フレーム、半開区間）。Phase 5 の音声配置に使う
     start_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_frame: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ゲーム実況: このセリフを置きたい録画の時刻（秒）。同期でこれより前には置かない
+    # （無ければ前のセリフに詰めて並べる）
+    anchor_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Phase 8: ユーザー入力の原文（固定セリフが変わっていないことの検査用）と生成記録
     original_text: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     generation_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
