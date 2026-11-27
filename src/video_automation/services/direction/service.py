@@ -1105,6 +1105,54 @@ class DirectionService:
             )
         return notes
 
+    async def _before_after(
+        self,
+        project_id: str,
+        a1: AssetRead,
+        a2: AssetRead,
+        start: int,
+        mid: int,
+        end: int,
+        cmds: list[Any],
+        fig_t: str,
+        h: int,
+        box: float,
+        cy: float,
+        fps: float,
+        font: str | None,
+        add: Any,
+        animate: Any,
+    ) -> None:
+        """統合版 N5: 1 枚目を出し、2 枚目の区間の頭から境目を右端 → 左端へ動かして
+        2 枚目を現す。"""
+        from PIL import Image
+
+        from video_automation.services.rendering import n_cards as nc
+
+        def make() -> tuple[Any, list[Any], Any]:
+            im1 = Image.open(self.settings.data_dir / a1.path).convert("RGBA")
+            im2 = Image.open(self.settings.data_dir / a2.path).convert("RGBA")
+            # 画の 1px = 画面の何 px か（box の高さに合わせて置くので）
+            k = box * h / im1.size[1]
+            frames_, still = nc.before_after_frames(im1, im2, h, font, 1 / k)
+            return im1, frames_, still
+
+        im1, frames_, still = await asyncio.to_thread(make)
+        tf = ClipTransform(fit=FitMode.FIT, scale=box, y=cy - 0.5)
+        first = mid - start
+        if first > 0:
+            cid = add(fig_t, a1.id, start, first, role="image", transform=tf)
+            animate(cid, first, exit_=False)
+        n_mov = min(len(frames_), end - mid)
+        if n_mov > 0:
+            mov = await self._overlay(project_id, frames_[:n_mov], "前後の比較（N5）", fps)
+            add(fig_t, mov.id, mid, n_mov, role="image", transform=tf)
+        if end - mid - n_mov > 0:
+            b = await self._png(project_id, still, "前後の比較（N5）")
+            cid = add(fig_t, b.id, mid + n_mov, end - mid - n_mov, role="image", transform=tf)
+            animate(cid, end - mid - n_mov, None)
+        del im1
+
     async def _photo_card(
         self, project_id: str, img: AssetRead, caption: str, h: int, box: float
     ) -> AssetRead:
@@ -2362,8 +2410,38 @@ class DirectionService:
                 continue
             windows.append((s, start, end))
         shown: list[tuple[int, int]] = []  # 実際に図・カード・画像を出した区間
-        for s, start, end in windows:
+        # 統合版 N5: 「以前は…今は」の文の区間に続く 2 枚の画像は、前後の比較にまとめる
+        pair_of: dict[int, int] = {}
+        if prof is not None and prof.purpose in (Purpose.EXPLAINER, Purpose.TUTORIAL,
+                                                 Purpose.PRODUCT):  # fmt: skip
+            from video_automation.services.rendering import n_cards as nc
+
+            for i_ in range(len(windows) - 1):
+                (sh1, w_st, _w_e1), (sh2, _w_s2, w_e2) = windows[i_], windows[i_ + 1]
+                if sh1.kind != ShotKind.IMAGE or sh2.kind != ShotKind.IMAGE:
+                    continue
+                if i_ - 1 in pair_of:  # 前の組の 2 枚目は使わない
+                    continue
+                spoken = [x for x in lines if w_st <= x.start < w_e2]
+                if any(nc.is_before_after(x.text) for x in spoken):
+                    pair_of[i_] = i_ + 1
+        skip_win = set(pair_of.values())
+        for w_i, (s, start, end) in enumerate(windows):
             length = end - start
+            if w_i in skip_win:
+                continue
+            if w_i in pair_of:
+                sh2, mid, end2 = windows[pair_of[w_i]]
+                img1 = assets[s.asset_id or ""]
+                img2 = assets[sh2.asset_id or ""]
+                use(Component.IMAGE)
+                box = min(zone_h, main_w)
+                await self._before_after(
+                    p.id, img1, img2, start, mid, end2, cmds, fig_t, h, box, zone_cy, fps,
+                    self.titles.font_path(heading_font), add, animate,
+                )  # fmt: skip
+                shown.append((start, end2))
+                continue
             if s.kind == ShotKind.CARD:
                 use(Component.CARD)
                 steps = _reveal_steps(s, lines, start, end, frames(REVEAL_MIN_SEC))

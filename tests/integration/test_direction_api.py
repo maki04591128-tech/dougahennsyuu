@@ -1610,3 +1610,45 @@ async def test_photo_with_caption(dclient, media_dir):
     assert r.status_code == 200 and r.json()["caption"] is None
     clip, asset = await image_clip("story")
     assert not asset["name"].startswith("写真と一言")
+
+
+async def test_before_after_slider(dclient, media_dir):
+    """統合版 N5: 「以前は…今は」の文の区間に続く 2 枚の画像は、境目を動かす前後の比較に。"""
+    from PIL import Image
+
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "部屋を片付けました。"},
+        {"speaker": "A", "text": "以前は物だらけでしたが、今はすっきりです。"},
+        {"speaker": "A", "text": "床が見えるようになりました。"},
+        {"speaker": "A", "text": "とても快適です。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    ids = []
+    for k, col in enumerate(((200, 60, 60), (60, 160, 90))):
+        src = media_dir / f"ba_{k}.png"
+        Image.new("RGB", (400, 300), col).save(src)
+        a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+        ids.append(a["id"])
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [
+            {"kind": "image", "from_line": 2, "to_line": 2, "asset_id": ids[0]},
+            {"kind": "image", "from_line": 3, "to_line": 4, "asset_id": ids[1]},
+        ],
+    }
+    await c.put(f"/projects/{pid}/design", json={"purpose": "explainer"})
+    await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = {a["id"]: a for a in tl["assets"]}
+    roles = await c.app.state.container.design.clip_roles(pid)
+    imgs = sorted(
+        (x for x in tl["clips"] if roles.get(x["id"]) == "image"), key=lambda x: x["start_frame"]
+    )
+    kinds = [names[x["asset_id"]]["name"] for x in imgs]
+    assert kinds[0] == names[ids[0]]["name"]
+    assert kinds[1:] == ["前後の比較（N5）", "前後の比較（N5）"]
+    mov = imgs[1]
+    assert names[mov["asset_id"]]["kind"] == "video" and mov["end_frame"] - mov["start_frame"] == 45
+    assert imgs[0]["end_frame"] == imgs[1]["start_frame"] == imgs[2]["start_frame"] - 45

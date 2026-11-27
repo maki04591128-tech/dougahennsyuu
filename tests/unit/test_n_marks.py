@@ -55,3 +55,18 @@ def test_done_words_and_item_geometry():
     assert len(ic) == nm.I1_DRAW
     a0 = ic[0].getchannel("A").getextrema()[1] if ic[0].getbbox() else 0
     assert ic[-1].getbbox() is not None and a0 <= 255
+
+
+def test_before_after_frames():
+    from video_automation.services.rendering import n_cards as nc
+
+    assert nc.is_before_after("以前は狭かったけど今は広い")
+    assert nc.is_before_after("ビフォーとアフター") and not nc.is_before_after("今は広い")
+    a = Image.new("RGB", (200, 100), (255, 0, 0))
+    b = Image.new("RGB", (100, 50), (0, 0, 255))
+    frames, still = nc.before_after_frames(a, b, 1080, None, 0.2)
+    assert len(frames) == nc.SLIDER_FRAMES and still.size == (200, 100)
+    mid = frames[22]
+    # 境目より右は 2 枚目（青）、左は 1 枚目（赤）
+    assert mid.getpixel((195, 90))[:3] == (0, 0, 255) and mid.getpixel((5, 90))[:3] == (255, 0, 0)
+    assert still.getpixel((100, 90))[:3] == (0, 0, 255)

@@ -480,3 +480,62 @@ def cycle(w: int, h: int, labels: list[str], font: str | None, main: str, accent
                     ay - ty * s * 0.2 - tx * s * 0.6), (ax - tx * s * 0.2 - ty * s * 0.6,
                     ay - ty * s * 0.2 + tx * s * 0.6)], fill=(*_rgb(accent), 255))  # fmt: skip
     return im
+
+
+# ---------- N5 前後の比較 ----------
+
+BEFORE_AFTER = (("以前は", "今は"), ("ビフォー", "アフター"))
+SLIDER_FRAMES = 45
+
+
+def is_before_after(text: str) -> bool:
+    """N5: 文に「以前は」と「今は」、または「ビフォー」と「アフター」の両方がある。"""
+    return any(a in text and b in text for a, b in BEFORE_AFTER)
+
+
+def before_after_frames(
+    first: Any, second: Any, h_out: int, font: str | None, scale: float
+) -> tuple[list[Any], Any]:
+    """N5: 2 枚を重ね、縦の境目（白い線 4px・直径 48px の丸いつまみ）を右端 → 左端へ 45f
+    （easeInOutCubic）で動かして 2 枚目を現す。左上に「前」、右上に「後」（画面の高さの 5%）。
+
+    画は 1 枚目の大きさにそろえる。scale は 出力 1px あたりの画の px。
+    返すのは動く 45 枚と、最後の止め絵。"""
+    from PIL import Image, ImageDraw
+
+    w, h = first.size
+    a = first.convert("RGBA")
+    b = second.convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
+    line_w = max(2, round(4 * scale))
+    knob = max(8, round(48 * scale))
+    f = _font(font, max(10, round(0.05 * h_out * scale)))
+    pad = round(0.02 * h_out * scale)
+
+    def label(im: Any) -> None:
+        d = ImageDraw.Draw(im)
+        for text, x, anchor in (("前", pad, "la"), ("後", w - pad, "ra")):
+            d.text((x, pad), text, font=f, fill=(255, 255, 255, 255), anchor=anchor,
+                   stroke_width=max(1, round(3 * scale)), stroke_fill=(0, 0, 0, 200))  # fmt: skip
+
+    def at(u: float) -> Any:
+        x = round(w * (1 - u))
+        im = a.copy()
+        if x < w:
+            im.paste(b.crop((x, 0, w, h)), (x, 0))
+        d = ImageDraw.Draw(im)
+        if 0 < x < w:
+            d.rectangle((x - line_w // 2, 0, x + line_w // 2, h), fill=(255, 255, 255, 255))
+            cy = h / 2
+            d.ellipse((x - knob / 2, cy - knob / 2, x + knob / 2, cy + knob / 2),
+                      fill=(255, 255, 255, 255), outline=(0, 0, 0, 90),
+                      width=max(1, line_w // 2))  # fmt: skip
+        label(im)
+        return im
+
+    def cubic_io(u: float) -> float:
+        return 4 * u**3 if u < 0.5 else 1 - (-2 * u + 2) ** 3 / 2
+
+    frames = [at(cubic_io((i + 1) / SLIDER_FRAMES)) for i in range(SLIDER_FRAMES)]
+    still = b.copy()
+    label(still)
+    return frames, still
