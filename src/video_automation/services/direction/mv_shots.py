@@ -35,6 +35,7 @@ SHOT_LABEL = {
     "grid": "グリッド",
     "flash": "一瞬のカット",
     "plane": "単色の面",  # V11 の形を置く面（カットの計画には出てこない）
+    "pip": "画面内の画面",  # V7（下の apply_v7 で置く）
 }
 # セクション → (カットの間隔の拍, ショットの順)。サビは別の決まり（CHORUS_*）
 SECTION_CUTS: dict[str, tuple[int, tuple[str, ...]]] = {
@@ -182,6 +183,53 @@ def _crop(img: Image.Image, cx: float, cy: float, cw: float, ch: float) -> Image
     return img.crop((x0, y0, min(W, x0 + round(cw * W)), min(H, y0 + round(ch * H))))
 
 
+def _cover(img: Image.Image, shot: str, w: int, h: int, bg: str) -> Image.Image:
+    """枠（w×h）をすき間なく埋めるショット（グリッド・カード・画面内の画面の中身）。
+
+    全身は絵の全体、上半身は上から 60%、顔の寄りは上から 1/3 の中央（幅 35%）を中心に、
+    枠の縦横比で切り出す。透明の部分は bg の色で埋める。
+    """
+    img = img.convert("RGBA")
+    W, H = img.size
+    cy = {"full": 0.5, "upper": 0.3, "face": 1 / 6 + 0.04}.get(shot, 0.5)
+    cw = {"full": 1.0, "upper": 1.0, "face": 0.35}.get(shot, 1.0)
+    rw = cw * W
+    rh = rw * h / w
+    if rh > H:  # 縦が足りないときは高さに合わせる
+        rh = H
+        rw = rh * w / h
+    x0 = min(max(0.0, W / 2 - rw / 2), W - rw)
+    y0 = min(max(0.0, cy * H - rh / 2), H - rh)
+    part = img.crop((round(x0), round(y0), round(x0 + rw), round(y0 + rh))).resize(
+        (w, h), Image.Resampling.LANCZOS
+    )
+    out = Image.new("RGBA", (w, h), (*_rgb(bg), 255))
+    out.alpha_composite(part)
+    return out
+
+
+BRIGHT_GAP = 0.15  # V4: 立ち絵・切り抜きは背景より最大でこれだけ明るく
+
+
+def _luma(rgb: np.ndarray) -> float:
+    """Rec.709 の輝度（0〜1。最後の軸が RGB）。"""
+    return float(np.dot(np.asarray(rgb, np.float32)[..., :3], [0.2126, 0.7152, 0.0722]).mean())
+
+
+def match_brightness(fg: Image.Image, bg_luma: float, gap: float = BRIGHT_GAP) -> Image.Image:
+    """V4: 切り抜きの輝度の平均が背景より gap 以上明るければ、差を gap まで暗くする。"""
+    a = np.asarray(fg.convert("RGBA"), np.float32) / 255.0
+    m = a[..., 3] > 0.5
+    if not m.any():
+        return fg
+    lum = float((a[..., :3][m] @ np.array([0.2126, 0.7152, 0.0722], np.float32)).mean())
+    if lum - bg_luma < gap or lum <= 0:
+        return fg
+    k = max(0.0, bg_luma + gap) / lum
+    a[..., :3] *= k
+    return Image.fromarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8), "RGBA")
+
+
 def _rgb(c: str) -> tuple[int, int, int]:
     h = c.lstrip("#")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
@@ -222,6 +270,8 @@ def shot_image(
     if shot == "cutout":  # V3: 単色の面に切り抜きと、文字の色の影
         bg = Image.new("RGBA", (w, h), (*_rgb(main), 255))
         fg = _fit(img, w, round(h * 0.86))
+        if cut:  # V4 明るさの合わせ（背景は主色の面）
+            fg = match_brightness(fg, _luma(np.array(_rgb(main), np.float32) / 255.0))
         off = round(h * 0.012)
         if cut:
             shadow = Image.new("RGBA", fg.size, (*_rgb(ink), 255))
@@ -235,18 +285,80 @@ def shot_image(
         bg.alpha_composite(fg, (0, y))
         return bg
     if shot == "grid":  # V7: 上半身を 4×4
-        cell = shot_image(src, "upper", w // 4, h // 4, main, ink)
+        cell = _cover(src, "upper", w // 4, h // 4, main)
         g = Image.new("RGBA", (w, h), (*_rgb(main), 255))
         for r in range(4):
             for c in range(4):
                 g.alpha_composite(cell, (c * (w // 4), r * (h // 4)))
         return g
+    if shot.startswith("grid_"):  # V7: 左上から 1 枠ずつ（k 枠まで）
+        k_ = int(shot.split("_")[1])
+        cell = _cover(src, "upper", w // 4, h // 4, main)
+        g = Image.new("RGBA", (w, h), (*_rgb(main), 255))
+        for i in range(min(16, k_)):
+            g.alpha_composite(cell, ((i % 4) * (w // 4), (i // 4) * (h // 4)))
+        return g
+    if shot == "pip":  # V7: 縦 9:16・高さ 70%・角の丸み 3% の枠に顔の寄り、外は主色
+        bg = Image.new("RGBA", (w, h), (*_rgb(main), 255))
+        ph = round(h * PIP_HEIGHT)
+        pw = round(ph * 9 / 16)
+        face = _cover(src, "face", pw, ph, main)
+        mask = Image.new("L", (pw, ph), 0)
+        from PIL import ImageDraw
+
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, pw - 1, ph - 1), radius=round(h * PIP_RADIUS), fill=255
+        )
+        face.putalpha(mask)
+        bg.alpha_composite(face, ((w - pw) // 2, (h - ph) // 2))
+        return bg
+    if shot.startswith("cards_"):  # V7: 白い縁のショットを k 枚、傾けて重ねる
+        k_ = int(shot.split("_")[1])
+        bg = Image.new("RGBA", (w, h), (*_rgb(main), 255))
+        for i in range(min(k_, len(CARD_SHOTS))):
+            bg.alpha_composite(_card(src, CARD_SHOTS[i], CARD_ROT[i], CARD_POS[i], w, h, main, ink))
+        return bg
     if shot == "plane":  # V11 の下の V3 の面（主色だけ）
         return Image.new("RGBA", (w, h), (*_rgb(main), 255))
     if shot == "flash":  # V8
         base = shot_image(src, "full", w, h, main, ink).convert("RGB")
         return (hue_rotate(base) if k % 2 == 0 else pixel_sort(base)).convert("RGBA")
     raise ValueError(shot)
+
+
+PIP_HEIGHT, PIP_RADIUS = 0.70, 0.03
+CARD_SHOTS = ("full", "face", "upper")
+CARD_ROT = (-8.0, 5.0, -3.0)
+CARD_POS = ((-0.17, -0.05), (0.17, 0.04), (0.0, 0.0))  # 中央からのずれ（幅・高さの比）
+CARD_HEIGHT, CARD_BORDER = 0.48, 0.015
+
+
+def _card(
+    src: Image.Image,
+    shot: str,
+    rot: float,
+    pos: tuple[float, float],
+    w: int,
+    h: int,
+    main: str,
+    ink: str,
+) -> Image.Image:
+    """V7 のカード 1 枚（画面の大きさの透過 PNG）。白い縁（画面の高さの 1.5%）、回転、影。"""
+    ch = round(h * CARD_HEIGHT)
+    cw = round(ch * w / h)
+    b = round(h * CARD_BORDER)
+    pic = _cover(src, shot, cw, ch, main)
+    card = Image.new("RGBA", (cw + 2 * b, ch + 2 * b), (255, 255, 255, 255))
+    card.alpha_composite(pic, (b, b))
+    card = card.rotate(-rot, resample=Image.Resampling.BICUBIC, expand=True)
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    x = round((w - card.width) / 2 + pos[0] * w)
+    y = round((h - card.height) / 2 + pos[1] * h)
+    shadow = Image.new("RGBA", card.size, (0, 0, 0, 0))
+    shadow.putalpha(card.getchannel("A").point(lambda v: v * 0.35))
+    out.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(max(1, b))), (x + b, y + b))
+    out.alpha_composite(card, (x, y))
+    return out
 
 
 def _cutout_alpha(src: Image.Image, w: int, h: int) -> Image.Image:
@@ -302,7 +414,8 @@ def save_shot(
         ImageOps.exif_transpose(im).load()
         src_im = ImageOps.exif_transpose(im)
         shot_im = shot_image(src_im, shot, w, h, main, ink, k)
-        if look and shot not in ("silhouette", "grid", "flash", "plane"):  # 統合版 V4
+        flat = ("silhouette", "grid", "flash", "plane", "pip")
+        if look and shot not in flat and not shot.startswith(("grid_", "cards_")):  # 統合版 V4
             cut_a = None
             if shot == "cutout" and has_cutout(src_im.convert("RGBA")):
                 cut_a = _cutout_alpha(src_im, w, h)
@@ -661,3 +774,121 @@ def motif_keys(f0: int, f3: int, f4: int, side: int) -> list[Keyframe]:
         Keyframe(frame=f3 - f0, x=0.0),
         Keyframe(frame=f4 - f0 - 1, x=0.0),
     ]
+
+
+# ---------------- V7 画面内の画面・グリッド・カード ----------------
+
+GRID_FRAMES = 16
+
+
+def section_runs(spans: list[tuple[float, float, str]]) -> list[tuple[str, float, float]]:
+    """行の区間を、同じセクションが続く所でまとめる（サビの 1 番目もサビ）。"""
+    out: list[tuple[str, float, float]] = []
+    for a, b, s in spans:
+        sec = "chorus" if s == "chorus_first" else s
+        if out and out[-1][0] == sec:
+            out[-1] = (sec, out[-1][1], b)
+        else:
+            out.append((sec, a, b))
+    return out
+
+
+def _replace(cuts: list[Cut], f0: int, f1: int, new: list[Cut]) -> list[Cut]:
+    out: list[Cut] = []
+    for c in cuts:
+        if c.end <= f0 or c.start >= f1:
+            out.append(c)
+            continue
+        if c.start < f0:
+            out.append(Cut(c.start, f0, c.shot))
+        if c.end > f1:
+            out.append(Cut(f1, c.end, c.shot))
+    return sorted(out + new, key=lambda c: c.start)
+
+
+def _free(f0: int, f1: int, taken: list[tuple[int, int]]) -> bool:
+    return all(f1 <= a or f0 >= b for a, b in taken)
+
+
+def apply_v7(
+    cuts: list[Cut],
+    spans: list[tuple[float, float, str]],
+    beats: list[float],
+    fps: float,
+    taken: list[tuple[int, int]] | None = None,
+) -> tuple[list[Cut], dict[str, int]]:
+    """V7: 各 B メロの最後の小節にグリッド、2 番の A メロの全体に画面内の画面、
+    1 番の A メロの最後の 6 拍にカード 3 枚（2 拍ごとに 1 枚）。
+
+    taken（V11 の小節など）に重なるときは、1 小節前にずらす。それでも重なるときは出さない。
+    """
+    used = {"grid": 0, "pip": 0, "cards": 0}
+    if len(beats) < 8 or not cuts:
+        return cuts, used
+    taken = list(taken or [])
+    bt = np.asarray(beats)
+    total = cuts[-1].end
+
+    def at(t: float) -> int:  # t 以下で最も近い拍の番号
+        return int(np.clip(np.searchsorted(bt, t + 1e-6) - 1, 0, len(bt) - 1))
+
+    def frame(i: int) -> int:
+        return round(bt[i] * fps) if i < len(bt) else total
+
+    def place(end_beat: int, n_beats: int, lo: float) -> tuple[int, int] | None:
+        for shift in (0, 4):
+            e = end_beat - shift
+            b0 = e - n_beats
+            if b0 < 0 or bt[b0] < lo - 1e-6:
+                return None
+            f0, f1 = frame(b0), frame(e)
+            if f1 > f0 and _free(f0, f1, taken):
+                return f0, f1
+        return None
+
+    runs = section_runs(spans)
+    verses = [r for r in runs if r[0] == "verse"]
+    seen_chorus = False
+    second_verse = None
+    for sec, a, b in runs:
+        if sec == "chorus":
+            seen_chorus = True
+        elif sec == "verse" and seen_chorus and second_verse is None:
+            second_verse = (a, b)
+    # 画面内の画面: 2 番の A メロの全体（拍に合わせる）
+    if second_verse:
+        f0, f1 = frame(at(second_verse[0])), frame(at(second_verse[1]))
+        if f1 - f0 >= round(fps) and _free(f0, f1, taken):
+            cuts = _replace(cuts, f0, f1, [Cut(f0, f1, "pip")])
+            taken.append((f0, f1))
+            used["pip"] = 1
+    # カード: 1 番の A メロの最後の 6 拍
+    if verses:
+        _, a, b = verses[0]
+        spot = place(at(b), 6, a)
+        if spot:
+            f0, f1 = spot
+            i0 = at(f0 / fps + 1e-6)
+            ends = [frame(i0 + 2), frame(i0 + 4), f1]
+            new = [
+                Cut(s_, e_, f"cards_{k + 1}")
+                for k, (s_, e_) in enumerate(zip([f0, *ends[:2]], ends, strict=True))
+            ]
+            cuts = _replace(cuts, f0, f1, [c for c in new if c.end > c.start])
+            taken.append((f0, f1))
+            used["cards"] = 1
+    # グリッド: 各 B メロの最後の小節（16f で 1 枠ずつ現し、小節の終わりまで保つ）
+    for sec, a, b in runs:
+        if sec != "bridge":
+            continue
+        spot = place(at(b), 4, a)
+        if not spot:
+            continue
+        f0, f1 = spot
+        n = min(GRID_FRAMES, f1 - f0)
+        new = [Cut(f0 + i, f0 + i + 1, f"grid_{i + 1}") for i in range(n - 1)]
+        new.append(Cut(f0 + n - 1, f1, "grid"))
+        cuts = _replace(cuts, f0, f1, new)
+        taken.append((f0, f1))
+        used["grid"] += 1
+    return cuts, used

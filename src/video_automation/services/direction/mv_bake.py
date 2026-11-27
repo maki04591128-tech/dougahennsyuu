@@ -41,7 +41,7 @@ def group_args(
     inputs: list[str] = []
     filters: list[str] = []
     for i, (path, n, keys) in enumerate(items):
-        dur = float(Fraction(n + 1) / fps)
+        dur = float(Fraction(n + 2) / fps)  # 少し長く読み、trim でちょうど n にする
         inputs += ["-loop", "1", "-framerate", fps_s, "-t", _num(dur), "-i", str(path)]
         pre: list[str] = []
         if keys:
@@ -56,13 +56,18 @@ def group_args(
                 is_image=True,
             )
             pre = af.pre
-        chain = [f"fps={fps_s}", f"trim=end_frame={n}", "setpts=PTS-STARTPTS", *pre]
+        # fps フィルターは使わない（1〜2 フレームの短いカットで最後のフレームを落とすため）。
+        # 入力は -framerate で 1 フレームずつ出るので、trim でフレーム数を数える
+        chain = [f"trim=end_frame={n}", "setpts=N/FRAME_RATE/TB", *pre]
         if pad_last and i == len(items) - 1:
             chain.append(f"tpad=stop_mode=clone:stop={pad_last}")
         chain += [f"scale={w}:{h}", "setsar=1", "format=yuv420p"]
         filters.append(f"[{i}:v]{','.join(chain)}[c{i}]")
     labels = "".join(f"[c{i}]" for i in range(len(items)))
-    filters.append(f"{labels}concat=n={len(items)}:v=1:a=0[out]")
+    # 1 フレームだけのカットは長さ 0 として次のカットと同じ時刻になり、書き出しで落ちる。
+    # つないだ後に、1 フレームずつ時刻を振り直す
+    tb = f"{fps.denominator}/{fps.numerator}"
+    filters.append(f"{labels}concat=n={len(items)}:v=1:a=0,settb={tb},setpts=N[out]")
     return [
         *inputs,
         "-filter_complex",

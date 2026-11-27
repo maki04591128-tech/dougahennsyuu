@@ -301,11 +301,11 @@ def test_rich_direction_lyrics_sections_and_noise_shake(tmp_path):
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=s=320x180:d=3:r=30",
+            "testsrc2=s=320x180:d=4:r=30",
             "-f",
             "lavfi",
             "-i",
-            "sine=d=3",
+            "sine=d=4",
             "-shortest",
             "-pix_fmt",
             "yuv420p",
@@ -328,6 +328,15 @@ def test_rich_direction_lyrics_sections_and_noise_shake(tmp_path):
             "start_frame": 35,
             "end_frame": 80,
             "section": "chorus",
+            "motion": ["neon", "sway", "flicker"],
+        },
+        {
+            "segment": "c",
+            "text": "ひとりで",
+            "start_frame": 82,
+            "end_frame": 118,
+            "section": "drop",
+            "motion": ["tilt3d", "static", "fall_back"],
         },
     ]
     args = {
@@ -365,8 +374,18 @@ def test_rich_direction_lyrics_sections_and_noise_shake(tmp_path):
     rep = json.loads((tmp_path / "r.json").read_text())
     assert rep["parts"]["lyrics"]["ok"], r.stderr[-2000:]
     assert rep["parts"]["punch"]["ok"], r.stderr[-2000:]
-    assert rep["sections"] == {"verse": 1, "chorus": 1}
-    assert rep["motion"] == {"zoom": 1, "breathe": 1, "shrink": 1}  # V5 の改訂
+    assert rep["sections"] == {"verse": 1, "chorus": 1, "drop": 1}
+    assert rep["motion"] == {  # V5 の改訂
+        "zoom": 1,
+        "breathe": 1,
+        "shrink": 1,
+        "neon": 1,
+        "sway": 1,
+        "flicker": 1,
+        "tilt3d": 1,
+        "static": 1,
+        "fall_back": 1,
+    }
     assert rep["used"]["shake_punch"] == 1
 
 
