@@ -1459,3 +1459,71 @@ async def test_game_chapter_title_outline_then_fill(dclient):
     tl = (await c.get(f"/projects/{pid}/timeline")).json()
     a = next(x for x in tl["assets"] if x["id"] == card.asset_id)
     assert a["kind"] == "video" and "T48" in a["name"] and card.duration_frames == 75
+
+
+async def test_cut_transitions_page_cube_and_match(dclient):
+    """統合版 E11（朗読・講義のページめくり）・E12（商品紹介のキューブ）・E13（PR のマッチカット）。"""
+    from video_automation.schemas.design import Purpose
+    from video_automation.schemas.timeline import AddClip, SetClipAnimation
+    from video_automation.services.design.profiles import PROFILES
+
+    c = dclient
+    pid, _ = await _ready_script(c)
+    d = c.app.state.container.direction
+
+    def shots(kw_end: int = 310):
+        return [
+            AddClip(track_id="fig", asset_id="a", start_frame=0, duration_frames=300, clip_id="x"),
+            AddClip(
+                track_id="fig", asset_id="a", start_frame=300, duration_frames=300, clip_id="y"
+            ),
+            AddClip(
+                track_id="txt",
+                asset_id="a",
+                start_frame=250,
+                duration_frames=kw_end - 250,
+                clip_id="k",
+            ),  # fmt: skip
+            SetClipAnimation(
+                clip_id="k",
+                animation={
+                    "keyframes": [
+                        {"frame": 0, "opacity": 0.0},
+                        {"frame": 6, "opacity": 1.0},
+                        {"frame": kw_end - 250 - 7, "opacity": 1.0},
+                        {"frame": kw_end - 250 - 1, "opacity": 0.0},
+                    ]
+                },
+            ),  # fmt: skip
+        ]
+
+    cmds = shots()
+    await d._cut_transitions(pid, PROFILES[Purpose.STORY], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut")  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    assert an.clip_id == "y" and an.transition.type == "page_turn"
+    assert an.transition.duration_frames == 18
+    (ov,) = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "cut"]
+    assert (ov.start_frame, ov.duration_frames) == (300, 18)
+
+    cmds = shots()
+    await d._cut_transitions(pid, PROFILES[Purpose.PRODUCT], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut")  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    assert an.transition.type == "cube" and an.transition.duration_frames == 14
+
+    # E13: 境目にかかる強調テロップを 8f 持ち越し（出のキーも後ろへ）、下の画はカット
+    cmds = shots(kw_end=300)
+    await d._cut_transitions(pid, PROFILES[Purpose.PROMO], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut", "txt", {"k"})  # fmt: skip
+    kw = next(x for x in cmds if isinstance(x, AddClip) and x.clip_id == "k")
+    assert kw.start_frame + kw.duration_frames == 308
+    keys = next(x for x in cmds if isinstance(x, SetClipAnimation) and x.clip_id == "k")
+    assert keys.animation.keyframes[-1].frame == 57
+    assert not [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    # 強調テロップが無い境目はディゾルブ 8f
+    cmds = shots()[:2]
+    await d._cut_transitions(pid, PROFILES[Purpose.PROMO], cmds, "fig", 900, 30.0, 640, 360,
+                             lambda n: "cut", "txt", set())  # fmt: skip
+    (an,) = [x for x in cmds if isinstance(x, SetClipAnimation) and x.transition]
+    assert an.transition.type == "dissolve" and an.transition.duration_frames == 8

@@ -117,6 +117,8 @@ class TransitionType(StrEnum):
     ZOOM_IN = "zoom_in"  # 少し大きい状態から縮みながら現れる
     WHIP = "whip"  # 統合版 E7: 右から 6f で飛び込む（easeInOutCubic）
     ZOOM_PUNCH = "zoom_punch"  # 統合版 E8: 0.7 倍から 1 倍へ 5f（easeOutCubic）
+    PAGE_TURN = "page_turn"  # 統合版 E11: 右下の角から左上へ現れる（easeInOutCubic）
+    CUBE = "cube"  # 統合版 E12: 次が右から入り、前が左へ押し出される（easeInOutCubic）
 
 
 class Transition(BaseModel):

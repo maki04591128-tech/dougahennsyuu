@@ -31,7 +31,9 @@ SLIDE_DIR = {
     TransitionType.SLIDE_UP: (0, 1),  # 下から入って上へ
     TransitionType.SLIDE_DOWN: (0, -1),
     TransitionType.WHIP: (1, 0),  # 統合版 E7（緩急は easeInOutCubic）
+    TransitionType.CUBE: (1, 0),  # 統合版 E12（緩急は easeInOutCubic。前のクリップは押し出す）
 }
+CUBIC_SLIDES = {TransitionType.WHIP, TransitionType.CUBE}
 EXTENDS_PREVIOUS = {
     TransitionType.DISSOLVE,
     TransitionType.SLIDE_LEFT,
@@ -42,6 +44,8 @@ EXTENDS_PREVIOUS = {
     TransitionType.WIPE_RIGHT,
     TransitionType.ZOOM_IN,
     TransitionType.WHIP,
+    TransitionType.PAGE_TURN,
+    TransitionType.CUBE,
 }
 
 
@@ -151,6 +155,9 @@ def clip_filters(
             u = f"min(max({gt}/{num(d)},0),1)"
             cond = "lte(X,W*{u})" if tran.type == TransitionType.WIPE_LEFT else "gte(X,W*(1-{u}))"
             alpha_terms.append(cond.format(u=ease(u, Easing.EASE_IN_OUT)))
+        elif tran.type == TransitionType.PAGE_TURN:  # 統合版 E11: 右下の角から左上へ
+            u = f"min(max({gt}/{num(d)},0),1)"
+            alpha_terms.append(f"gte(X/W+Y/H,2*(1-{ease(u, Easing.CUBIC_IN_OUT)}))")
         elif tran.type not in SLIDE_DIR and tran.type != TransitionType.ZOOM_PUNCH:
             alpha_terms.append(f"min(max({gt}/{num(half)},0),1)")
         if tran.type not in SLIDE_DIR and tran.type != TransitionType.ZOOM_PUNCH:
@@ -177,7 +184,7 @@ def clip_filters(
     if tran and tran.type in SLIDE_DIR and d > 0:
         sx, sy = SLIDE_DIR[tran.type]
         u = f"min(max({to}/{num(d)},0),1)"
-        e_ = Easing.CUBIC_IN_OUT if tran.type == TransitionType.WHIP else Easing.EASE_OUT
+        e_ = Easing.CUBIC_IN_OUT if tran.type in CUBIC_SLIDES else Easing.EASE_OUT
         rest = f"(1-{ease(u, e_)})"
         if sx:
             dx.append(f"{sx}*{rest}")

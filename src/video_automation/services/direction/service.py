@@ -1660,8 +1660,10 @@ class DirectionService:
         w: int,
         h: int,
         lane: Any,
+        txt_t: str | None = None,
+        keywords: set[str] | None = None,
     ) -> list[str]:
-        """統合版 E6〜E10。cmds の図のトラックのクリップの境目に切り替えを足す。"""
+        """統合版 E6〜E13。cmds の図のトラックのクリップの境目に切り替えを足す。"""
         kind = tz.PURPOSE_TRANSITION[prof.purpose.value]
         figs = [c for c in cmds if isinstance(c, AddClip) and c.track_id == fig_t]
         ends = {c.start_frame + (c.duration_frames or 0) for c in figs}
@@ -1669,21 +1671,61 @@ class DirectionService:
         cuts = tz.pick_cuts(list(heads), fps, total, prof.purpose.value)
         if not cuts:
             return []
+
+        def enter(b: int, name: str, n: int) -> None:
+            cid = heads[b].clip_id
+            if cid:
+                cmds.append(
+                    SetClipAnimation(
+                        clip_id=cid,
+                        transition=Transition(type=TransitionType(name), duration_frames=n),
+                    )
+                )
+
+        if (
+            kind == "E13"
+        ):  # マッチカット: 境目にかかる強調テロップを 8f 持ち越す。無ければディゾルブ
+            texts = [c for c in cmds if isinstance(c, AddClip) and c.track_id == txt_t]
+            kws = [c for c in texts if c.clip_id in (keywords or set())]
+            near = round(0.5 * fps)
+            for b in cuts:
+                hold = b + tz.MATCH_HOLD
+                cand = [
+                    c
+                    for c in kws
+                    if c.start_frame < b <= c.start_frame + (c.duration_frames or 0) + near
+                    and c.start_frame + (c.duration_frames or 0) <= hold
+                ]
+                pick = max(cand, key=lambda c: c.start_frame) if cand else None
+                if pick is not None:
+                    p_end = pick.start_frame + (pick.duration_frames or 0)
+                    busy = any(
+                        c is not pick
+                        and c.start_frame < hold
+                        and p_end < c.start_frame + (c.duration_frames or 0)
+                        for c in texts
+                    )
+                    if not busy and hold <= total:
+                        old = pick.duration_frames or 0
+                        i = cmds.index(pick)
+                        cmds[i] = pick.model_copy(
+                            update={"duration_frames": hold - pick.start_frame}
+                        )
+                        shorten_animation(cmds, pick.clip_id, old, old - (hold - pick.start_frame))
+                        continue
+                enter(b, "dissolve", 8)
+            return []
         if kind in tz.ENTRANCE:
             name, n = tz.ENTRANCE[kind]
             for b in cuts:
-                cid = heads[b].clip_id
-                if cid:
-                    cmds.append(
-                        SetClipAnimation(
-                            clip_id=cid,
-                            transition=Transition(type=TransitionType(name), duration_frames=n),
-                        )
-                    )
-            return []
+                enter(b, name, n)
+            if kind != "E11":
+                return []
         n, at = tz.OVERLAY[kind], tz.CUT_AT[kind]
         pal = prof.palette
         cols = [pal.main, pal.accent, pal.chart[1] if len(pal.chart) > 1 else pal.base2]
+        if kind == "E11":
+            cols = [pal.surface]
         out_dir = self.settings.data_dir / "projects" / project_id / "assets"
         out_dir.mkdir(parents=True, exist_ok=True)
         tid = None
@@ -2735,7 +2777,10 @@ class DirectionService:
 
         # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
         if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:
-            skipped += await self._cut_transitions(p.id, prof, cmds, fig_t, total, fps, w, h, lane)
+            kw_ids = {cid for cid, r in roles.items() if r == "keyword"}
+            skipped += await self._cut_transitions(
+                p.id, prof, cmds, fig_t, total, fps, w, h, lane, txt_t, kw_ids
+            )
 
         if es:  # 終了画面（まとめの文字と、YouTube の要素を置く場所の目安の枠）
             out = (

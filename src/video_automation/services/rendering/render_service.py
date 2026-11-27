@@ -32,7 +32,7 @@ from video_automation.database.models import (
 )
 from video_automation.integrations.blender.runner import Blender, BlenderError
 from video_automation.integrations.ffmpeg.runner import FFmpeg, ff_seconds, filter_path
-from video_automation.schemas.animation import ClipAnimation, TransitionType
+from video_automation.schemas.animation import ClipAnimation, Easing, TransitionType
 from video_automation.schemas.design import DesignCheck, Purpose
 from video_automation.schemas.subtitle import SubtitleExportRequest, SubtitleFormat, SubtitleStyle
 from video_automation.schemas.timeline import (
@@ -50,6 +50,7 @@ from video_automation.schemas.timeline import (
     RichLevel,
     TrackKind,
 )
+from video_automation.services.animation.motion import ease, num
 from video_automation.services.animation.render_anim import (
     EXTENDS_PREVIOUS,
     ClipAnimFilters,
@@ -521,6 +522,9 @@ class RenderService:
         # （素材の続きが無い分は最終フレームで止める）
         ext: dict[str, int] = {}
         dip_out: dict[str, int] = {}
+        push: dict[
+            str, int
+        ] = {}  # 統合版 E12: 次のクリップに押し出される前のクリップ（フレーム数）
         by_track_end = {(c.track_id, c.end_frame): c for c in visual}
         plan_warnings: list[str] = []
         for c in visual:
@@ -545,6 +549,8 @@ class RenderService:
                 dip_out[prev.id] = max(1, d // 2)
             elif tran.type in EXTENDS_PREVIOUS:
                 ext[prev.id] = max(ext.get(prev.id, 0), d)
+                if tran.type == TransitionType.CUBE:
+                    push[prev.id] = d
 
         used: dict[str, int] = {}
         ghost: dict[str, int] = {}  # 統合版 E4: 残像の写しの入力
@@ -627,6 +633,9 @@ class RenderService:
             chain = ",".join([*af.post, *fades, *af.resize, f"setpts=PTS+{ff_seconds(off)}/TB"])
             filters.append(f"[lay{label}]{chain}[v{label}]")
             dx = f"+({af.dx})" if af.dx else ""
+            if c.id in push:  # 統合版 E12: 自分の終わりから、左へ画面の幅だけ押し出される
+                u = f"min(max((t-{num(off + own_end)})/{num(sec(push[c.id]))},0),1)"
+                dx += f"-({ease(u, Easing.CUBIC_IN_OUT)})"
             dy = f"+({af.dy})" if af.dy else ""
             x = f"'(W-w)/2+({t.x}{dx})*W'"
             y = f"'(H-h)/2+({t.y}{dy})*H'"

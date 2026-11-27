@@ -661,6 +661,13 @@ def test_cut_transition_filters_and_overlays():
     assert whip.dx and not whip.post  # 右から飛び込む（不透明度は変えない）
     punch = f(TransitionType.ZOOM_PUNCH)
     assert any("0.7+0.3" in x for x in punch.resize) and not punch.post
+    page = f(TransitionType.PAGE_TURN)
+    assert any("X/W+Y/H" in x for x in page.post)  # 右下の角から左上へ現れる
+    cube = f(TransitionType.CUBE)
+    assert cube.dx and not cube.post
+    fold = tz.page_fold(64, 36, "#F4EFE4")
+    assert len(fold) == tz.OVERLAY["E11"] and fold[-1].getchannel("A").getextrema()[1] == 0
+    assert max(im.getchannel("A").getextrema()[1] for im in fold) == 255
     fr = tz.shape_wipe(64, 36, ["#ff0000", "#00ff00", "#0000ff"])
     assert len(fr) == tz.OVERLAY["E6"]
     alpha = [im.getchannel("A").getextrema()[1] for im in fr]
