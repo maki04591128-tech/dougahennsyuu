@@ -277,6 +277,15 @@ def title_entrance(prof: DesignProfile | None, title: str, kinetic: bool) -> str
     return a
 
 
+from video_automation.services.rendering.backgrounds import PURPOSE_BACKGROUND  # noqa: E402
+
+BACKGROUND_NAMES = {
+    "R1": "オーロラ", "R2": "星空", "R3": "点と線の網", "R4": "等高線", "R5": "点の格子の波紋",
+    "R6": "ボケの光", "R7": "メンフィス柄", "R8": "空と雲", "R9": "方眼", "R10": "紙",
+    "R11": "アウトランの格子", "R12": "集中線", "R13": "ギンガム柄", "R14": "走る細い線",
+    "R15": "斜めの帯", "R16": "メッシュグラデーション", "R17": "スタジオの床と光",
+    "R18": "ゆっくり落ちる紙吹雪",
+}  # fmt: skip
 KINETIC_TITLE_MAX = 16  # 1 文字ずつ動かす題名の文字数の上限（長いと読み終わる前に消える）
 _NUM = re.compile(r"[0-9０-９]")
 
@@ -778,6 +787,11 @@ class DirectionService:
             c1 = "0x" + prof.palette.base2.lstrip("#")
             main, accent = prof.palette.main, prof.palette.accent
             style = f"{prof.purpose.value}"
+        if prof is not None and prof.purpose.value in PURPOSE_BACKGROUND:
+            try:  # 統合版 段階5d: 用途ごとの背景 R1〜R18
+                return await self._r_background(project_id, prof, w, h)
+            except Exception as exc:  # noqa: BLE001 - 今の背景で続ける
+                log.warning("r_background_failed", error=str(exc)[:300])
         moving = prof is None or prof.allows(Component.BACKGROUND_MOTION)
         if moving and self.titles.blender.available:
             loud = prof is not None and prof.purpose.value in FLOATING_BG_PURPOSES
@@ -803,6 +817,34 @@ class DirectionService:
             project_id, out, AssetKind.IMAGE, "pillow", f"背景（{style}）"
         )
         return AssetRead.model_validate(a)
+
+    async def _r_background(
+        self, project_id: str, prof: DesignProfile, w: int, h: int
+    ) -> AssetRead:
+        """統合版 R1〜R18（24 秒で継ぎ目なく繰り返す動画。R10 は静止画）。
+        同じ設定なら作り直さない。"""
+        import hashlib
+
+        from video_automation.services.rendering import backgrounds as rb
+
+        style = PURPOSE_BACKGROUND[prof.purpose.value]
+        pal = prof.palette.model_dump()
+        p = await self.timeline.get_timeline(project_id)
+        fps = p.fps_num / p.fps_den
+        key = hashlib.sha1(f"{style}|{w}x{h}|{fps}|{sorted(pal.items())}".encode()).hexdigest()[:10]
+        out_dir = self.settings.data_dir / "projects" / project_id / "assets"
+        out = out_dir / f"bg_{style}_{key}.mp4"
+        ff = self.ffmpeg.ffmpeg
+        if not ff:
+            raise CommandError("ffmpeg not found")
+        made = out.with_suffix(".png") if style in rb.STATIC else out
+        if not made.is_file():
+            made = await asyncio.to_thread(rb.render, ff, style, out, (w, h), fps, pal)
+        kind = AssetKind.IMAGE if made.suffix == ".png" else AssetKind.VIDEO
+        row = await self.timeline.register_generated(
+            project_id, made, kind, "pillow", f"背景（{style} {BACKGROUND_NAMES[style]}）"
+        )
+        return AssetRead.model_validate(row)
 
     async def apply(
         self, req: DirectionApplyRequest, origin: CommandOrigin = CommandOrigin.USER
@@ -1027,7 +1069,8 @@ class DirectionService:
             use(Component.BACKGROUND_MOTION)
         else:
             cid = add(bg_t, bg.id, 0, bg_total, role="background")
-            if prof is None or prof.allows(Component.BACKGROUND_MOTION):
+            still = bg.name.startswith("背景（R10")  # 統合版 R10 紙: 動かさない
+            if not still and (prof is None or prof.allows(Component.BACKGROUND_MOTION)):
                 cmds.append(SetClipAnimation(clip_id=cid, preset="ken_burns_in", intensity=0.4))
                 use(Component.BACKGROUND_MOTION)
 

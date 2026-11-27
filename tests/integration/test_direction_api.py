@@ -188,7 +188,7 @@ async def test_plan_apply_and_reapply(dclient, fake, tmp_path):
     kw = next(x for x in txt if roles[x["id"]] == "keyword")
     # 右上（左上は書き出し時の章の見出しの場所なので重ねない）
     assert kw["transform"]["y"] < -0.3 and kw["transform"]["x"] > 0.2
-    # 背景は Blender の動く背景（8 秒で継ぎ目なく繰り返す）を並べて全体を覆う
+    # 用途の型が無いときの背景は Blender の動く背景（8 秒で継ぎ目なく繰り返す）を並べて全体を覆う
     bgs = sorted(by_track["演出・背景"], key=lambda x: x["start_frame"])
     assert len(bgs) >= 2 and bgs[0]["start_frame"] == 0
     for a_, b_ in zip(bgs, bgs[1:], strict=False):
@@ -1007,12 +1007,20 @@ async def test_story_cutout_image_gets_parallax(dclient, media_dir):
     assert not [k for k in clip["animation"]["keyframes"] if k.get("x")]
 
 
-async def test_kids_background_is_liquid(dclient):
-    """統合版 M6: 子ども向けの動く背景はメタボールの液体。"""
+async def test_kids_background_is_memphis_then_liquid(dclient, monkeypatch):
+    """統合版 R7: 子ども向けの背景はメンフィス柄。作れないときは M6 のメタボールの液体。"""
     from pathlib import Path
 
     c = dclient
     pid, sid = await _ready_script(c)
+    await _apply(c, pid, sid, "kids")
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    assert any(a["name"] == "背景（R7 メンフィス柄）" for a in tl["assets"])
+
+    async def boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(type(c.app.state.container.direction), "_r_background", boom)
     await _apply(c, pid, sid, "kids")
     log_ = Path(c.app.state.container.settings.blender_path).parent / "calls.jsonl"
     calls = [json.loads(x) for x in log_.read_text("utf-8").splitlines()]
