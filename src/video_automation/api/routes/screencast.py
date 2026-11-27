@@ -17,6 +17,11 @@ class ZoomRequest(BaseModel):
     # クリックの記録（任意）: [秒, x, y]（録画の画素）。無ければ画面の変化だけで寄る
     clicks: list[tuple[float, float, float]] = Field(default_factory=list, max_length=5000)
     zoom: float = Field(default=1.8, ge=1.0, le=4.0)
+    # 仕上げ（任意）: カーソルの位置 [秒, x, y]・キー操作 [秒, "Ctrl+S"]（録画の画素と秒）
+    cursor: list[tuple[float, float, float]] = Field(default_factory=list, max_length=200000)
+    keys: list[tuple[float, str]] = Field(default_factory=list, max_length=20000)
+    speedup: bool = True  # 画面の変化も声も無い 2 秒以上の区間を 4 倍速にする
+    blur_pii: bool = True  # メール・API キー・電話番号を OCR で見つけてぼかす
 
 
 @router.post("/zoom", response_model=JobRead, status_code=202)
@@ -24,7 +29,18 @@ async def zoom(project_id: str, body: ZoomRequest, c: AppContainer = Depends(get
     """操作している所（クリック・画面が変わった所）へ寄った映像を作り、新しい素材にする。"""
 
     async def run(progress: Any) -> dict[str, Any]:
-        a = await c.screencast.zoom(project_id, body.asset_id, body.clicks, body.zoom, progress)
-        return a.model_dump(mode="json")
+        a = await c.screencast.zoom(
+            project_id,
+            body.asset_id,
+            body.clicks,
+            body.zoom,
+            progress,
+            cursor=body.cursor,
+            keys=body.keys,
+            speedup=body.speedup,
+            blur_pii=body.blur_pii,
+        )
+        # 個人情報の一覧（伏せ字）・早送りの区間を付ける。利用者が確かめる
+        return {**a.model_dump(mode="json"), "finish": c.screencast.reports.get(a.id, {})}
 
     return c.jobs.submit("screencast_zoom", run)

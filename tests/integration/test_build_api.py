@@ -650,3 +650,92 @@ async def test_music_video_ink_and_motif(bclient, media_dir):
     assert tops and len(tops) == len(bottoms) and tops[0]["start_frame"] == 0
     # 形の小節のあとすぐにインクの転換が始まる（サビの頭）
     assert {x["end_frame"] for x in white} <= {x["start_frame"] for x in ink}
+
+
+async def test_lecture_from_slides(bclient, fake, media_dir):
+    """統合版 P3: PDF のスライドを渡すと講義になり、話に合わせて切り替え・行へ寄り・箇条書きを順に出す。"""
+    import shutil as _sh
+
+    from PIL import Image
+
+    from video_automation.integrations.ocr.engine import FakeOcr, OcrLine, OcrResult, OcrWord
+
+    if _sh.which("pdftoppm") is None:
+        pytest.skip("pdftoppm not installed")
+    c = bclient
+    await c.post("/providers/discover")
+    pdf = media_dir / "slides.pdf"
+    pages = [Image.new("RGB", (960, 540), (245, 245, 240)) for _ in range(2)]
+    pages[0].save(pdf, save_all=True, append_images=pages[1:], resolution=72.0)
+
+    def page(*lines: str) -> OcrResult:
+        return OcrResult(
+            1920,
+            1080,
+            [
+                OcrLine([OcrWord(t, 160.0, 160.0 + 200 * i, 60.0 * len(t), 90.0)])
+                for i, t in enumerate(lines)
+            ],
+        )
+
+    c.app.state.container.screencast.ocr = FakeOcr(
+        {
+            "p001": page("家計の基本", "・固定費を見直す", "・変動費を記録する"),
+            "p002": page("まとめ", "貯金の習慣"),
+        }
+    )
+    r = await c.post(
+        "/build/plan",
+        json={"instruction": "家計の講義", "slides": str(pdf), "duration_sec": 420},
+    )
+    assert r.status_code == 201, r.text
+    plan = r.json()
+    assert plan["purpose"] == "lecture"
+    assert any("スライド 2 枚" in n for n in plan["notes"])
+    assert any("分けることを勧めます" in n for n in plan["notes"])
+    names = [ch["name"] for ch in plan["characters"]]
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "scenes" not in props:
+            return None
+        return {
+            "scenes": [
+                {
+                    "purpose": "本題",
+                    "turns": [
+                        {"speaker": names[0], "text": "今日は家計の基本です。"},
+                        {"speaker": names[0], "text": "まず固定費を見直します。"},
+                        {"speaker": names[0], "text": "次に変動費を記録します。"},
+                        {"speaker": names[0], "text": "まとめは貯金の習慣です。"},
+                    ],
+                }
+            ],
+            "notes": [],
+        }
+
+    fake.chat_responder = responder
+    r = await c.post(
+        f"/build/{plan['project_id']}/run",
+        json={"script_id": plan["script_id"], "use_llm_direction": False},
+    )
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    tracks = {t["name"]: t for t in tl["tracks"]}
+    clips = sorted(
+        (x for x in tl["clips"] if x["track_id"] == tracks["画面録画"]["id"]),
+        key=lambda x: x["start_frame"],
+    )
+    assets = {a["id"]: a["name"] for a in tl["assets"]}
+    names_ = [assets[x["asset_id"]] for x in clips]
+    # 1 枚目: 箇条書き 2 つを隠す → 1 つ隠す → 全部 → 2 枚目
+    assert len(clips) == 4, names_
+    assert "箇条書きを隠す" in names_[0] and "箇条書きを隠す" in names_[1]
+    assert names_[2].endswith("p001.png") and names_[3].endswith("p002.png")
+    assert clips[0]["start_frame"] == 0
+    for a, b in zip(clips, clips[1:], strict=False):
+        assert b["start_frame"] == a["end_frame"]  # 隙間なく続く
+    # 固定費の文で 1 枚目の 2 行目へ寄る
+    keys = clips[1]["animation"]["keyframes"]
+    assert max(k.get("zoom") or 1 for k in keys) == 1.25

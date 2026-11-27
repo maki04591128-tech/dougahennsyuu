@@ -32,6 +32,9 @@ class BuildRequest(BaseModel):
     lyrics: str = Field(default="", max_length=20000)
     # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
     image: str = Field(default="", max_length=1000)
+    # 統合版 P3: 講義のスライドの PDF（絶対パス・取り込みを許可したフォルダの中）。
+    # 指定すると用途は「講義」になり、ページを 2 倍の解像度の画像にして話に合わせて切り替える
+    slides: str = Field(default="", max_length=1000)
     # ゲーム実況の掛け合い: play_lines があると、1 人目（実況・解説役、既定「Claude」）のセリフを
     # 時刻つきで固定し、2 人目（質問・ガヤ役、既定「Qwen」）のセリフをローカル LLM に作らせる。
     # 声は characters（VOICEVOX の話者名、[1 人目, 2 人目]）。空なら四国めたん・ずんだもん
