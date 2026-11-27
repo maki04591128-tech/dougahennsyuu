@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 from fractions import Fraction
@@ -76,6 +77,7 @@ from video_automation.services.design.profiles import PROFILES
 from video_automation.services.direction import mv_bake
 from video_automation.services.direction import mv_shots as mv
 from video_automation.services.direction import purpose_parts as pp
+from video_automation.services.direction import slides as sl
 from video_automation.services.direction.service import native_transform
 from video_automation.services.rendering import sync as sync_audio
 from video_automation.services.rendering.beats import detect_file
@@ -353,6 +355,11 @@ class BuildService:
             if not info.has_audio:
                 raise BuildError("曲のファイルに音声がありません")
             music_sec = info.duration_sec
+        slides_path = None
+        if req.slides.strip():
+            slides_path = self._allowed_file(req.slides.strip(), "スライド")
+            if slides_path.suffix.lower() != ".pdf":
+                raise BuildError("スライドは PDF のファイルを指定してください")
         vertical = {"auto": None, "landscape": False, "vertical": True}[req.orientation]
         cls = c.design.classify(
             ClassifyRequest(text=req.instruction, has_script=False, vertical=vertical)
@@ -360,6 +367,9 @@ class BuildService:
         purpose = cls.purpose
         if rec_path is not None and purpose != Purpose.GAME:  # 画面録画がある = 操作説明
             purpose = Purpose.TUTORIAL  # ただしゲーム実況（プレイ録画）はゲーム実況のまま
+        if slides_path is not None and music_path is None:  # スライドがある = 講義
+            purpose = Purpose.LECTURE
+            vertical = False
         if music_path is not None and purpose not in NEEDS_MUSIC:  # 曲がある = MV
             purpose = Purpose.LYRIC if req.lyrics.strip() else Purpose.MV
         prof = PROFILES[purpose]
@@ -369,6 +379,11 @@ class BuildService:
         if cls.note:
             notes.append(cls.note)
         dur = req.duration_sec or (45 if purpose in SHORT_PURPOSES else 120)
+        if purpose == Purpose.LECTURE and dur > sl.SPLIT_SEC:
+            notes.append(
+                f"講義が {dur // 60} 分あります。6 分を超えると集中が続きにくいので、"
+                f"{-(-dur // sl.SPLIT_SEC)} 本に分けることを勧めます"
+            )
         if music_sec:  # 曲の長さで決まる
             dur = int(min(1800, max(15, round(music_sec))))
         if rec_sec and not req.duration_sec:  # 録画の長さに合わせて話す
@@ -438,6 +453,14 @@ class BuildService:
                 )
             )
             notes.append("絵から 8 種のショットを作り、曲の拍に合わせて切り替えます")
+        reference = req.lyrics if music_path is not None else req.reference
+        if slides_path is not None:
+            text, snotes = await self._import_slides(pid, slides_path, w / h)
+            notes += snotes
+            if text:
+                reference = (
+                    "スライドの順に 1 枚ずつ説明する。スライドの文字:\n" + text + "\n\n" + reference
+                )[:20000]
         if rec_path is not None:
             await c.timeline.import_asset(
                 AssetImportRequest(
@@ -472,7 +495,7 @@ class BuildService:
                     if music_path is None
                     else "",
                     # 曲から作るときは、貼られた歌詞を台本の参考に置いて書き出しまで使う
-                    reference=req.lyrics if music_path is not None else req.reference,
+                    reference=reference,
                 ),
                 characters=[
                     CharacterIn(
@@ -878,6 +901,13 @@ class BuildService:
         else:
             try:
                 zoomed = await c.screencast.zoom(project_id, rec.id, None, 1.8, zp)
+                rep = c.screencast.reports.get(zoomed.id, {})
+                notes += list(rep.get("notes", []))
+                if rep.get("pii"):
+                    notes.append(
+                        f"録画の個人情報らしい文字を {len(rep['pii'])} か所ぼかしました"
+                        "（録画の素材の .finish.json で確かめてください）"
+                    )
             except Exception as exc:  # noqa: BLE001 - 寄れなくても録画はそのまま置く
                 notes.append(f"操作箇所へのズームを作れませんでした（{type(exc).__name__}）")
                 zoomed = rec
@@ -955,6 +985,210 @@ class BuildService:
             CommandRequest(command=Batch(commands=cmds), description="画面録画を置く"),
         )
         return notes
+
+    def _slides_dir(self, project_id: str) -> Path:
+        return self.c.settings.data_dir / "projects" / project_id / "slides"
+
+    async def _import_slides(
+        self, project_id: str, pdf: Path, aspect: float
+    ) -> tuple[str, list[str]]:
+        """統合版 P3: PDF をページの画像（2倍の解像度）とOCRの結果にし、スライドの文字を返す。"""
+        from dataclasses import asdict
+
+        from video_automation.integrations.ocr.engine import OcrUnavailable
+        from video_automation.integrations.ocr.pdf import render_pages
+
+        c = self.c
+        d = self._slides_dir(project_id)
+        try:
+            pages = await asyncio.to_thread(render_pages, pdf, d)
+        except Exception as exc:  # noqa: BLE001 - 読めない PDF
+            raise BuildError(
+                f"スライドの PDF を画像にできませんでした: {type(exc).__name__}"
+            ) from exc
+        for pg in pages:
+            await asyncio.to_thread(sl.fit_aspect, pg, aspect)
+        notes = [f"スライド {len(pages)} 枚を、話に合わせて切り替えます"]
+        ocr = c.screencast.ocr
+        results: list[Any] = []
+        if ocr is None:
+            notes.append("文字の読み取り（OCR）が使えないため、スライドの行へ寄る演出を省きます")
+        else:
+            try:
+                results = await asyncio.to_thread(ocr.read, pages)
+            except OcrUnavailable as exc:
+                notes.append(f"スライドの文字を読めませんでした（{exc}）。行へ寄る演出を省きます")
+        (d / "ocr.json").write_text(
+            json.dumps([asdict(r) for r in results], ensure_ascii=False), encoding="utf-8"
+        )
+        for pg in pages:
+            await c.timeline.import_asset(
+                AssetImportRequest(
+                    project_id=project_id, path=str(pg), name=f"{sl.SLIDE_NAME}{pg.name}"
+                )
+            )
+        text = "\n".join(f"[{i + 1}] {r.text.replace(chr(10), ' ')}" for i, r in enumerate(results))
+        return text, notes
+
+    async def _place_slides(self, project_id: str, sid: str) -> list[str]:
+        """統合版 P3: スライドを話す順に切り替え、話している行へ寄り、箇条書きを 1 項目ずつ出す。"""
+        from video_automation.integrations.ocr.engine import OcrLine, OcrResult, OcrWord
+
+        c = self.c
+        tl = await c.timeline.get_timeline(project_id)
+        assets = sorted(
+            (
+                a
+                for a in tl.assets
+                if a.kind == AssetKind.IMAGE and a.name.startswith(sl.SLIDE_NAME)
+            ),
+            key=lambda a: a.name,
+        )
+        if not assets:
+            return []
+        d = self._slides_dir(project_id)
+        try:
+            raw = json.loads((d / "ocr.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = []
+        pages = [
+            OcrResult(
+                r["width"], r["height"],
+                [OcrLine([OcrWord(**w) for w in ln["words"]]) for ln in r["lines"]],
+            )
+            for r in raw
+        ]  # fmt: skip
+        pages += [OcrResult(0, 0) for _ in range(len(assets) - len(pages))]
+        segs = [x for x in (await c.studio.detail(sid)).segments if x.start_frame is not None]
+        fps = tl.fps_num / tl.fps_den
+        total = max((x.end_frame or 0 for x in segs), default=0) or tl.duration_frames
+        if not segs or not total:
+            return []
+        toks = [sl.tokens(x.text) for x in segs]
+        frames = [(x.start_frame or 0, x.end_frame or 0) for x in segs]
+        page_of = sl.assign(toks, pages[: len(assets)])
+        shots = sl.plan_shots(page_of, frames, pages, toks, total)
+        cmds: list[Any] = []
+        track = next((t for t in tl.tracks if t.name == RECORDING_TRACK), None)
+        if track is not None:
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == track.id]
+            tid = track.id
+        else:
+            # 画面録画と同じトラックに置く（演出は録画と同じく主役を隠さない）
+            tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=RECORDING_TRACK, track_id=tid))
+        # 箇条書きを隠した画像（同じ状態は 1 枚にまとめる）
+        made: dict[tuple[int, tuple[int, ...]], AssetRead] = {}
+        zooms = 0
+        for k, sh in enumerate(shots):
+            src = assets[sh.page]
+            key = (sh.page, tuple(sh.hide))
+            if not sh.hide:
+                a = src
+            elif key in made:
+                a = made[key]
+            else:
+                path = d / f"p{sh.page + 1:03d}_h{'_'.join(map(str, sh.hide))}.png"
+                await asyncio.to_thread(
+                    sl.cover, c.settings.data_dir / src.path, path, pages[sh.page].lines, sh.hide
+                )
+                a = AssetRead.model_validate(
+                    await c.timeline.register_generated(
+                        project_id, path, AssetKind.IMAGE, "build", f"{src.name}（箇条書きを隠す）"
+                    )
+                )
+                made[key] = a
+            cid = str(uuid4())
+            cmds.append(
+                AddClip(
+                    track_id=tid,
+                    asset_id=a.id,
+                    start_frame=sh.start,
+                    duration_frames=sh.end - sh.start,
+                    clip_id=cid,
+                    transform=ClipTransform(fit=FitMode.FIT),
+                    fade_in_frames=min(8, (sh.end - sh.start) // 4) if k == 0 else 0,
+                )
+            )
+            keys = self._slide_keys(sh, frames, toks, page_of, pages[sh.page], fps)
+            if keys:
+                zooms += 1
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+        await c.timeline.submit(
+            project_id,
+            CommandRequest(command=Batch(commands=cmds), description="スライドを置く"),
+        )
+        notes = await self._small_tachie(project_id)
+        log.info("slides_placed", shots=len(shots), zooms=zooms)
+        return notes
+
+    @staticmethod
+    def _slide_keys(
+        sh: Any,
+        frames: list[tuple[int, int]],
+        toks: list[set[str]],
+        page_of: list[int],
+        res: Any,
+        fps: float,
+    ) -> list[Keyframe]:
+        """そのクリップの間に話す文ごとに、一致する行へ寄る（無ければ全体に戻す）。"""
+        if not res.width or not res.lines:
+            return []
+        targets: list[tuple[int, tuple[float, float] | None]] = []
+        for i, (f0, _) in enumerate(frames):
+            if page_of[i] != sh.page or not (sh.start <= f0 < sh.end):
+                continue
+            j = sl.best_line(res, toks[i])
+            if j is None:
+                targets.append((f0 - sh.start, None))
+            else:
+                x, y, w, h = res.lines[j].box
+                targets.append((f0 - sh.start, ((x + w / 2) / res.width, (y + h / 2) / res.height)))
+        if not any(t for _, t in targets):
+            return []
+        dur = sh.end - sh.start
+        n = sl.ZOOM_FRAMES
+        keys: dict[int, Keyframe] = {0: Keyframe(frame=0, zoom=1.0, pan_x=0.0, pan_y=0.0)}
+        cur: tuple[float, float, float] = (1.0, 0.0, 0.0)
+        for f, t in targets:
+            nxt = (1.0, 0.0, 0.0) if t is None else (sl.ZOOM, *sl.pan_for(*t))
+            if nxt == cur:
+                continue
+            f = max(f, max(keys) + 1)
+            if f + n >= dur:
+                break
+            z0, x0, y0 = cur
+            keys[f] = Keyframe(frame=f, zoom=z0, pan_x=x0, pan_y=y0, easing=Easing.CUBIC_IN_OUT)
+            z1, x1, y1 = nxt
+            keys[f + n] = Keyframe(frame=f + n, zoom=z1, pan_x=x1, pan_y=y1)
+            cur = nxt
+        return [keys[k] for k in sorted(keys)] if len(keys) > 1 else []
+
+    async def _small_tachie(self, project_id: str) -> list[str]:
+        """統合版 P3: 立ち絵を画面の面積の 8% で右下に出す。"""
+        from video_automation.schemas.timeline import SetClipProps
+        from video_automation.services.characters.overlay import layout
+
+        c = self.c
+        tl = await c.timeline.get_timeline(project_id)
+        track = next((t for t in tl.tracks if t.name == "立ち絵"), None)
+        clips = [x for x in tl.clips if track is not None and x.track_id == track.id]
+        if not clips:
+            return []
+        band, ch, _ = layout(tl.width, tl.height)
+        tr = sl.tachie_transform(tl.width, tl.height, band * tl.height, ch * tl.height)
+        cmds: list[Any] = [
+            SetClipProps(
+                clip_id=x.id,
+                transform=ClipTransform(fit=FitMode.FIT, scale=tr["scale"], x=tr["x"], y=tr["y"]),
+            )
+            for x in clips
+        ]
+        await c.timeline.submit(
+            project_id,
+            CommandRequest(command=Batch(commands=cmds), description="立ち絵を右下に小さく"),
+        )
+        return []
 
     async def _last_frame(self, project_id: str, a: AssetRead) -> AssetRead:
         c = self.c
@@ -1744,6 +1978,8 @@ class BuildService:
                 await at("recording")
                 notes += await self._place_recording(project_id, sid, rec, at)
             notes += await self._anchor_lag(project_id, sid)
+        if not req.keep_script:
+            notes += await self._place_slides(project_id, sid)
         # キャラクターの声を「ナレーション」トラックに置く（立ち絵の動画には音が無い）
         notes += await self._place_narration(project_id, sid)
 
