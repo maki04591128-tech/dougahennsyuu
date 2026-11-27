@@ -34,3 +34,19 @@ def test_look_finish_is_appended_to_the_chain():
     base = finish_chain(game, 1920, 1080)
     px = finish_chain(apply_look(game, "Y6"), 1920, 1080)
     assert px != base and look_filter("pixel", 1920, 1080) in px
+
+
+def test_lyric_direction_reads_genre_font_and_hold():
+    """統合版 U1: 方向性を選ぶと、ジャンルの読み替え・書体・待機が方向性の表から決まる。"""
+    from video_automation.services.rendering import lyrics as ly
+
+    assert set(ly.DIRECTIONS) == {
+        "vocaloid_cool", "vocaloid_cute", "vocaloid_calm", "anison", "ballad", "rap", "pop",
+        "idol",
+    }  # fmt: skip
+    assert ly.direction_genre("anison", "pop") == "rock"
+    assert ly.direction_genre("vocaloid_calm", None) == "ballad"
+    assert ly.direction_genre(None, "edm") == "edm"
+    texts, secs = ["夢の中へ", "光を追って"], ["verse", "verse"]
+    assert "wave" in {m[1] for m in ly.lyric_motion(texts, secs, "ballad", "wave")}
+    assert "breathe" in {m[1] for m in ly.lyric_motion(texts, secs, "ballad")}

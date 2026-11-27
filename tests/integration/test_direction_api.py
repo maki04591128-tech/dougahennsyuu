@@ -266,6 +266,7 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
         "genre": None,
         "hearing_aid": False,
         "look": "",
+        "lyric_direction": "",
     }
     # 統合版 Y: 用途で選べない見た目の型は保存しない
     r = await c.put(f"/projects/{pid}/design", json={"purpose": "lecture", "look": "Y5"})
@@ -274,6 +275,13 @@ async def test_design_purpose_shapes_direction_and_guards_render(dclient):
     assert r.json()["look"] == "Y1"
     assert (await c.put(f"/projects/{pid}/design", json={"look": "Y99"})).status_code == 422
     await c.put(f"/projects/{pid}/design", json={"purpose": None, "look": ""})
+    # 統合版 U1: 曲の方向性（8 種のどれか。知らない値は 422）
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": "mv", "lyric_direction": "idol"})
+    assert r.json()["lyric_direction"] == "idol"
+    assert (
+        await c.put(f"/projects/{pid}/design", json={"lyric_direction": "x"})
+    ).status_code == 422
+    await c.put(f"/projects/{pid}/design", json={"purpose": None, "lyric_direction": ""})
     plan = (await c.post("/direction/plan", json={"script_id": sid, "use_llm": False})).json()[
         "plan"
     ]

@@ -343,6 +343,8 @@ def line_alpha(entrance, exit_, length, out_at):
     if entrance == "neon":
         keys += [(1 + 2 * j, a) for j, a in enumerate(NEON_ALPHA)]
         ent = "neon"
+    elif entrance in FADE_IN:  # 入りの不透明度 0→1（行全体の近似）
+        keys += [(1, 0.0), (1 + FADE_IN[entrance], 1.0)]
     if out_at < length:
         if exit_ == "flicker":
             keys += [(out_at + 2 * j, a) for j, a in enumerate(FLICKER_OUT)]
@@ -351,7 +353,16 @@ def line_alpha(entrance, exit_, length, out_at):
             n = 10 if exit_ == "dissolve" else EXIT_F
             keys += [(out_at, 1.0), (min(length, out_at + n), 0.0)]
             ext = exit_
+        elif exit_ in FADE_OUT:
+            keys += [(out_at, 1.0), (min(length, out_at + FADE_OUT[exit_]), 0.0)]
+            ext = exit_
     return keys, ent, ext
+
+
+# 統合版 V5 の改訂の残り（行全体の動きで近似した入り・出の不透明度のフレーム数）
+FADE_IN = {"track": 18, "glitch_in": 8, "warp_in": 10, "gather": 10, "circle": 6, "curve": 8}
+FADE_OUT = {"blur_out": 6, "glitch_out": 6, "warp_out": 6, "curve_out": 10, "scatter": 8,
+            "fall": 45}  # fmt: skip
 
 
 def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
@@ -381,10 +392,32 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
         elif entrance == "tilt3d":  # 3D で傾ける: Y 軸 −35°→−20°、24f
             _key(ob, "rotation_euler", 1, math.radians(-35.0), 1)
             _key(ob, "rotation_euler", 25, math.radians(-20.0), 1)
+        elif entrance == "track":  # T7 字間が詰まりながら: 横に 1.3→1.0、18f（字間の近似）
+            _key(ob, "scale", 1, (1.3, 1.0, 1.0))
+            _key(ob, "scale", 19, (1.0, 1.0, 1.0))
+        elif entrance == "glitch_in":  # 色ズレ・グリッチ: x ±6px のずれを 8f で 0 に
+            for j in range(5):
+                _key(
+                    ob, "location", 1 + 2 * j, x0 + (6 * PX if j % 2 else -6 * PX) * (4 - j) / 4, 0
+                )
+        elif entrance == "warp_in":  # 歪ませながら: 縦を 1.2→0.85→1.0 と揺らして 10f
+            for f_, sy in ((1, 1.2), (4, 0.85), (7, 1.06), (11, 1.0)):
+                _key(ob, "scale", f_, (1.0, sy, 1.0))
+        elif entrance == "gather":  # 一文字ずつ集まる: 行全体 0.5→1.0、10f（easeOutExpo の近似）
+            _key(ob, "scale", 1, (0.5, 0.5, 0.5))
+            _key(ob, "scale", 11, (1.0, 1.0, 1.0))
+        elif entrance == "circle":  # 円形: 行全体を Z 90°→0 回す、24f
+            z0 = ob.rotation_euler.z
+            _key(ob, "rotation_euler", 1, z0 + math.radians(90.0), 2)
+            _key(ob, "rotation_euler", 25, z0, 2)
+        elif entrance == "curve":  # 曲線に沿う: 左から弧を描いて 20f で定位置へ
+            for f_, u in ((1, 0.0), (8, 0.5), (21, 1.0)):
+                _key(ob, "location", f_, x0 - 0.4 * W * PX * (1 - u), 0)
+                _key(ob, "location", f_, y0 + 0.08 * H * PX * math.sin(math.pi * u), 1)
         elif entrance == ent_a:
             pass  # ネオン（不透明度だけ）
         else:
-            entrance = "bounce"
+            entrance = "bounce"  # morph（T23）・stack・slam 以外の未対応は 1 文字ずつの弾み
         hold_end = max(12, out_at)
         if hold == "breathe":  # 呼吸: 1.000→1.015→1.000、周期 3.2 秒
             per = round(3.2 * FPS)
@@ -397,6 +430,19 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
         elif hold == "drift":  # 漂う: 右へ画面の幅の 1%／秒
             _key(ob, "location", 12, x0, 0)
             _key(ob, "location", hold_end, x0 + 0.01 * W * PX * (hold_end - 12) / FPS, 0)
+        elif hold == "pulse" and beats:  # 拍で脈打つ: 拍ごとに 1.00→1.08→1.00、6f
+            for b in beats:
+                if 12 <= b < hold_end - 6:
+                    _key(ob, "scale", b, (1.0, 1.0, 1.0))
+                    _key(ob, "scale", b + 3, (1.08, 1.08, 1.08))
+                    _key(ob, "scale", b + 6, (1.0, 1.0, 1.0))
+        elif hold == "wave":  # T8 波打つ（行全体の上下の近似）: 文字の高さ × 0.08、0.8Hz
+            per = round(FPS / 0.8)
+            f, k = 12, 0
+            while f < hold_end:
+                _key(ob, "location", f, y0 + (0.08 * 0.5 if k % 2 else -0.08 * 0.5) * (k > 0), 1)
+                f += per // 2
+                k += 1
         elif hold == "sway":  # 揺れ: 周期 2 秒・±8px
             per = round(2 * FPS)
             f, k = 12, 0
@@ -404,7 +450,7 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
                 _key(ob, "location", f, x0 + (8 * PX if k % 2 else -8 * PX) * (k > 0), 0)
                 f += per // 2
                 k += 1
-        else:
+        elif hold not in ("static",):
             hold = "static"
         end_ = min(length, out_at + EXIT_F)
         if exit_ == "shrink" and out_at < length:  # 縮んで消える: 1→0.8（文字ごとの出と重ねる）
@@ -425,6 +471,28 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
         elif exit_ == "stretch_out" and out_at < length:  # 伸びて消える: y 1→3・x 1→0.6、8f
             _key(ob, "scale", out_at, (1.0, 1.0, 1.0))
             _key(ob, "scale", end_, (0.6, 3.0, 1.0))
+        elif exit_ == "blur_out" and out_at < length:  # 膨らんでぼける: 1→1.1、6f（ぼかしは無し）
+            _key(ob, "scale", out_at, (1.0, 1.0, 1.0))
+            _key(ob, "scale", min(length, out_at + 6), (1.1, 1.1, 1.1))
+        elif exit_ == "glitch_out" and out_at < length:  # 色ズレして消える: x ±6px、6f
+            for j in range(4):
+                _key(ob, "location", out_at + 2 * j, x0 + (6 * PX if j % 2 else -6 * PX), 0)
+        elif exit_ == "warp_out" and out_at < length:  # 歪ませて消える: 縦 1→1.2→0.8、6f
+            for f_, sy in ((0, 1.0), (3, 1.2), (6, 0.8)):
+                _key(ob, "scale", min(length, out_at + f_), (1.0, sy, 1.0))
+        elif exit_ == "curve_out" and out_at < length:  # 曲線に沿って右へ抜ける: 10f
+            _key(ob, "location", out_at, x0, 0)
+            _key(ob, "location", min(length, out_at + 10), x0 + 0.5 * W * PX, 0)
+        elif exit_ == "scatter" and out_at < length:  # T18 飛び散る（行全体の近似）: 1→1.4、8f
+            _key(ob, "scale", out_at, (1.0, 1.0, 1.0))
+            _key(ob, "scale", min(length, out_at + 8), (1.4, 1.4, 1.4))
+        elif exit_ == "fall" and out_at < length:  # T21 物理で落ちる: 重力で 45f で画面の下へ
+            g_end = min(length, out_at + 45)
+            for j in range(0, g_end - out_at + 1, 5):
+                u = j / 45
+                _key(ob, "location", out_at + j, y0 - 1.2 * H * PX * u * u, 1)
+            _key(ob, "rotation_euler", out_at, ob.rotation_euler.z, 2)
+            _key(ob, "rotation_euler", g_end, ob.rotation_euler.z + math.radians(-25.0), 2)
         elif exit_ in (ext_a,) and ext_a is not None:
             pass  # 不透明度だけ（点滅・フェード）
         else:
@@ -909,7 +977,9 @@ def main():
                 alpha_keys = []
                 if mo:  # 統合版 V5 の改訂
                     out_at_ = max(8, length - 14)
-                    got = line_motion(ksc, mo[0], mo[1], mo[2], length, out_at_)
+                    beats_ = [F0 + int(b) - f0 + 1 for b in (A.get("beats") or [])
+                              if f0 <= F0 + int(b) < f0 + length]  # fmt: skip
+                    got = line_motion(ksc, mo[0], mo[1], mo[2], length, out_at_, beats_)
                     alpha_keys = line_alpha(mo[0], mo[2], length, out_at_)[0]
                     for g in got:
                         REPORT.setdefault("motion", {}).setdefault(g, 0)

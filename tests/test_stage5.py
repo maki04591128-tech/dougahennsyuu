@@ -704,3 +704,63 @@ def test_number_roll_and_year():
     fr = nb.year_frames("2024", 360, None, "#FFFFFF", "#000000", True)
     assert len(fr) == 22 and fr[0].size == fr[-1].size
     assert len(nb.year_frames("2024", 360, None, "#FFFFFF", "#000000", False)) == 1
+
+
+@pytest.mark.skipif(not BPY or FFMPEG is None, reason="VA_BPY_PYTHON is not set")
+def test_rich_direction_more_lyric_motions(tmp_path):
+    """Blender: V5 の改訂の残りの入り・待機・出（行全体の動きで近似）が使われる。"""
+    import json
+    from pathlib import Path
+
+    clean = tmp_path / "clean.mp4"
+    subprocess.run(
+        [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=4:r=30", "-f",
+         "lavfi", "-i", "sine=d=4", "-shortest", "-pix_fmt", "yuv420p", str(clean)],
+        check=True,
+    )  # fmt: skip
+    motions = [
+        ["track", "pulse", "blur_out"],
+        ["glitch_in", "wave", "glitch_out"],
+        ["curve", "static", "curve_out"],
+        ["circle", "drift", "scatter"],
+        ["warp_in", "breathe", "warp_out"],
+        ["gather", "static", "fall"],
+    ]
+    cues = [
+        {"segment": str(i), "text": "そら", "start_frame": 2 + 19 * i,
+         "end_frame": 19 + 19 * i, "section": "verse", "motion": m}
+        for i, m in enumerate(motions)
+    ]  # fmt: skip
+    args = {
+        "clean_path": str(clean),
+        "out_path": str(tmp_path / "out.mp4"),
+        "result_path": str(tmp_path / "r.json"),
+        "font": "",
+        "width": 320,
+        "height": 180,
+        "fps_num": 30,
+        "fps_den": 1,
+        "title": "",
+        "catch": "",
+        "chapters": [],
+        "cues": cues,
+        "beats": list(range(0, 120, 15)),
+        "parts": {"lyrics": True},
+        "params": {},
+        "limits": {},
+        "colors": {"base": "#000000", "main": "#3366CC", "accent": "#FFCC00", "text": "#FFFFFF"},
+        "lyric_font": "",
+        "lyric_texture": "shadow",
+    }
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/rich_direction.py"
+    )
+    r = subprocess.run([BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True,
+                       text=True, timeout=900)  # fmt: skip
+    rep = json.loads((tmp_path / "r.json").read_text())
+    assert rep["parts"]["lyrics"]["ok"], r.stderr[-2000:]
+    got = rep["motion"]
+    for m in motions:
+        for name in m:
+            assert got.get(name, 0) >= 1, (name, got)
