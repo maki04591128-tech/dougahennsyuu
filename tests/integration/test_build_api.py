@@ -339,6 +339,55 @@ async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path
     assert not any("ズーム" in n for n in job.result["notes"])
 
 
+async def test_game_play_from_recording_and_play_log(bclient, fake, media_dir):
+    """プレイ録画＋プレイ記録を渡すとゲーム実況のまま作り、録画は寄らずにゲームの音を小さく残す。"""
+    c = bclient
+    await c.post("/providers/discover")
+    r = await c.post(
+        "/build/plan",
+        json={
+            "instruction": "AIが自作ゲームを遊んだゲーム実況のプレイ動画",
+            "screen_recording": str(media_dir / "clip.mp4"),
+            "reference": "プレイ記録（時刻は録画の頭から）:\n[0:01] 迷宮の1階に入った",
+        },
+    )
+    assert r.status_code == 201, r.text
+    plan = r.json()
+    assert plan["purpose"] == "game" and "画面録画を置く" in plan["steps"]
+    names = [ch["name"] for ch in plan["characters"]]
+
+    def responder(body):
+        props = (body.get("format") or {}).get("properties", {})
+        if "scenes" not in props:
+            return None
+        return {
+            "scenes": [
+                {
+                    "purpose": "導入",
+                    "turns": [
+                        {"speaker": names[0], "text": "迷宮の一階に入ったよ。"},
+                        {"speaker": names[-1], "text": "暗くてどきどきするのだ。"},
+                    ],
+                }
+            ],
+            "notes": [],
+        }
+
+    fake.chat_responder = responder
+    r = await c.post(
+        f"/build/{plan['project_id']}/run",
+        json={"script_id": plan["script_id"], "use_llm_direction": False},
+    )
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert any("プレイ記録" in n for n in job.result["notes"]), job.result["notes"]
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    tracks = {t["name"]: t for t in tl["tracks"]}
+    rec = [x for x in tl["clips"] if x["track_id"] == tracks["画面録画"]["id"]]
+    assert rec and rec[0]["volume"] == 0.25
+    assert not any("ズーム" in n for n in job.result["notes"])
+
+
 async def test_music_video_from_song_and_lyrics(bclient, media_dir):
     """曲と歌詞を渡すとリリックビデオになり、歌の時刻を文字起こしで取って書き出す。"""
     from video_automation.services.transcribe.align import Word

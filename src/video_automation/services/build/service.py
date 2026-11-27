@@ -125,6 +125,8 @@ REC_CY = 0.44
 REC_H = 0.66
 REC_W = 0.9
 REC_W_TACHIE = 0.69
+# ゲーム実況: プレイ録画の音（BGM・効果音）を声の下に小さく残す（約 −12 dB）。寄りは作らない
+GAME_REC_VOLUME = 0.25
 
 
 class BuildError(Exception):
@@ -297,8 +299,8 @@ class BuildService:
             ClassifyRequest(text=req.instruction, has_script=False, vertical=vertical)
         )
         purpose = cls.purpose
-        if rec_path is not None:  # 画面録画がある = 操作説明
-            purpose = Purpose.TUTORIAL
+        if rec_path is not None and purpose != Purpose.GAME:  # 画面録画がある = 操作説明
+            purpose = Purpose.TUTORIAL  # ただしゲーム実況（プレイ録画）はゲーム実況のまま
         if music_path is not None and purpose not in NEEDS_MUSIC:  # 曲がある = MV
             purpose = Purpose.LYRIC if req.lyrics.strip() else Purpose.MV
         prof = PROFILES[purpose]
@@ -668,9 +670,14 @@ class BuildService:
         """画面録画の場面を画像の分かる AI に読ませ、台本の参考資料に足す。"""
         c = self.c
         await at("script")
+        d0 = await c.studio.detail(sid)
+        if recording_reader.PLAY_LOG_HEAD in (d0.settings.reference or ""):
+            # 遊んだ AI のプレイ記録がある: 画面から読み取るより正確なので、それを使う
+            return ["プレイ記録を台本の参考にしました（画面からの読み取りは省きました）"]
+        game = await self._is_game(sid)
         try:
             text = await recording_reader.describe(
-                c.llm, c.ffmpeg, c.settings.data_dir / rec.path, rec.duration_sec or 0.0
+                c.llm, c.ffmpeg, c.settings.data_dir / rec.path, rec.duration_sec or 0.0, game=game
             )
         except Exception as exc:  # noqa: BLE001 - 画像の分かるモデルが無くても台本は作る
             log.info("recording_read_skipped", error=type(exc).__name__, detail=str(exc)[-300:])
@@ -687,6 +694,15 @@ class BuildService:
             sid, ScriptUpdate(settings=d.settings.model_copy(update={"reference": ref[:20000]}))
         )
         return [f"画面録画の {text.count(chr(10)) + 1} 場面を読み取り、台本の参考にしました"]
+
+    async def _is_game(self, sid: str) -> bool:
+        """台本のプロジェクトの用途がゲーム実況か。"""
+        try:
+            pid = (await self.c.studio.detail(sid)).project_id
+            design = await self.c.design.get(pid)
+            return design.purpose is not None and str(design.purpose) == Purpose.GAME.value
+        except Exception:  # noqa: BLE001 - 分からなければ操作説明として扱う
+            return False
 
     def _allowed_file(self, path: str, label: str) -> Path:
         """利用者が渡したファイル（取り込みを許可したフォルダの中だけ）。"""
@@ -724,11 +740,15 @@ class BuildService:
         async def zp(v: float) -> None:
             await at("recording", v * 0.9)
 
-        try:
-            zoomed = await c.screencast.zoom(project_id, rec.id, None, 1.8, zp)
-        except Exception as exc:  # noqa: BLE001 - 寄れなくても録画はそのまま置く
-            notes.append(f"操作箇所へのズームを作れませんでした（{type(exc).__name__}）")
+        game = await self._is_game(sid)
+        if game:  # ゲーム実況: プレイ画面全体を見せる（操作箇所へは寄らない）
             zoomed = rec
+        else:
+            try:
+                zoomed = await c.screencast.zoom(project_id, rec.id, None, 1.8, zp)
+            except Exception as exc:  # noqa: BLE001 - 寄れなくても録画はそのまま置く
+                notes.append(f"操作箇所へのズームを作れませんでした（{type(exc).__name__}）")
+                zoomed = rec
         tl = await c.timeline.get_timeline(project_id)
         p = tl
         fps = tl.fps_num / tl.fps_den
@@ -763,7 +783,8 @@ class BuildService:
                 start_frame=0,
                 duration_frames=length,
                 transform=transform,
-                volume=0.0,  # 録画の音は使わない（話すのはキャラクター）
+                # 録画の音は使わない（話すのはキャラクター）。ゲーム実況はゲームの音を小さく残す
+                volume=GAME_REC_VOLUME if game else 0.0,
                 fade_in_frames=min(10, length // 4),
             )
         )

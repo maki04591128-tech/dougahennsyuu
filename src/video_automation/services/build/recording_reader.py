@@ -25,6 +25,15 @@ PROMPT = (
     "アプリ名・ボタン名・メニュー名など画面に書かれた語はそのまま使います。"
     "メールアドレス・名前・パスワード・キーなど個人の情報は書きません。"
 )
+# ゲーム実況の録画（用途がゲーム実況のとき）。操作の説明ではなく、場面で起きていることを書かせる
+PROMPT_GAME = (
+    "これはゲーム実況の動画にするプレイ録画の 1 場面です。どんな場面か（町・迷宮・戦い・会話・"
+    "メニューなど）と、そこで起きていること（敵・数値の変化・手に入れた物など）を、"
+    "日本語で 1〜2 文にまとめてください。画面に書かれた語はそのまま使います。"
+    "名前・パスワード・キーなど個人の情報は書きません。"
+)
+# 遊んだ AI が書いたプレイ記録が参考資料にあるときの見出し（あれば画面から読み取らない）
+PLAY_LOG_HEAD = "プレイ記録（時刻は録画の頭から）:"
 
 
 async def extract_shots(
@@ -72,9 +81,17 @@ async def extract_shots(
 
 
 async def describe(
-    llm: LLMGateway, ffmpeg: FFmpeg, video: Path, duration: float, model_key: str | None = None
+    llm: LLMGateway,
+    ffmpeg: FFmpeg,
+    video: Path,
+    duration: float,
+    model_key: str | None = None,
+    game: bool = False,
 ) -> str:
-    """録画の場面ごとの説明（「[0:12] 〜」の行）。読めなければ空文字。"""
+    """録画の場面ごとの説明（「[0:12] 〜」の行）。読めなければ空文字。
+
+    game=True はゲーム実況向けの問い（操作ではなく場面で起きていること）。
+    """
     await llm.resolve(TaskType.IMAGE_UNDERSTANDING, model_key)  # 画像入力のモデルが無ければ例外
     lines: list[str] = []
     with tempfile.TemporaryDirectory(prefix="va_rec_") as tmp:
@@ -83,7 +100,7 @@ async def describe(
             img = base64.b64encode(path.read_bytes()).decode("ascii")
             res = await llm.complete_text(
                 TaskType.IMAGE_UNDERSTANDING,
-                [ChatMessage(role="user", content=PROMPT, images=[img])],
+                [ChatMessage(role="user", content=PROMPT_GAME if game else PROMPT, images=[img])],
                 model_key=model_key,
                 temperature=0.2,
             )
