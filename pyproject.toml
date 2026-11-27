@@ -49,6 +49,7 @@ video-automation-mcp-media = "video_automation.mcp_servers.media_server:main"
 video-automation-mcp-render = "video_automation.mcp_servers.render_server:main"
 video-automation-mcp-visual = "video_automation.mcp_servers.visual_server:main"
 video-automation-mcp-script = "video_automation.mcp_servers.script_server:main"
+video-automation-mcp-game-video = "video_automation.mcp_servers.game_video_server:main"
 
 [build-system]
 requires = ["hatchling"]

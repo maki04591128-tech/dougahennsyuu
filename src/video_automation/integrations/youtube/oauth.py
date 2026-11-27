@@ -145,7 +145,12 @@ def _wait_code(port: int, state: str, timeout: float) -> tuple[str, int]:
     return got["code"], used
 
 
-def authorize(folder: Path, open_browser: bool = True, timeout: float = 300.0) -> None:
+def authorize(
+    folder: Path,
+    open_browser: bool = True,
+    timeout: float = 300.0,
+    on_url: Any = None,
+) -> None:
     """本人が PC で 1 回だけ行う許可。更新用の鍵を保存する。"""
     client = load_client(folder)
     verifier, challenge = pkce_pair()
@@ -157,6 +162,8 @@ def authorize(folder: Path, open_browser: bool = True, timeout: float = 300.0) -
     redirect = f"http://127.0.0.1:{port}"
     url = auth_url(client, redirect, challenge, state)
     print("ブラウザで YouTube への投稿を許可してください:\n" + url, flush=True)
+    if on_url is not None:  # 呼んだ側が自分のブラウザで開く（AI が操作するブラウザなど）
+        on_url(url)
     if open_browser:
         webbrowser.open(url)
     code, _ = _wait_code(port, state, timeout)
