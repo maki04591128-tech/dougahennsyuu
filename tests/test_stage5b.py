@@ -142,3 +142,153 @@ def test_paper_texture_only_for_mv():
         f = np.frombuffer(out, np.uint8).reshape(4, 360, 640, 3).astype(int)
         assert 230 < f.mean() < 255  # 白が少しだけ暗くなる
         assert (f[0] == f[1]).all() and not (f[1] == f[2]).all()  # 2f ごとにずれる
+
+
+def test_ink_noise_and_frames():
+    """V6: しきい値に比例して穴が広がり、穴の縁は文字の色、最初の画は前のショットのまま。"""
+    noise = mv.ink_noise(160, 90, seed=1)
+    assert noise.shape == (90, 160) and 0.0 <= noise.min() and noise.max() <= 1.0
+    assert abs(float((noise < 0.5).mean()) - 0.5) < 0.01
+    ts = mv.ink_thresholds()
+    assert len(ts) == mv.INK_FRAMES and ts[0] == 0.0 and ts == sorted(ts) and ts[-1] < 1.0
+    prev = Image.new("RGBA", (160, 90), (10, 200, 30, 255))
+    frames = mv.ink_frames(prev, "#FFFFFF", seed=1)
+    assert len(frames) == mv.INK_FRAMES
+    a0 = np.asarray(frames[0])
+    assert (a0[..., 3] == 255).all() and (a0[..., :3] == (10, 200, 30)).all()
+    clear = [float((np.asarray(f)[..., 3] == 0).mean()) for f in frames]
+    assert clear == sorted(clear) and clear[-1] > 0.99
+    mid = np.asarray(frames[2])
+    edge = (mid[..., 3] == 255) & (mid[..., :3] == 255).all(axis=-1)
+    assert edge.any()  # 穴の縁の白い線
+
+
+def test_camera_view_matches_last_frame():
+    img = Image.new("RGB", (200, 100), (0, 0, 0))
+    img.paste((255, 0, 0), (0, 0, 100, 100))  # 左半分が赤
+    v = mv.camera_view(img, "upper", 60, 30)  # 最後は右へパン（zoom 1.04・pan_x +1）
+    assert v.size == img.size and v.getpixel((0, 50))[0] == 255
+    assert mv.camera_view(img, "silhouette", 60, 30) is img
+
+
+def _chorus_spans():
+    starts = [8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+    secs = ["verse", "verse", "chorus_first", "chorus", "chorus", "chorus", "verse"]
+    secs += ["chorus"] * 3
+    return mv.line_spans(starts, [s + 2.5 for s in starts], secs, 2.0)
+
+
+def test_motif_bars_and_planes():
+    beats = [i * 0.5 for i in range(80)]
+    spans = _chorus_spans()
+    bars = mv.motif_bars(spans, beats, 30)
+    assert bars == [(360, 405, 420), (810, 855, 870)]  # 14 秒・29 秒のサビの頭の 4 拍前
+    cuts = mv.insert_flashes(mv.plan_cuts(beats, spans, 40, 30), [400, 840], 30)
+    out = mv.insert_planes(cuts, bars)
+    assert all(a.end == b.start for a, b in zip(out, out[1:], strict=False))
+    planes = [c for c in out if c.shot == "plane"]
+    assert [(c.start, c.end) for c in planes] == [(360, 420), (810, 870)]
+    assert not any(
+        c.shot == "flash" and (360 <= c.start < 420 or 810 <= c.start < 870) for c in out
+    )
+    entries = mv.chorus_entries(out, spans, beats, 30)
+    assert [out[j].start for j in entries] == [420, 870]
+    assert all(out[j - 1].shot == "plane" for j in entries)
+    keys = mv.motif_keys(360, 405, 420, -1)
+    assert keys[0].x == -mv.MOTIF_OFFSET and keys[1].frame == 45 and keys[1].x == 0.0
+    assert keys[-1].frame == 59
+
+
+def test_motif_shapes_mirror():
+    for shape in mv.MOTIF_SHAPES:
+        img = mv.motif_image(shape, "#FFFFFF", 320, 180)
+        a = np.asarray(img)[..., 3]
+        ys, xs = np.nonzero(a > 128)
+        assert len(xs) > 200, shape
+        assert (
+            abs((xs.min() + xs.max()) / 2 - 160) <= 2 and abs((ys.min() + ys.max()) / 2 - 90) <= 4
+        )
+    tri = np.asarray(mv.motif_image("triangle", "#111111", 320, 180))[..., 3]
+    mir = np.asarray(mv.motif_image("triangle", "#111111", 320, 180, mirror=True))[..., 3]
+    assert (mir == tri[:, ::-1]).mean() > 0.99 and not (mir == tri).all()
+    assert mv.shot_image(
+        Image.new("RGB", (40, 40)), "plane", 64, 36, "#3E5C9A", "#FFFFFF"
+    ).getpixel((5, 5)) == (0x3E, 0x5C, 0x9A, 255)
+
+
+def test_bake_shots_frames_and_camera(tmp_path):
+    """カットを 1 本の動画に焼く: フレーム数は合計＋1（丸めの余り）、色はカットの順、カメラも付く。"""
+    import json
+    import shutil
+    import subprocess
+    from fractions import Fraction
+
+    import pytest
+
+    from video_automation.services.direction import mv_bake
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg が無い")
+    w, h = 320, 180
+    paths = []
+    for i, col in enumerate([(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
+        p = tmp_path / f"{i}.png"
+        Image.new("RGB", (w, h), col).save(p)
+        paths.append(p)
+    half = tmp_path / "half.png"
+    img = Image.new("RGB", (w, h), (0, 0, 0))
+    img.paste((255, 255, 255), (w // 2, 0, w, h))
+    img.save(half)
+    fps = Fraction(30)
+    items = [(paths[0], 5, []), (half, 20, mv.camera("upper", 20, 30)), (paths[2], 7, [])]
+    assert mv_bake.groups(85, 40) == [(0, 40), (40, 80), (80, 85)]
+    parts = []
+    for gi, (a, b) in enumerate([(0, 2), (2, 3)]):
+        out = tmp_path / f"p{gi}.mp4"
+        args = mv_bake.group_args(items[a:b], fps, w, h, out, 1 if b == 3 else 0)
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], check=True)
+        parts.append(out)
+    lst = tmp_path / "l.txt"
+    lst.write_text(mv_bake.concat_list(parts))
+    full = tmp_path / "full.mp4"
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst)]
+        + ["-c", "copy", str(full)],
+        check=True,
+    )
+    info = json.loads(
+        subprocess.run(
+            ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0"]
+            + ["-show_entries", "stream=nb_read_frames", "-of", "json", str(full)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    assert int(info["streams"][0]["nb_read_frames"]) == 5 + 20 + 7 + 1
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-i",
+            str(full),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout
+    fr = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
+    assert fr[2, 90, 160, 0] > 200 and fr[2, 90, 160, 1] < 60  # 赤
+    assert fr[30, 90, 160, 2] > 200  # 青
+
+    # 上半身のカメラ（左から右へパン）: 白黒の境目が左へ動く
+    def edge(f):
+        row = fr[f, 90, :, 0].astype(int)
+        return int(np.argmax(row > 128))
+
+    assert edge(6) > edge(23)

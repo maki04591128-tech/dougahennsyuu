@@ -463,7 +463,85 @@ async def test_music_video_shots_from_image(bclient, media_dir):
     shots = sorted(
         (x for x in tl["clips"] if x["track_id"] == tr["id"]), key=lambda x: x["start_frame"]
     )
-    assert len(shots) >= 8 and shots[0]["start_frame"] == 0
-    assert all(a["end_frame"] == b["start_frame"] for a, b in zip(shots, shots[1:], strict=False))
+    # カットは 1 本の動画に焼いて置く（書き出しの入力の数を抑える）
+    assert len(shots) == 1 and shots[0]["start_frame"] == 0
+    assert shots[0]["end_frame"] >= 15 * 30
     # 統合版 V10: 最初のサビが無い短い歌詞なので、黒帯は付かない（イントロの黒帯はサビの頭で開く）
-    assert not any(t["name"] == "MV・黒帯" for t in tl["tracks"])
+    assert not any(t["name"].startswith("MV・黒帯") for t in tl["tracks"])
+
+
+async def test_music_video_ink_and_motif(bclient, media_dir):
+    """統合版 V6・V11: サビの前の 1 小節に白と黒の形、サビの頭にインクの転換。"""
+    import wave
+
+    import numpy as np
+    from PIL import Image
+
+    from video_automation.services.transcribe.align import Word
+    from video_automation.services.transcribe.service import Recognized
+
+    sr, sec = 22050, 40
+    t = np.arange(sr * sec) / sr
+    x = np.zeros_like(t)
+    n = int(0.08 * sr)
+    for k in range(int(sec / 0.5)):  # 120 BPM のキック
+        s = int(k * 0.5 * sr)
+        x[s : s + n] += np.sin(2 * np.pi * 70 * t[:n]) * np.exp(-t[:n] * 30)
+    song = media_dir / "beat40.wav"
+    with wave.open(str(song), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        f.writeframes((np.clip(x, -1, 1) * 30000).astype("<i2").tobytes())
+    Image.new("RGB", (400, 600), (240, 120, 160)).save(media_dir / "pic.png")
+    chorus = ["ひかりのほうへ", "よるをこえて", "あしたをさがす", "こえをきかせて"]
+    lines = ["まちのあかり", "ひとりあるく", *chorus, "かぜがふいた", *chorus]
+    c = bclient
+    await c.post("/providers/discover")
+    plan = (
+        await c.post(
+            "/build/plan",
+            json={
+                "instruction": "この曲の MV を作って",
+                "music": str(song),
+                "lyrics": "\n".join(lines),
+                "image": str(media_dir / "pic.png"),
+            },
+        )
+    ).json()
+    starts = [4.0 + 3.0 * i for i in range(len(lines))]
+
+    def fake(audio, language):
+        return Recognized(
+            words=[Word(s, a, a + 2.5) for s, a in zip(lines, starts, strict=True)],
+            segments=[(s, a, a + 2.5) for s, a in zip(lines, starts, strict=True)],
+            language="ja",
+            duration=float(sec),
+        )
+
+    c.app.state.container.transcriber._recognizer = fake
+    r = await c.post(f"/build/{plan['project_id']}/run", json={"script_id": plan["script_id"]})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    notes = job.result["notes"]
+    assert any("インクの転換" in n for n in notes), notes
+    assert any("小節に、白と黒の" in n for n in notes), notes
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    by = {t["name"]: t["id"] for t in tl["tracks"]}
+    names = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
+    i = names.index("MV・ショット")
+    assert names[i + 1 : i + 4] == ["MV・形（白）", "MV・形（黒）", "MV・インク"]
+    ink = sorted(
+        (x for x in tl["clips"] if x["track_id"] == by["MV・インク"]),
+        key=lambda x: x["start_frame"],
+    )
+    assert ink and all(x["end_frame"] - x["start_frame"] == 10 for x in ink)
+    white = [x for x in tl["clips"] if x["track_id"] == by["MV・形（白）"]]
+    black = [x for x in tl["clips"] if x["track_id"] == by["MV・形（黒）"]]
+    assert len(white) == len(black) >= 1
+    # 統合版 V10: イントロの黒帯は上と下で別のトラック（同じ時間に重なるため）
+    tops = [x for x in tl["clips"] if x["track_id"] == by["MV・黒帯（上）"]]
+    bottoms = [x for x in tl["clips"] if x["track_id"] == by["MV・黒帯（下）"]]
+    assert tops and len(tops) == len(bottoms) and tops[0]["start_frame"] == 0
+    # 形の小節のあとすぐにインクの転換が始まる（サビの頭）
+    assert {x["end_frame"] for x in white} <= {x["start_frame"] for x in ink}

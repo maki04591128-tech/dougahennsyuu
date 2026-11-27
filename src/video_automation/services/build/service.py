@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -36,7 +38,7 @@ from video_automation.schemas.design import (
     Purpose,
 )
 from video_automation.schemas.direction import DirectionApplyRequest, DirectionPlanRequest
-from video_automation.schemas.provider import TaskType
+from video_automation.schemas.provider import ChatMessage, TaskType
 from video_automation.schemas.script_studio import (
     CharacterIn,
     ScriptGenerateRequest,
@@ -69,6 +71,7 @@ from video_automation.schemas.timeline import (
 from video_automation.schemas.voice import ReadingCheckRequest
 from video_automation.services.build import audio_bed, bgm_prompts, recording_reader
 from video_automation.services.design.profiles import PROFILES
+from video_automation.services.direction import mv_bake
 from video_automation.services.direction import mv_shots as mv
 from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction.service import native_transform
@@ -131,6 +134,9 @@ MV_STEPS = [
 ]
 MV_IMAGE_NAME = "MVの絵: "  # 構成で取り込んだ MV のショットの絵（統合版 V1）
 MV_SHOT_TRACK = "MV・ショット"
+MV_MOTIF_TRACKS = ("MV・形（白）", "MV・形（黒）")  # 統合版 V11
+MV_INK_TRACK = "MV・インク"  # 統合版 V6
+MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
 # 録画を置く枠（画面比）: 上 100px は見出しの帯、下は字幕。立ち絵があれば左右に各 300px 空ける
@@ -193,6 +199,21 @@ def purpose_structure(purpose: Purpose, portrait: bool) -> str:
     elif purpose == Purpose.TRAILER:
         parts.append(pp.TRAILER_STRUCTURE)
     return "\n".join(parts)
+
+
+def _ink_overlay(
+    path: Path, prev: Any, fps: float, shape: str | None, edge: str, seed: int, w: int, h: int
+) -> list[Any]:
+    """V6: 前のショットの最後に見えていた画に穴をあける（V11 の面なら、重なった白と黒の形も）。"""
+    from PIL import Image
+
+    with Image.open(path) as im:
+        img = im.convert("RGBA").resize((w, h))
+    img = mv.camera_view(img, prev.shot, prev.end - prev.start, fps)
+    if shape:
+        img.alpha_composite(mv.motif_image(shape, mv.MOTIF_WHITE, w, h))
+        img.alpha_composite(mv.motif_image(shape, mv.MOTIF_BLACK, w, h, mirror=True))
+    return mv.ink_frames(img, edge, seed)
 
 
 def _bar_png(out: Path, w: int, h: int, bar: int, side: str) -> None:
@@ -918,7 +939,7 @@ class BuildService:
             try:
                 notes += await self._mv_shots(project_id, sid, song, image)
             except Exception as exc:  # noqa: BLE001 - ショットが作れなくても書き出す
-                log.warning("mv_shots_failed", error=type(exc).__name__)
+                log.warning("mv_shots_failed", error=type(exc).__name__, detail=str(exc)[:300])
                 notes.append(f"MV のショットを作れませんでした（{type(exc).__name__}）")
         await at("check")
         rreq = RenderRequest(
@@ -958,51 +979,152 @@ class BuildService:
         cuts = mv.insert_flashes(cuts, peaks, fps)
         if not cuts:
             return []
+        # 統合版 V11: 各サビの直前の 1 小節を主色の面にし、白と黒の形を置く
+        bars = mv.motif_bars(spans, bt.times, fps)
+        shape = await self._motif_shape([x.text for x in cues]) if bars else "circle"
+        cuts = mv.insert_planes(cuts, bars)
         genre = (await c.design.get(project_id)).genre or "pop"
         main, ink = mv.V12_MAIN.get(genre, mv.V12_MAIN["pop"])
         work = c.settings.data_dir / "projects" / project_id / "assets"
         src = c.settings.data_dir / image.path
-        made: dict[tuple[str, int], AssetRead] = {}
+        files: dict[tuple[str, int], Path] = {}
+        cut_keys: list[tuple[str, int]] = []
         n_flash = 0
         cmds: list[Any] = []
+        order = [t.name for t in tl.tracks]
         tracks = {t.name: t for t in tl.tracks}
-        if MV_SHOT_TRACK in tracks:
-            tid = tracks[MV_SHOT_TRACK].id
-            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == tid]
-        else:
-            tid = str(uuid4())
-            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=MV_SHOT_TRACK, track_id=tid))
-            names = [t.name for t in tl.tracks]
-            at_ = names.index("演出・背景") + 1 if "演出・背景" in names else 0
-            cmds.append(MoveTrack(track_id=tid, index=at_))
+
+        def track(name: str, after: str | None) -> str:
+            """名前のトラックを空にして使う。無ければ after（無ければ 演出・背景）の上に作る。"""
+            if name in tracks:
+                tid_ = tracks[name].id
+                cmds.extend(DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == tid_)
+                return tid_
+            tid_ = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=name, track_id=tid_))
+            base = after if after in order else "演出・背景"
+            at_ = order.index(base) + 1 if base in order else 0
+            cmds.append(MoveTrack(track_id=tid_, index=at_))
+            order.insert(at_, name)
+            return tid_
+
+        tid = track(MV_SHOT_TRACK, None)
+        white_tid = track(MV_MOTIF_TRACKS[0], MV_SHOT_TRACK)
+        black_tid = track(MV_MOTIF_TRACKS[1], MV_MOTIF_TRACKS[0])
+        ink_tid = track(MV_INK_TRACK, MV_MOTIF_TRACKS[1])
+
+        async def asset(out: Path, label: str) -> AssetRead:
+            return AssetRead.model_validate(
+                await c.timeline.register_generated(
+                    project_id, out, AssetKind.IMAGE, "build", label
+                )
+            )
+
         for cut in cuts:
             k = 0
             if cut.shot == "flash":
                 k, n_flash = n_flash % 2, n_flash + 1
             key = (cut.shot, k)
-            if key not in made:
+            cut_keys.append(key)
+            if key not in files:
                 out = work / f"mv_{cut.shot}_{k}_{uuid4().hex[:6]}.png"
                 await asyncio.to_thread(mv.save_shot, out, src, cut.shot, w, h, main, ink, k)
-                made[key] = AssetRead.model_validate(
-                    await c.timeline.register_generated(
-                        project_id, out, AssetKind.IMAGE, "build", f"MV の{mv.SHOT_LABEL[cut.shot]}"
+                files[key] = out
+        # カットを 1 本の動画に焼いて置く（カットごとのクリップにすると、書き出しで
+        # クリップの数だけ入力を開き、4 分の曲ではメモリが 10GB を超える）
+        baked = await self._bake_shots(project_id, work, cuts, [files[k] for k in cut_keys], tl)
+        cmds.append(
+            AddClip(
+                track_id=tid,
+                asset_id=baked.id,
+                start_frame=cuts[0].start,
+                duration_frames=cuts[-1].end - cuts[0].start,
+                clip_id=str(uuid4()),
+                transform=ClipTransform(fit=FitMode.FILL),
+            )
+        )
+        # V11 の形（白は左から、黒は左右の鏡像で右から。小節の最後の拍で中央に重なる）
+        if bars:
+            shapes = {}
+            for color, mirror in ((mv.MOTIF_WHITE, False), (mv.MOTIF_BLACK, True)):
+                out = work / f"mv_motif_{shape}_{int(mirror)}_{uuid4().hex[:6]}.png"
+                img_ = await asyncio.to_thread(mv.motif_image, shape, color, w, h, mirror)
+                await asyncio.to_thread(img_.save, out)
+                shapes[mirror] = await asset(out, f"MV の{mv.MOTIF_LABEL[shape]}")
+            for f0, f3, f4 in bars:
+                for mirror, tid_, side in ((False, white_tid, -1), (True, black_tid, 1)):
+                    cid = str(uuid4())
+                    cmds.append(
+                        AddClip(
+                            track_id=tid_,
+                            asset_id=shapes[mirror].id,
+                            start_frame=f0,
+                            duration_frames=f4 - f0,
+                            clip_id=cid,
+                            transform=ClipTransform(fit=FitMode.FILL),
+                        )
                     )
+                    cmds.append(
+                        SetClipAnimation(
+                            clip_id=cid,
+                            animation=ClipAnimation(keyframes=mv.motif_keys(f0, f3, f4, side)),
+                        )
+                    )
+        # 統合版 V6: 各サビの最初のカットで、前のショットにインクの穴をあけて次を現す
+        entries = mv.chorus_entries(cuts, spans, bt.times, fps)
+        for seed, j in enumerate(entries):
+            prev, cur = cuts[j - 1], cuts[j]
+            frames = await asyncio.to_thread(
+                _ink_overlay,
+                files[cut_keys[j - 1]],
+                prev,
+                fps,
+                shape if prev.shot == "plane" else None,
+                ink,
+                seed,
+                w,
+                h,
+            )
+            # 10 枚を 1 本の透過の動画（PNG の mov）にまとめる（1 フレームずつのクリップにすると
+            # 書き出しの入力が増え、メモリが足りなくなる）
+            tmp = work / f"mv_ink_{seed}_{uuid4().hex[:6]}"
+            tmp.mkdir(parents=True, exist_ok=True)
+            # 最後に透明の 1 枚を足す（動画の長さの丸めで 10 フレームに 1 つ足りなくならないように）
+            for i, fr in enumerate([*frames, frames[-1].copy()]):
+                if i == len(frames):
+                    fr.putalpha(0)
+                await asyncio.to_thread(fr.save, tmp / f"{i:02d}.png")
+            out = work / f"{tmp.name}.mov"
+            await c.ffmpeg.run(
+                [
+                    "-y",
+                    "-framerate",
+                    f"{tl.fps_num}/{tl.fps_den}",
+                    "-i",
+                    str(tmp / "%02d.png"),
+                    "-c:v",
+                    "png",
+                    "-pix_fmt",
+                    "rgba",
+                    str(out),
+                ]
+            )
+            await asyncio.to_thread(shutil.rmtree, tmp, True)
+            a_ = AssetRead.model_validate(
+                await c.timeline.register_generated(
+                    project_id, out, AssetKind.VIDEO, "build", "MV のインクの転換"
                 )
-            cid = str(uuid4())
-            n = cut.end - cut.start
+            )
             cmds.append(
                 AddClip(
-                    track_id=tid,
-                    asset_id=made[key].id,
-                    start_frame=cut.start,
-                    duration_frames=n,
-                    clip_id=cid,
+                    track_id=ink_tid,
+                    asset_id=a_.id,
+                    start_frame=cur.start,
+                    duration_frames=len(frames),
+                    clip_id=str(uuid4()),
                     transform=ClipTransform(fit=FitMode.FILL),
                 )
             )
-            cam = mv.camera(cut.shot, n, fps)
-            if cam:
-                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=cam)))
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
         await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
         await c.timeline.submit(
@@ -1011,13 +1133,102 @@ class BuildService:
                 command=Batch(commands=cmds), origin=CommandOrigin.USER, description="MV のショット"
             ),
         )
+        used = {"beat_cut": len(cuts)}
+        if entries:
+            used["transition_shape"] = len(entries)
         await c.design.record(
-            project_id, "mv_shots", {"used": {"beat_cut": len(cuts)}, "cuts": len(cuts)}
+            project_id,
+            "mv_shots",
+            {"used": used, "cuts": len(cuts), "ink": len(entries), "motif": len(bars)},
         )
-        return [
-            f"絵から {len(made)} 種のショットを作り、"
+        notes = [
+            f"絵から {len(files)} 種のショットを作り、"
             f"拍に合わせて {len(cuts)} カットに切り替えました"
         ]
+        if entries:
+            notes.append(f"サビの頭 {len(entries)} か所をインクの転換にしました")
+        if bars:
+            notes.append(
+                f"サビの前の {len(bars)} 小節に、白と黒の{mv.MOTIF_LABEL[shape]}を置きました"
+            )
+        return notes
+
+    async def _bake_shots(
+        self, project_id: str, work: Path, cuts: list[Any], paths: list[Path], tl: Any
+    ) -> AssetRead:
+        """MV のカット（絵とカメラ）を 40 カットずつ書き出してつなぎ、1 本の動画にする。"""
+        c = self.c
+        fps_f = Fraction(tl.fps_num, tl.fps_den)
+        fps = float(fps_f)
+        items = [
+            (p, x.end - x.start, mv.camera(x.shot, x.end - x.start, fps))
+            for p, x in zip(paths, cuts, strict=True)
+        ]
+        tmp = work / f"mv_bake_{uuid4().hex[:6]}"
+        tmp.mkdir(parents=True, exist_ok=True)
+        parts = []
+        try:
+            spans = mv_bake.groups(len(items))
+            for gi, (a, b) in enumerate(spans):
+                part = tmp / f"part_{gi:03d}.mp4"
+                last = 1 if b == len(items) else 0
+                await c.ffmpeg.run(
+                    ["-y", *mv_bake.group_args(items[a:b], fps_f, tl.width, tl.height, part, last)]
+                )
+                parts.append(part)
+            lst = tmp / "list.txt"
+            lst.write_text(mv_bake.concat_list(parts), encoding="utf-8")
+            out = work / f"mv_shots_{uuid4().hex[:6]}.mp4"
+            await c.ffmpeg.run(
+                ["-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out)]
+            )
+        finally:
+            await asyncio.to_thread(shutil.rmtree, tmp, True)
+        return AssetRead.model_validate(
+            await c.timeline.register_generated(
+                project_id, out, AssetKind.VIDEO, "build", f"MV のショット（{len(cuts)} カット）"
+            )
+        )
+
+    async def _motif_shape(self, texts: list[str]) -> str:
+        """統合版 V11: 歌詞から、意味が対になる 2 語と形を LLM に選ばせる。選べないときは円。"""
+        body = "\n".join(t for t in texts if t.strip())[:4000]
+        if not body:
+            return "circle"
+        schema = {
+            "type": "object",
+            "properties": {
+                "pair": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+                "shape": {"type": "string", "enum": list(mv.MOTIF_SHAPES)},
+            },
+            "required": ["pair", "shape"],
+        }
+        msgs = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "あなたは MV の演出家です。歌詞から、意味が対になる 2 語"
+                    "（光と影、昼と夜 など）を 1 組だけ選び、その対を表す形を "
+                    "circle・star・heart・diamond・triangle・cross の 6 つから 1 つ選びます。"
+                    'JSON {"pair": ["語1", "語2"], "shape": "..."} だけを出します。'
+                ),
+            ),
+            ChatMessage(role="user", content="歌詞:\n" + body),
+        ]
+        try:
+            res = await self.c.llm.complete_json(
+                TaskType.EDIT_PLAN, msgs, schema, temperature=0.3, retries=1
+            )
+            shape = str(res.data.get("shape", ""))
+        except Exception as exc:  # noqa: BLE001 - 形が選べなくても円で出す
+            log.info("motif_shape_fallback", error=type(exc).__name__)
+            return "circle"
+        return shape if shape in mv.MOTIF_SHAPES else "circle"
 
     async def _letterbox(
         self,
@@ -1044,14 +1255,17 @@ class BuildService:
                     project_id, out, AssetKind.IMAGE, "build", "MV の黒帯"
                 )
             )
+        # 上と下の帯は同じ時間に出るので、別のトラックに置く（同じトラックでは重ねられない）
         tracks = {t.name: t for t in tl.tracks}
-        if "MV・黒帯" in tracks:
-            bid = tracks["MV・黒帯"].id
-            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == bid]
-        else:
-            bid = str(uuid4())
-            cmds.append(AddTrack(kind=TrackKind.VIDEO, name="MV・黒帯", track_id=bid))
-            cmds.append(MoveTrack(track_id=bid, index=1000))
+        bids: dict[str, str] = {}
+        for side, name in zip(("top", "bottom"), MV_BAR_TRACKS, strict=True):
+            if name in tracks:
+                bids[side] = tracks[name].id
+                cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == bids[side]]
+            else:
+                bids[side] = str(uuid4())
+                cmds.append(AddTrack(kind=TrackKind.VIDEO, name=name, track_id=bids[side]))
+                cmds.append(MoveTrack(track_id=bids[side], index=1000))
         lf = mv.LETTERBOX_FRAMES
         for a0, a1 in boxes:
             f0, f1 = round(a0 * fps), round(a1 * fps)
@@ -1061,7 +1275,7 @@ class BuildService:
                 cid = str(uuid4())
                 cmds.append(
                     AddClip(
-                        track_id=bid,
+                        track_id=bids[side],
                         asset_id=bars[side].id,
                         start_frame=f0,
                         duration_frames=f1 - f0 + lf,
