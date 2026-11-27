@@ -133,13 +133,16 @@ def ranks(texts: list[str]) -> list[Rank]:
         # ような平仮名と記号だけで、後ろに「の」が続くものは数えない
         if not m or not re.fullmatch(r"[ぁ-んー、。！!？?\s]{0,8}", t[: m.start()]):
             continue
-        if t[m.end() : m.end() + 1] == "の":
-            continue
+        if t[m.end() : m.end() + 1] == "の" or t[m.end() :].lstrip().startswith(("から", "まで")):
+            continue  # 「第11位から第3位まで発表」は発表の前置き
         n = _num(m.group(1))
         if n <= 0 or any(r.number == n for r in out):
             continue
         rest = re.sub(r"^[はがの、:：！!\s]+", "", t[m.end() :])
-        name = re.split(r"[。！？!?、]|です|でした|だ$", rest, maxsplit=1)[0].strip()
+        name = re.split(r"[。！？!?]", rest, maxsplit=1)[0].strip()
+        # 文末の言い方（です・なのだ・なの・だよ など）を外す。キャラクターの口調が付くため
+        name = re.sub(r"(?:でした|です|なのだ|なのよ|なの|だよ|だね|だわ|だ|よ|ね|わ)+$", "", name)
+        name = name.rstrip("、, ")
         out.append(Rank(i, n, name[:12]))
     if len(out) < 2 or [r.number for r in out] != sorted((r.number for r in out), reverse=True):
         return []

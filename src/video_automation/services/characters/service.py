@@ -207,6 +207,12 @@ class CharacterService:
             raise CommandError("generate voices and synchronize subtitles first")
         fps = p.fps_num / p.fps_den
         total = max(tl.duration_frames, max(seg.end_frame for seg, _ in lines) + round(fps))
+        # 終了画面（統合版 S9）の間は立ち絵を出さない（動画の枠・登録の円に重なる）
+        es = (((p.design_manifest or {}).get("direction") or {}).get("outline") or {}).get(
+            "end_screen"
+        )
+        if es:
+            total = max(max(seg.end_frame for seg, _ in lines), round(float(es) * fps))
         sides = ["left", "right"] if len(cast) > 1 else ["right"]
         key_src = {
             "v": OVERLAY_VERSION,

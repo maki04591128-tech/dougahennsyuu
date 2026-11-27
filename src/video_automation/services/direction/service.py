@@ -1223,6 +1223,10 @@ class DirectionService:
             for k_lt, (spk, at) in enumerate(sched):
                 # 次の話者の名前帯が出たら、前の帯は消す（同じ所に重ねない）
                 nxt = sched[k_lt + 1][1] if k_lt + 1 < len(sched) else total
+                # 題名が出ている間・消える動きの間に重ねない（実機: 同時に 3 つ動いて止まった）
+                at = max(at, title_end + frames(0.2)) if at < title_end + frames(0.2) else at
+                if nxt - at < frames(1.5):
+                    continue
                 lt_limit = prof.allowance(Component.LOWER_THIRD)
                 if at >= total - frames(1.0) or (
                     0 < lt_limit <= used.get(Component.LOWER_THIRD, 0)
@@ -1394,6 +1398,24 @@ class DirectionService:
                     transform=place(row, 0.5, 0.40),
                 )
                 animate(cid, n, mspec.pop)
+                # 数字 → 解説のカードの順に出す（同じ所に重ねない）: 数字の間に始まるカード・図・
+                # 項目は、数字が消えてから出す
+                delay_ids = {track[x] for x in (ITEM_TRACK,) if x in track} | {fig_t}
+                for k_c, c in enumerate(cmds):
+                    if (
+                        isinstance(c, AddClip)
+                        and c.track_id in delay_ids
+                        and c.duration_frames is not None
+                        and at <= c.start_frame < at + n
+                        and c.start_frame + c.duration_frames > at + n + frames(0.5)
+                    ):
+                        cut = at + n - c.start_frame
+                        cmds[k_c] = c.model_copy(
+                            update={
+                                "start_frame": at + n,
+                                "duration_frames": c.duration_frames - cut,
+                            }
+                        )
                 b_at = max(at + n, end - frames(pp.RANK_BOARD_SEC))
                 if end - b_at < frames(1.5):
                     continue
