@@ -749,6 +749,13 @@ async def test_trailer_title_after_act3_and_date_card(dclient):
     (date,) = by["trailer_date"]
     assert date["start_frame"] == title["start_frame"] + 90
     assert by["background"][-1]["end_frame"] >= date["end_frame"]
+    # 統合版 L3・L7: 予告編の題名に光の筋と光沢
+    from pathlib import Path
+
+    log_ = Path(c.app.state.container.settings.blender_path).parent / "calls.jsonl"
+    calls = [json.loads(x) for x in log_.read_text("utf-8").splitlines()]
+    last_title = [x for x in calls if x["script"] == "title_card"][-1]
+    assert last_title["sun_beams"] is True and last_title["gloss_at"] > 0
 
 
 async def test_series_logo_op_and_check(dclient, media_dir):
@@ -963,3 +970,50 @@ async def test_podcast_waveform_per_speaker(dclient):
     # 解説では波形を出さない
     _, by = await _apply(c, pid, sid, "explainer")
     assert not by.get("podcast_wave")
+
+
+async def test_story_cutout_image_gets_parallax(dclient, media_dir):
+    """統合版 M8: 朗読・物語の切り抜いた絵は、ケン・バーンズの代わりに横へ被写体の幅の 3% 動く。"""
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    img = Image.new("RGBA", (300, 400), (0, 0, 0, 0))
+    img.paste((220, 120, 90, 255), (60, 40, 240, 380))
+    src = media_dir / "cutout_m8.png"
+    img.save(src)
+    a = (await c.post("/assets/import", json={"project_id": pid, "path": str(src)})).json()
+    plan = {
+        "title": "",
+        "subtitle": "",
+        "shots": [{"kind": "image", "from_line": 2, "to_line": 4, "asset_id": a["id"]}],
+    }
+
+    async def image_clip(purpose):
+        await c.put(f"/projects/{pid}/design", json={"purpose": purpose})
+        await _job(c, await c.post("/direction/apply", json={"script_id": sid, "plan": plan}))
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        roles = await c.app.state.container.design.clip_roles(pid)
+        return next(x for x in tl["clips"] if roles.get(x["id"]) == "image")
+
+    clip = await image_clip("story")
+    keys = clip["animation"]["keyframes"]
+    xs = [k["x"] for k in keys if k.get("x") is not None]
+    assert len(xs) == 2 and xs[0] < 0 < xs[1]
+    assert abs((xs[1] - xs[0]) - 0.03 * 180 / 640 * (clip["transform"]["scale"] * 360 / 400)) < 0.02
+    assert clip["animation"].get("preset") != "ken_burns_in"
+    # 解説（2.5D を使わない用途）では今までどおりケン・バーンズ
+    clip = await image_clip("explainer")
+    assert not [k for k in clip["animation"]["keyframes"] if k.get("x")]
+
+
+async def test_kids_background_is_liquid(dclient):
+    """統合版 M6: 子ども向けの動く背景はメタボールの液体。"""
+    from pathlib import Path
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    await _apply(c, pid, sid, "kids")
+    log_ = Path(c.app.state.container.settings.blender_path).parent / "calls.jsonl"
+    calls = [json.loads(x) for x in log_.read_text("utf-8").splitlines()]
+    assert [x["style"] for x in calls if x["script"] == "motion_bg"][-1] == "liquid"

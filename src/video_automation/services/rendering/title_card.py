@@ -223,6 +223,7 @@ class TitleCardService:
                     "output_dir": tmp,
                     "animation": req.animation,
                     "gloss_at": gloss_at,
+                    "sun_beams": req.sun_beams,
                     "gloss_frames": gloss_frames(fps_num / fps_den),
                 },
             )

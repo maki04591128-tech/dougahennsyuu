@@ -468,3 +468,92 @@ def test_title_gloss_sweep(tmp_path):
     assert all(v > base * 1.15 for _, v in xs[1:-1])  # 帯が通っている間は明るい
     assert xs[0][0] < xs[-1][0]  # 左から右へ
     assert abs(bright_x(frames[-1])[1] - base) < base * 0.1  # 通り過ぎたら元の色
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_sun_beams(tmp_path):
+    """統合版 L3: 予告編の題名から下へ光の筋（透過の書き出しで、筋の所も半透明で残る）。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+    out = {}
+    for beams in (False, True):
+        d = tmp_path / str(beams)
+        d.mkdir()
+        args = {
+            "text": "終章",
+            "width": 320,
+            "height": 180,
+            "fps": 30,
+            "frames": 1,
+            "font_path": font if Path(font).is_file() else None,
+            "text_color": [0.95, 0.9, 0.8, 1],
+            "outline": False,
+            "outline_color": [0, 0, 0, 1],
+            "size": 1.0,
+            "position": "center",
+            "output_dir": str(d),
+            "animation": "none",
+            "sun_beams": beams,
+            "result_path": str(d / "r.json"),
+            "samples": 1,
+        }
+        (d / "a.json").write_text(json.dumps(args), encoding="utf-8")
+        script = Path(__file__).resolve().parents[1] / (
+            "src/video_automation/integrations/blender/scripts/title_card.py"
+        )
+        r = subprocess.run(
+            [BPY, str(script), "--", str(d / "a.json")], capture_output=True, text=True
+        )
+        assert r.returncode == 0, r.stderr[-2000:]
+        a = np.asarray(Image.open(d / "frame_0001.png").convert("RGBA"))
+        out[beams] = a[..., 3]
+    below = slice(140, 180)  # 文字より下
+    assert out[False][below].max() == 0
+    assert (out[True][below] > 10).mean() > 0.05  # 下へ光の筋が出る
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_liquid_background_loops(tmp_path):
+    """統合版 M6: メタボールの液体の背景が描かれ、フレームごとに動く。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    args = {
+        "style": "liquid",
+        "width": 160,
+        "height": 90,
+        "fps": 30,
+        "frames": 6,
+        "colors": {
+            "base": [0, 0, 0, 1],
+            "base2": [0.1, 0.1, 0.1, 1],
+            "main": [0.9, 0.4, 0.1, 1],
+            "accent": [0.1, 0.6, 0.9, 1],
+        },
+        "output_dir": str(tmp_path / "o"),
+        "result_path": str(tmp_path / "r.json"),
+    }
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/motion_bg.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    fr = [
+        np.asarray(Image.open(p).convert("RGBA")).astype(int)
+        for p in sorted((tmp_path / "o").glob("*.png"))
+    ]
+    assert len(fr) == 6 and all((f[..., 3] > 0).mean() > 0.03 for f in fr)
+    assert np.abs(fr[0] - fr[3]).mean() > 1  # 動いている

@@ -463,3 +463,25 @@ async def test_transition_becomes_cut_without_handle(mclient, imgs, media_dir):
     await anim(c, pid, clip_id="b", transition={"type": "dissolve", "duration_frames": 10})
     m = mean(await frame(c, pid, 33))
     assert m[2] > 200 and m[0] < 30, m  # 混ざらずに青（カット）
+
+
+async def test_motion_blur_ghost_for_moving_image(mclient, imgs, tmp_path):
+    """統合版 E4: 動く画像の後ろに、半フレーム前の姿を不透明度 50% で重ねる（止まると消える）。"""
+    c = mclient
+    pid, (cid,) = await _setup(c, imgs, ["red"], fit="fit")
+    await anim(c, pid, clip_id=cid, preset="slide_in_left_far")
+    render = c.app.state.container.render
+
+    async def shot(f, blur):
+        out = tmp_path / f"f{f}_{int(bool(blur))}.png"
+        plan = await render.plan(pid, W, H, out, single_frame=f, blur=blur)
+        await c.app.state.container.ffmpeg.run(["-y", *plan.args])
+        return rgb(out.read_bytes())
+
+    half = lambda r, g, b: 50 < r < 200 and g < 60 and b < 60  # noqa: E731
+    sharp, ghost = await shot(10, set()), await shot(10, {cid})
+    assert bbox(sharp, half) is None  # 付けなければ残像は無い
+    main = bbox(ghost, lambda r, g, b: r > 200 and g < 60)
+    trail = bbox(ghost, half)
+    assert trail is not None and trail[0] < main[0]  # 左から入る動きの後ろ（左）に残像
+    assert bbox(await shot(30, {cid}), half) is None  # 止まった後は残像なし

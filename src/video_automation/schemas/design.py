@@ -80,6 +80,9 @@ class Component(StrEnum):
     GLOW = "glow"  # L4: 明るい所の光のにじみ
     HALATION = "halation"  # L5: 赤いにじみ（フィルムの質感）
     GLOSS = "gloss"  # L7: 題名を斜めの光の帯が 1 回通る
+    PARALLAX = "parallax"  # M8: 切り抜いた絵を横に少し動かす 2.5D
+    SUN_BEAMS = "sun_beams"  # L3: 題名からの光の筋
+    LIQUID = "liquid"  # M6: メタボールの液体の背景
 
 
 # 部品の許可: 0=使わない、-1=制限なし、n>0=1 本の動画で n 回まで

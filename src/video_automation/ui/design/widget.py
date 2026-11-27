@@ -52,6 +52,9 @@ PART = {
     "glow": "グロー",
     "halation": "ハレーション",
     "gloss": "光沢のスイープ",
+    "parallax": "2.5D（切り抜きの視差）",
+    "sun_beams": "光の筋",
+    "liquid": "リキッド",
 }
 
 

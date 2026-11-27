@@ -159,12 +159,52 @@ def floating(a: dict, frames: int, rng: random.Random):  # noqa: ANN201
     return step
 
 
+def liquid(a: dict, frames: int, rng: random.Random):  # noqa: ANN201
+    """統合版 M6: メタボールの液体。主色と強調色の 2 つの群れが、くっついたり離れたりして漂う。
+
+    動きは frames で 1 周する（継ぎ目なく繰り返す）。"""
+    c = a["colors"]
+    groups = []
+    for name, col, n in (("Liq", c["main"], 6), ("Acc", c["accent"], 3)):
+        mb = bpy.data.metaballs.new(name)
+        mb.resolution = 0.18
+        mb.render_resolution = 0.12
+        mb.threshold = 0.6
+        o = bpy.data.objects.new(name, mb)
+        o.color = tuple(col)
+        bpy.context.scene.collection.objects.link(o)
+        els = []
+        for _ in range(n):
+            e = mb.elements.new()
+            e.radius = 1.2 + 1.4 * rng.random()
+            base = (rng.uniform(-7, 7), rng.uniform(-3.5, 3.5))
+            amp = (rng.uniform(1.0, 2.6), rng.uniform(0.6, 1.6))
+            els.append((e, base, amp, rng.random() * 2 * math.pi, rng.choice((1, 2))))
+        groups.append(els)
+    _camera(True, 18.0, (0, 0, 0), (0, 0, 20))
+
+    def step(f: int) -> None:
+        ph = 2 * math.pi * f / frames
+        for els in groups:
+            for e, base, amp, p, k in els:
+                e.co = (
+                    base[0] + amp[0] * math.sin(k * ph + p),
+                    base[1] + amp[1] * math.cos(ph + 1.3 * p),
+                    0.0,
+                )
+
+    return step
+
+
+STYLES = {"floating": floating, "liquid": liquid}
+
+
 def main() -> None:
     a = load_args()
     w, h, fps, frames = int(a["width"]), int(a["height"]), int(a["fps"]), int(a["frames"])
     scene = _scene(w, h, fps, frames)
     rng = random.Random(int(a.get("seed", 7)))
-    step = (floating if a.get("style") == "floating" else iso_blocks)(a, frames, rng)
+    step = STYLES.get(a.get("style", ""), iso_blocks)(a, frames, rng)
     out = Path(a["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
     files = []

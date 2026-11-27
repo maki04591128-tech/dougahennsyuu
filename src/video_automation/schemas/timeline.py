@@ -440,3 +440,4 @@ class TitleCardRequest(BaseModel):
     box_opacity: float = Field(default=0.55, ge=0, le=1)
     # 統合版 L7: 入りが終わった後、斜めの白い帯（不透明度 40%・加算）が 25f で 1 回通る
     gloss: bool = False
+    sun_beams: bool = False  # 統合版 L3: 文字から下へ光の筋（コンポジタの Sun Beams）

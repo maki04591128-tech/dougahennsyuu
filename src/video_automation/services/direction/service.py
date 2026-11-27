@@ -26,7 +26,13 @@ from video_automation.app.settings import Settings
 from video_automation.database.database import Database
 from video_automation.database.models import Project, Script, ScriptCharacter, ScriptSegment
 from video_automation.integrations.ffmpeg.runner import FFmpeg
-from video_automation.schemas.animation import CardRequest, InfographicRequest
+from video_automation.schemas.animation import (
+    CardRequest,
+    ClipAnimation,
+    Easing,
+    InfographicRequest,
+    Keyframe,
+)
 from video_automation.schemas.design import Component, DesignProfile, Purpose
 from video_automation.schemas.direction import (
     MAIN_KINDS,
@@ -145,6 +151,37 @@ def gap_keyword(text: str, names: tuple[str, ...] = ()) -> str:
             continue
         words.append(w)
     return max(words, key=len) if words else ""
+
+
+PARALLAX_SHIFT = 0.03  # 統合版 M8: カメラの横の移動は最大で被写体の幅の 3%
+
+
+def _has_alpha(path: Path) -> bool:
+    """透明の部分がある画像（切り抜いた絵）か。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            if "A" not in im.getbands() and "transparency" not in im.info:
+                return False
+            lo = im.convert("RGBA").getchannel("A").getextrema()[0]
+            return isinstance(lo, int | float) and lo < 250
+    except OSError:
+        return False
+
+
+def with_parallax(anim: ClipAnimation | None, length: int, dx: float) -> ClipAnimation:
+    """統合版 M8: 入り・出の動きに、x を −dx/2 → +dx/2（等速）で足す。"""
+    keys = {k.frame: k.model_copy() for k in (anim.keyframes if anim else [])}
+    for f, x in ((0, -dx / 2), (max(1, length - 1), dx / 2)):
+        if f in keys:
+            keys[f].x = round(x, 5)
+        else:
+            keys[f] = Keyframe(frame=f, x=round(x, 5), easing=Easing.LINEAR)
+    out = sorted(keys.values(), key=lambda k: k.frame)
+    data = anim.model_dump() if anim else {}
+    data["keyframes"] = [k.model_dump() for k in out]
+    return ClipAnimation.model_validate(data)
 
 
 def names_of(lines: list[Any]) -> tuple[str, ...]:
@@ -707,10 +744,11 @@ class DirectionService:
         moving = prof is None or prof.allows(Component.BACKGROUND_MOTION)
         if moving and self.titles.blender.available:
             loud = prof is not None and prof.purpose.value in FLOATING_BG_PURPOSES
+            liquid = prof is not None and prof.allows(Component.LIQUID)  # 統合版 M6
             try:
                 return await self.titles.motion_background(
                     project_id,
-                    style="floating" if loud else "iso_blocks",
+                    style="liquid" if liquid else "floating" if loud else "iso_blocks",
                     base="#" + c0[2:],
                     base2="#" + c1[2:],
                     main=main,
@@ -798,6 +836,13 @@ class DirectionService:
             cmds.append(
                 SetClipAnimation(clip_id=clip_id, preset=name, intensity=round(amount / full, 4))
             )
+
+        def parallax_dx(a: AssetRead, box: float) -> float:
+            """切り抜いた絵なら、横に動かす量（画面の幅に対する比）。そうでなければ 0。"""
+            if not (a.width and a.height) or not _has_alpha(Path(self.settings.data_dir) / a.path):
+                return 0.0
+            disp_w = min(box * w, box * h * a.width / a.height)
+            return PARALLAX_SHIFT * disp_w / w
 
         tl = await self.timeline.get_timeline(p.id)
         total = max(tl.duration_frames, lines[-1].end)
@@ -974,6 +1019,9 @@ class DirectionService:
             gloss = prof is not None and prof.allows(Component.GLOSS)  # 統合版 L7
             if gloss:
                 use(Component.GLOSS)
+            beams = prof is not None and prof.allows(Component.SUN_BEAMS)  # 統合版 L3
+            if beams:
+                use(Component.SUN_BEAMS)
             t_asset = await self.titles.create(
                 TitleCardRequest(
                     project_id=p.id,
@@ -992,6 +1040,7 @@ class DirectionService:
                     outline_color=title_outline,
                     font=heading_font,
                     gloss=gloss,
+                    sun_beams=beams,
                 )
             )
             t_len = min(title_end, media_frames(t_asset, title_end))
@@ -1234,8 +1283,18 @@ class DirectionService:
                     role="image",
                     transform=ClipTransform(fit=FitMode.FIT, scale=box, y=zone_cy - 0.5),
                 )
-                animate(cid, length)
-                ken_burns(cid, img, length, box)
+                dx = parallax_dx(img, box) if prof is not None else 0.0
+                if dx and prof is not None and prof.allows(Component.PARALLAX):
+                    # 統合版 M8: 切り抜いた絵（透明の部分がある）は、ケン・バーンズの代わりに
+                    # 絵を横へ被写体の幅の 3% だけ動かし、後ろの背景との間に奥行きを出す
+                    use(Component.PARALLAX)
+                    anim_ = element_animation(length, mspec, ffps, entrance="fade")
+                    cmds.append(
+                        SetClipAnimation(clip_id=cid, animation=with_parallax(anim_, length, dx))
+                    )
+                else:
+                    animate(cid, length)
+                    ken_burns(cid, img, length, box)
                 shown.append((start, end))
 
         # テロップ（その発話の間。重なる分は前を短くする）
