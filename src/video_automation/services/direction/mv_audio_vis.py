@@ -5,6 +5,8 @@
 - M10 スペクトラム: 2 回目以降の間奏に、画面の下から 10% の位置に横幅 60% で棒 32 本。棒の高さは
   40〜8000Hz を対数で 32 に分けた各帯域の強さ（曲全体の 95 パーセンタイルで割る。最大は画面の
   高さの 20%）。下がるときは 150ms で戻す
+- T29 文字で絵を作る: 1 曲で最初の間奏の最初の 1 小節。そのときのショットの明るいマスに直前の
+  歌詞の文字を並べる（下の text_art_frames）
 """
 
 from __future__ import annotations
@@ -140,3 +142,79 @@ def key_char_image(ch: str, w: int, h: int, font: str | None, color: str) -> Any
     ImageDraw.Draw(im).text((w / 2, h / 2), ch, font=f, fill=(*_rgb(color), round(255 * 0.12)),
                             anchor="mm")  # fmt: skip
     return im
+
+
+# 統合版 T29: 文字で絵を作る（1 曲で最初の間奏の最初の 1 小節）
+T29_COLS, T29_ROWS = 48, 27
+T29_LUMA = 0.25
+T29_MOVE = 18  # 各文字が自分のマスへ動く長さ（easeOutCubic）
+T29_OUT = 6
+
+
+def text_art_cells(
+    img: Any, cols: int = T29_COLS, rows: int = T29_ROWS
+) -> list[tuple[int, int, float]]:
+    """画を cols×rows のマスに分け、Rec.709 の輝度の平均が T29_LUMA 以上のマス（列, 行, 輝度）。"""
+    rgb = np.asarray(img.convert("RGB").resize((cols, rows), resample=2), dtype=np.float32) / 255
+    # resize の BOX/BILINEAR の平均で各マスの平均の近似にする（輝度は線形の値ではなく画素値で取る）
+    luma = rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+    return [(c, r, float(luma[r, c])) for r in range(rows) for c in range(cols)
+            if luma[r, c] >= T29_LUMA]  # fmt: skip
+
+
+def text_art_frames(
+    shot: Any,
+    text: str,
+    n: int,
+    w: int,
+    h: int,
+    main: str,
+    ink: str,
+    font: str | None,
+    origin: tuple[float, float] | None = None,
+) -> list[Any]:
+    """T29（n フレーム。不透明の画の列）。画面を 48×27 のマスに分け、明るいマスにだけ直前の歌詞の
+    文字を前から繰り返して置く（大きさは 1 マスの 0.9 倍、不透明度はマスの輝度）。マスの外と文字の
+    後ろは主色。文字は origin（直前の行の位置。既定は画面の下 20% の中央）から、下の段から 1 段 1f
+    ずらして各 18f で動く。最後の 6f で不透明度 1→0（下の画が見えてくる）。"""
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    chars = [ch for ch in text if not ch.isspace()] or ["・"]
+    cells = text_art_cells(shot)
+    cw, chh = w / T29_COLS, h / T29_ROWS
+    size = max(8, round(min(cw, chh) * 0.9))
+    f = (ImageFont.truetype(font, size) if font and Path(font).is_file()
+         else ImageFont.load_default(size))  # fmt: skip
+    glyphs: dict[str, Any] = {}
+    for ch in set(chars):
+        g = Image.new("L", (size * 2, size * 2), 0)
+        ImageDraw.Draw(g).text((size, size), ch, font=f, fill=255, anchor="mm")
+        glyphs[ch] = g
+    ox, oy = origin or (w / 2, h * 0.8)
+    col = _rgb(ink)
+    bg = (*_rgb(main), 255)
+    items = [(chars[i % len(chars)], (c + 0.5) * cw, (r + 0.5) * chh, lum, T29_ROWS - 1 - r)
+             for i, (c, r, lum) in enumerate(cells)]  # fmt: skip
+    tinted: dict[tuple[str, int], Any] = {}
+    out = []
+    for t in range(n):
+        im = Image.new("RGBA", (w, h), bg)
+        for ch, x, y, lum, delay in items:
+            k = min(1.0, max(0.0, (t - delay) / T29_MOVE))
+            e = 1 - (1 - k) ** 3
+            px, py = ox + (x - ox) * e, oy + (y - oy) * e
+            key = (ch, round(lum * 32))
+            fill = tinted.get(key)
+            if fill is None:
+                g = glyphs[ch]
+                fill = Image.new("RGBA", g.size, (*col, 255))
+                fill.putalpha(g.point(lambda v, a_=key[1] / 32: round(v * min(1.0, a_))))
+                tinted[key] = fill
+            im.alpha_composite(fill, (round(px - size), round(py - size)))
+        if t >= n - T29_OUT:
+            k = (n - t) / (T29_OUT + 1)
+            im.putalpha(im.getchannel("A").point(lambda v, k_=k: round(v * k_)))
+        out.append(im)
+    return out

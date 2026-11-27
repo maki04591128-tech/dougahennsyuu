@@ -46,6 +46,7 @@ EXTENDS_PREVIOUS = {
     TransitionType.WHIP,
     TransitionType.PAGE_TURN,
     TransitionType.CUBE,
+    TransitionType.INK,
 }
 
 
@@ -158,6 +159,13 @@ def clip_filters(
         elif tran.type == TransitionType.PAGE_TURN:  # 統合版 E11: 右下の角から左上へ
             u = f"min(max({gt}/{num(d)},0),1)"
             alpha_terms.append(f"gte(X/W+Y/H,2*(1-{ease(u, Easing.CUBIC_IN_OUT)}))")
+        elif tran.type == TransitionType.INK:  # 統合版 Y10: 中央から縁の揺れた墨のしみで現す
+            u = f"min(max({gt}/{num(d)},0),1)"
+            alpha_terms.append(
+                "lte(hypot(X/W-0.5,(Y/H-0.5)*H/W)*1.3"
+                "+0.06*sin(X*0.05+Y*0.031)*sin(Y*0.043-X*0.027),"
+                f"0.9*{ease(u, Easing.CUBIC_IN_OUT)})"
+            )
         elif tran.type not in SLIDE_DIR and tran.type != TransitionType.ZOOM_PUNCH:
             alpha_terms.append(f"min(max({gt}/{num(half)},0),1)")
         if tran.type not in SLIDE_DIR and tran.type != TransitionType.ZOOM_PUNCH:

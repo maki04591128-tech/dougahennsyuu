@@ -317,6 +317,12 @@ async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path
             "notes": [],
         }
 
+    from video_automation.integrations.ocr.engine import FakeOcr, OcrLine, OcrResult, OcrWord
+
+    # 統合版 N12（録画）: 最初の文の頭の画面に「歯車」の大きな文字がある（小さい字は N13）
+    c.app.state.container.screencast.ocr = FakeOcr(
+        {"f000": OcrResult(1280, 720, [OcrLine([OcrWord("歯車", 700.0, 60.0, 400.0, 300.0)])])}
+    )
     fake.chat_responder = responder
     r = await c.post(
         f"/build/{plan['project_id']}/run",
@@ -328,6 +334,10 @@ async def test_tutorial_from_screen_recording(bclient, fake, media_dir, tmp_path
     tracks = {t["name"]: t for t in tl["tracks"]}
     rec = [x for x in tl["clips"] if x["track_id"] == tracks["画面録画"]["id"]]
     assert rec and rec[0]["volume"] == 0.0 and rec[0]["start_frame"] == 0
+    assets = {a["id"]: a["name"] for a in tl["assets"]}
+    marks = [x for x in tl["clips"] if x["track_id"] == tracks["手描きの印"]["id"]]
+    assert [assets[x["asset_id"]] for x in marks] == ["手描きの丸（N12・録画）"]
+    assert marks[0]["transform"] == rec[0]["transform"]  # 録画と同じ置き方
     # 立ち絵が無いので枠は画面の 9 割まで。左右の真ん中・字幕より上
     assert abs(rec[0]["transform"]["x"]) < 1e-6 and rec[0]["transform"]["y"] < 0
     order = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
