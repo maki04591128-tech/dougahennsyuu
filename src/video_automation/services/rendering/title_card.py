@@ -246,6 +246,7 @@ class TitleCardService:
                     "sun_beams": req.sun_beams,
                     "solid3d": req.solid3d,
                     "vertical": req.vertical,
+                    "rack_focus": req.rack_focus,
                     "gloss_frames": gloss_frames(fps_num / fps_den),
                 },
             )

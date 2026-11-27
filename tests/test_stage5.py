@@ -864,3 +864,49 @@ def test_title_vertical(tmp_path):
     assert last is not None and (last[3] - last[1]) > 2.5 * (last[2] - last[0])  # 縦に長い
     early = box(frames[3])
     assert early is None or early[3] < last[3]  # 上から順に現れる
+
+
+@pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")
+def test_title_rack_focus(tmp_path):
+    """統合版 L6: 題名の焦点を奥から文字へ 24f で送る（最初はぼけ、24f 目にはくっきり）。"""
+    import json
+    import subprocess
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    font = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+    args = {
+        "text": "記録",
+        "width": 320,
+        "height": 180,
+        "fps": 30,
+        "frames": 26,
+        "font_path": font if Path(font).is_file() else None,
+        "text_color": [1, 1, 1, 1],
+        "outline": False,
+        "outline_color": [0, 0, 0, 1],
+        "size": 1.0,
+        "position": "center",
+        "output_dir": str(tmp_path / "out"),
+        "animation": "none",
+        "rack_focus": True,
+        "result_path": str(tmp_path / "r.json"),
+        "samples": 4,
+    }
+    (tmp_path / "out").mkdir()
+    (tmp_path / "a.json").write_text(json.dumps(args), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / (
+        "src/video_automation/integrations/blender/scripts/title_card.py"
+    )
+    r = subprocess.run(
+        [BPY, str(script), "--", str(tmp_path / "a.json")], capture_output=True, text=True
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    frames = sorted((tmp_path / "out").glob("frame_*.png"))
+    first, last = (np.asarray(Image.open(f).getchannel("A")).astype(float) for f in
+                   (frames[0], frames[-1]))  # fmt: skip
+    assert (first > 250).sum() < (last > 250).sum() * 0.9  # 最初はぼけて芯が細い
+    partial = lambda a: ((a > 10) & (a < 245)).sum()  # noqa: E731
+    assert partial(first) > partial(last)  # ぼけの縁が広い

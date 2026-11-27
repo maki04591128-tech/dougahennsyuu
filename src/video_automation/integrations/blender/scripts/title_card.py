@@ -224,6 +224,38 @@ def entrance_frames(anim, n, fps=30):  # noqa: ANN001
 KEY_RGB, FILL_RGB, RIM_RGB = (1.0, 0.89, 0.78), (1.0, 1.0, 1.0), (0.435, 0.765, 1.0)  # L1
 
 
+RACK_FSTOP = 2.8
+RACK_FRAMES = 24
+RACK_FAR = 3.0  # 始めの焦点の距離（カメラから文字までの距離の倍）
+
+
+def rack_focus(scene, root, frames):  # noqa: ANN001
+    """統合版 L6: カメラの被写界深度（F-Stop 2.8）を入れ、焦点の距離を奥（文字までの距離の
+    3 倍）から文字の面へ 24f（easeInOutCubic）で送る。読ませる文字は焦点の面に置く。"""
+    cam = scene.camera
+    if cam is None:
+        return
+    cd = cam.data
+    dist = max(0.1, (cam.matrix_world.translation - root.matrix_world.translation).length)
+    cd.dof.use_dof = True
+    cd.dof.aperture_fstop = RACK_FSTOP
+    end = min(RACK_FRAMES + 1, max(2, frames))
+    cd.dof.focus_distance = dist * RACK_FAR
+    cd.dof.keyframe_insert("focus_distance", frame=1)
+    cd.dof.focus_distance = dist
+    cd.dof.keyframe_insert("focus_distance", frame=end)
+    ad = cd.animation_data
+    if ad is None or ad.action is None:
+        return
+    from bpy_extras import anim_utils
+
+    bag = anim_utils.action_get_channelbag_for_slot(ad.action, ad.action_slot)
+    for fc in bag.fcurves if bag is not None else []:
+        for kp in fc.keyframe_points:
+            kp.interpolation = "CUBIC"
+            kp.easing = "EASE_IN_OUT"
+
+
 def solid3d(scene, root):  # noqa: ANN001
     """統合版 T24: 文字に奥行き（文字の大きさの 12%）とベベル（1.5%）を付け、L1 の 3 点照明
     （キー #FFE3C8 100%・フィル 白 40%・リム #6FC3FF 15%）と L2 のリム（Fresnel IOR 0.95 →
@@ -541,6 +573,9 @@ def main() -> None:
 
     if a.get("solid3d"):  # 統合版 T24 立体の文字・L1 3 点照明・L2 リム
         solid3d(scene, root)
+
+    if a.get("rack_focus"):  # 統合版 L6 被写界深度とラックフォーカス
+        rack_focus(scene, root, frames)
 
     if a.get("sun_beams"):  # 統合版 L3（予告編の題名）
         sun_beams(scene, mat)
