@@ -40,3 +40,17 @@ def test_frames_each_kind():
     for kind in ("T30", "T32", "T33", "T34"):
         fr = list(ts.frames(kind, ph, 0, 60, 160, 90, None, PAL, 30, 120, "軽くて丈夫です。"))
         assert len(fr) == 60 and fr[-1].getbbox() is not None, kind
+
+
+def test_ball_events_jump_over_phrases():
+    """統合版 T51: 文節の上に玉。次の文節の頭に着くよう、前の文節から放物線で跳ぶ。"""
+    from fractions import Fraction
+
+    from video_automation.services.subtitle.formats import _ball_events
+
+    ev = _ball_events("今日は新しいリュックです", 0, 90, Fraction(30), "S", "A", 54, 1920, 1080,
+                      54, "#FF0000")  # fmt: skip
+    assert ev and all(e.startswith("Dialogue: 4,") and "\\p1}m " in e for e in ev)
+    ys = [float(e.split("\\pos(")[1].split(",")[1].split(")")[0]) for e in ev]
+    # 跳んでいる間は着く位置より上（y が小さい）
+    assert min(ys) < max(ys) - 54 * 0.5

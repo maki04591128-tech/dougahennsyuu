@@ -197,6 +197,7 @@ def build_ass(
     speaker_entrance: dict[str, str] | None = None,
     ruby: dict[int, list[tuple[int, int, int, str]]] | None = None,
     emotions: dict[int, str] | None = None,
+    ball_color: str | None = None,
 ) -> str:
     """cues: (start_frame, end_frame, speaker, text)。
 
@@ -372,6 +373,10 @@ def build_ass(
                 lines += _ruby_events(
                     rb, text, t0, t1, st_name, name, fade, size, width, height, mv
                 )
+        if ball_color and bottom and style.mode != "lyric" and not rb:  # 統合版 T51
+            lines += _ball_events(
+                text, start, end, fps, st_name, name, size, width, height, mv, ball_color
+            )
         if emo.get("shake") and bottom and style.alignment == 2 and not rb:
             lines[first_line:] = _shake(
                 lines[first_line:], start, end, fps, cue_fade, width // 2, height - mv, height
@@ -490,6 +495,94 @@ def _ruby_events(
             f"{{\\an2\\pos({x},{y})\\fs{rs}\\bord{max(1.0, size * 0.04):.1f}\\shad0}}"
             f"{_ass_escape(reading)}"
         )
+    return out
+
+
+# 統合版 T51 弾むボールの歌詞（子ども向けの字幕）: 直径は文字の高さの 35%・accent の玉が、
+# 話している文節の上へ、前の文節から放物線（高さは文字の高さの 80%）で跳ぶ。着地は文節の頭
+BALL_RATIO, BALL_ARC, BALL_JUMP = 0.35, 0.80, 8
+
+
+def _ball_path(r: float) -> str:
+    """半径 r の円（4 本のベジェ）の ASS の描画。"""
+    k = 0.5523 * r
+    return (
+        f"m {r:.1f} 0 b {r:.1f} {k:.1f} {k:.1f} {r:.1f} 0 {r:.1f} "
+        f"b {-k:.1f} {r:.1f} {-r:.1f} {k:.1f} {-r:.1f} 0 "
+        f"b {-r:.1f} {-k:.1f} {-k:.1f} {-r:.1f} 0 {-r:.1f} "
+        f"b {k:.1f} {-r:.1f} {r:.1f} {-k:.1f} {r:.1f} 0"
+    )
+
+
+def _ball_events(
+    text: str,
+    start: int,
+    end: int,
+    fps: Fraction,
+    st_name: str,
+    name: str,
+    size: int,
+    width: int,
+    height: int,
+    mv: int,
+    color: str,
+) -> list[str]:
+    """T51: 字幕の各文節の上に玉を置き、文節の頭の時刻に着くよう前の文節から放物線で跳ばせる。
+    文節の時刻は、字幕の表示の長さを字数の割合で分けたもの（下揃え・中央揃えの字幕）。"""
+    from video_automation.services.rendering.text_scenes import chunks
+
+    rows = text.split("\n")
+    n = len(rows)
+    lh = size * LINE_HEIGHT
+    pts: list[tuple[float, float, int]] = []  # 玉の着く位置（x, y）と文字数
+    for li, row in enumerate(rows):
+        bottom_k = height - mv - (n - 1 - li) * lh
+        top = bottom_k - lh
+        left = width / 2 - text_width(row, size) / 2
+        pos = 0
+        for c in chunks(row):
+            i = row.find(c, pos)
+            if i < 0:
+                continue
+            pos = i + len(c)
+            x = left + text_width(row[:i], size) + text_width(c, size) / 2
+            pts.append((x, top - size * BALL_RATIO, len(c)))
+    if not pts or end - start < 2:
+        return []
+    total = sum(p[2] for p in pts)
+    lands, acc = [], 0
+    for p in pts:
+        lands.append(start + (end - start) * acc // max(1, total))
+        acc += p[2]
+    r = size * BALL_RATIO / 2
+    draw = _ball_path(r)
+    col = ass_color(color)[4:]
+    out: list[str] = []
+
+    def ev(a: int, b: int, x: float, y: float) -> None:
+        if b <= a:
+            return
+        t0, t1 = ass_time(frame_to_seconds(a, fps)), ass_time(frame_to_seconds(b, fps))
+        out.append(
+            f"Dialogue: 4,{t0},{t1},{st_name},{name},0,0,0,,"
+            f"{{\\an5\\pos({x:.0f},{y:.0f})\\bord0\\shad0\\1c&H{col}&\\p1}}{draw}"
+        )
+
+    for k, (x, y, _n) in enumerate(pts):
+        hold_end = lands[k + 1] if k + 1 < len(pts) else end
+        if k > 0:
+            jump = min(BALL_JUMP, lands[k] - lands[k - 1])
+            x0, y0 = pts[k - 1][0], pts[k - 1][1]
+            for f in range(jump):
+                u = (f + 1) / (jump + 1)
+                bx = x0 + (x - x0) * u
+                by = y0 + (y - y0) * u - 4 * size * BALL_ARC * u * (1 - u)
+                ev(lands[k] - jump + f, lands[k] - jump + f + 1, bx, by)
+            hold_start = lands[k]
+        else:
+            hold_start = start
+        nxt_jump = min(BALL_JUMP, hold_end - lands[k]) if k + 1 < len(pts) else 0
+        ev(hold_start, hold_end - nxt_jump, x, y)
     return out
 
 

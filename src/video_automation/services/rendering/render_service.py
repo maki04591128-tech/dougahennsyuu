@@ -419,6 +419,8 @@ class RenderService:
         style = await self._clear_of_tachie(p.id, width, height, style)
         if not fade:
             style = style.model_copy(update={"fade_in_ms": 0, "fade_out_ms": 0})
+        prof = await self.design.profile_for(p.id) if self.design is not None else None
+        ball = prof.palette.accent if prof is not None and prof.purpose.value == "kids" else None
         content = build_ass(
             rows,
             Fraction(p.fps_num, p.fps_den),
@@ -433,6 +435,7 @@ class RenderService:
             multi_speaker=multi,
             ruby={i: rb[c.id] for i, c in enumerate(kept) if c.id in rb},
             emotions=await self._emotions(p.id, script_id, kept),
+            ball_color=ball,  # 統合版 T51（子ども向け）
         )
         out.write_text(content, encoding="utf-8-sig", newline="")
         return out
