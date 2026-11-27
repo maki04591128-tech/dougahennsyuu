@@ -200,7 +200,11 @@ SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合�
 WAVE_TRACK = "演出・波形"  # 統合版 P2
 CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
 FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
+CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
 EXTRA_TRACKS = (
+    CLOSE_TRACK,
+    NEWS_TRACK,
+    TICKER_TRACK,
     CUT_TRACK,
     FX_TRACK,
     EMBER_TRACK,
@@ -830,6 +834,128 @@ class DirectionService:
             project_id, out, AssetKind.IMAGE, "pillow", f"背景（{style}）"
         )
         return AssetRead.model_validate(a)
+
+    async def _png(self, project_id: str, img: Any, name: str) -> AssetRead:
+        out = (
+            self.settings.data_dir / "projects" / project_id / "assets" / f"h_{uuid4().hex[:8]}.png"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(img.save, out)
+        row = await self.timeline.register_generated(
+            project_id, out, AssetKind.IMAGE, "pillow", name
+        )
+        return AssetRead.model_validate(row)
+
+    async def _h_cards(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        plan: DirectionPlan,
+        lines: list[Any],
+        chapters: list[tuple[int, str]],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+    ) -> list[str]:
+        """統合版 H3（ニュース）・H4（朗読・物語）・H6（朗読・物語）。"""
+        from video_automation.services.rendering import h_cards as hc
+
+        notes: list[str] = []
+        pv = prof.purpose
+
+        def anim(cid: str, keys: list[Keyframe]) -> None:
+            cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+
+        def clip(track: str, a: AssetRead, at: int, n: int, tf: ClipTransform) -> str:
+            cid = str(uuid4())
+            cmds.append(
+                AddClip(track_id=track, asset_id=a.id, start_frame=at, duration_frames=n,
+                        clip_id=cid, transform=tf)
+            )  # fmt: skip
+            return cid
+
+        if pv == Purpose.STORY:  # H6: 「その頃」「一方」… で始まる文に中間字幕のカード
+            mincho = self.titles.font_path("Zen Old Mincho") or font
+            last_end = -1
+            for ln in lines:
+                if not hc.is_intertitle(ln.text) or ln.start < last_end:
+                    continue
+                n = min(round(hc.intertitle_sec(ln.text) * fps), max(1, total - ln.start))
+                img = await asyncio.to_thread(hc.intertitle, w, h, ln.text.strip(), mincho)
+                a = await self._png(project_id, img, "中間字幕（H6）")
+                cid = clip(lane(CLOSE_TRACK), a, ln.start, n, ClipTransform(fit=FitMode.FIT))
+                d8 = min(8, n // 2)
+                anim(cid, [Keyframe(frame=0, opacity=0.0), Keyframe(frame=d8, opacity=1.0),
+                           Keyframe(frame=max(d8 + 1, n - 1 - d8), opacity=1.0),
+                           Keyframe(frame=max(d8 + 2, n - 1), opacity=0.0)])  # fmt: skip
+                last_end = ln.start + n
+            if last_end > 0:
+                notes.append("中間字幕のカード（H6）の間も、その文の字幕は出ています")
+            # H4: 最後にクレジットロール（終了画面のある用途では出さない）
+            names = list(dict.fromkeys(f"VOICEVOX:{ln.speaker}" for ln in lines if ln.speaker))
+            if names:
+                img = await asyncio.to_thread(hc.credits, w, h, names, font, ink)
+                roll, hold = hc.credit_frames(h, img.size[1], fps)
+                n = roll + hold
+                at = max(0, total - n)
+                if last_end <= at:
+                    a = await self._png(project_id, img, "クレジットロール（H4）")
+                    sh = img.size[1] / h
+                    tf = native_transform(w, img.size[1], w, h, cx=0.5, cy=0.5, max_w=1.0,
+                                          max_h=sh + 0.01)  # fmt: skip
+                    ln_ = min(n, total - at)
+                    y0, y1 = 0.5 + sh / 2, -sh / 2
+                    f1 = min(roll, ln_ - 1)  # クリップの中に収める（短いときは途中まで流す）
+                    y_end = y0 + (y1 - y0) * f1 / max(1, roll)
+                    cid = clip(lane(CLOSE_TRACK), a, at, ln_, tf)
+                    if f1 > 0:
+                        anim(cid, [Keyframe(frame=0, y=round(y0, 4), easing=Easing.LINEAR),
+                                   Keyframe(frame=f1, y=round(y_end, 4))])  # fmt: skip
+        if pv == Purpose.NEWS:  # H3: 下の見出しの帯（章で替える）とティッカー
+            heads = chapters or [(0, plan.title or "ニュース")]
+            if heads[0][0] > 0:
+                heads.insert(0, (0, plan.title or heads[0][1]))
+            band_t = lane(NEWS_TRACK)
+            for i, (at, text) in enumerate(heads):
+                end = heads[i + 1][0] if i + 1 < len(heads) else total
+                if end <= at:
+                    continue
+                img = await asyncio.to_thread(
+                    hc.news_band, w, h, text[:40], font, prof.palette.main
+                )
+                a = await self._png(project_id, img, "ニュースの帯（H3）")
+                tf = native_transform(w, img.size[1], w, h, cx=0.5, cy=0.835, max_w=1.0)
+                cid = clip(band_t, a, at, end - at, tf)
+                if i:  # 帯の中で上へ送って替える（8f）
+                    anim(cid, [Keyframe(frame=0, y=0.03, opacity=0.0, easing=Easing.CUBIC_OUT),
+                               Keyframe(frame=8, y=0.0, opacity=1.0)])  # fmt: skip
+            items = [t for _a, t in heads][:8]
+            strip, period = await asyncio.to_thread(hc.ticker_strip, w, h, items, font)
+            if period <= 1.4 * w:
+                a = await self._png(project_id, strip, "ティッカー（H3）")
+                pw = period / w
+                tf = native_transform(strip.size[0], strip.size[1], w, h, cx=pw, cy=0.905,
+                                      max_w=2 * pw + 0.01)  # fmt: skip
+                loop = max(1, round(pw / hc.TICKER_SPEED * fps))
+                tick_t = lane(TICKER_TRACK)
+                pos = 0
+                while pos < total:
+                    n = min(loop, total - pos)
+                    cid = clip(tick_t, a, pos, n, tf)
+                    if n > 1:  # 最後のフレームの位置（次のクリップは 0 から流し直す）
+                        x1 = round(-pw * (n - 1) / loop, 4)
+                        anim(cid, [Keyframe(frame=0, x=0.0, easing=Easing.LINEAR),
+                                   Keyframe(frame=n - 1, x=x1)])  # fmt: skip
+                    pos += n
+            notes.append(
+                "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
+            )
+        return notes
 
     async def _overlay(
         self, project_id: str, frames_: list[Any], name: str, fps: float
@@ -1936,6 +2062,18 @@ class DirectionService:
             # 予告編の題名は台詞の後（t_at から tr_title フレーム）。他の用途は 0〜title_end
             t_end = t_at + tr_title if tr_title else title_end
             await self._effects(p.id, prof, lines, cmds, lane, t_at, t_end, total, fps, w, h)
+
+        # 統合版 H3・H4・H6: ニュースの帯・クレジットロール・中間字幕のカード
+        if prof is not None:
+            chap = [
+                (start, (s.heading or "").strip())
+                for s, start, _end in windows
+                if s.kind in (ShotKind.CARD, ShotKind.CHART) and (s.heading or "").strip()
+            ]
+            font = self.titles.font_path(heading_font)
+            skipped += await self._h_cards(
+                p.id, prof, plan, lines, chap, cmds, lane, total, fps, w, h, font, ink
+            )
 
         # 統合版 E6〜E10: 図・カードのショットが替わる所に、用途の切り替えの型を付ける
         if prof is not None and prof.purpose.value in tz.PURPOSE_TRANSITION:

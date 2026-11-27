@@ -1101,3 +1101,32 @@ async def test_effects_by_purpose(dclient):
         names = {a["id"]: a["name"] for a in tl["assets"]}
         fx = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・効果"]
         assert fx and names[fx[0]["asset_id"]] == name, purpose
+
+
+async def test_h_cards_story_and_news(dclient):
+    """統合版 H6（その頃…の中間字幕）・H4（最後のクレジット）・H3（ニュースの帯とティッカー）。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "昔あるところに猫がいました。"},
+        {"speaker": "B", "text": "その頃、町は雪でした。"},
+        {"speaker": "A", "text": "猫は家に帰りました。"},
+        {"speaker": "B", "text": "家ではおばあさんが待っていました。"},
+        {"speaker": "A", "text": "二人は温かいスープを飲みました。"},
+        {"speaker": "B", "text": "猫はゆっくり眠りました。おしまい。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "story")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    close = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・締め"]
+    kinds = sorted(names[x["asset_id"]] for x in close)
+    assert kinds == ["クレジットロール（H4）", "中間字幕（H6）"]
+    roll = next(x for x in close if names[x["asset_id"]].startswith("クレジット"))
+    assert roll["end_frame"] == tl["duration_frames"] or roll["end_frame"] <= tl["duration_frames"]
+    ys = [k["y"] for k in roll["animation"]["keyframes"]]
+    assert ys[0] > 0.5 and ys[-1] < 0  # 下から上へ
+    tl, _ = await _apply(c, pid, sid, "news")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    band = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・ニュースの帯"]
+    tick = [x for x in tl["clips"] if tracks[x["track_id"]] == "演出・ティッカー"]
+    assert band and tick and tick[0]["animation"]["keyframes"][-1]["x"] < 0
