@@ -203,11 +203,14 @@ FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
 CHAPTER_TRACK = "演出・章"  # 統合版 H1・N6
 DIAGRAM_TRACK = "演出・図解"  # 統合版 N1・N7・N8・N11
+YEAR_TRACK = "演出・年号"  # 統合版 T43
+T43_PURPOSES = {Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE}
 N6_PURPOSES = {Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL}
 H1_PURPOSES = {
     Purpose.DOCUMENTARY, Purpose.EXPLAINER, Purpose.LECTURE, Purpose.TUTORIAL, Purpose.GAME,
 }  # fmt: skip
 EXTRA_TRACKS = (
+    YEAR_TRACK,
     CHAPTER_TRACK,
     DIAGRAM_TRACK,
     CLOSE_TRACK,
@@ -1011,6 +1014,58 @@ class DirectionService:
                 "ニュースの帯（H3）の上に字幕を移す処理はまだ無く、字幕と帯が重なることがあります"
             )
         return notes
+
+    async def _years(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        lines: list[Any],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        font: str | None,
+        ink: str,
+    ) -> None:
+        """統合版 T43（ドキュメンタリー・解説・講義）。"""
+        from video_automation.services.rendering import numbers as nb
+
+        sa = safe_area_for(prof, w, h)
+        first = True
+        for ln in lines:
+            year = nb.find_year(ln.text)
+            n_all = min(ln.end, total) - ln.start
+            if not year or n_all < 12:
+                continue
+            frames_ = await asyncio.to_thread(
+                nb.year_frames, year, h, font, ink, prof.palette.base, not first
+            )
+            bw, bh = frames_[0].size
+            tf = native_transform(bw, bh, w, h, cx=1 - sa.right - bw / w / 2,
+                                  cy=sa.top + bh / h / 2, max_w=1.0)  # fmt: skip
+            tid = lane(YEAR_TRACK)
+            at = ln.start
+            if len(frames_) > 1 and len(frames_) < n_all:  # 回る間（動画）→ 止まった後（静止画）
+                a_ = await self._overlay(project_id, frames_, f"年号が回る（T43）{year}", fps)
+                cmds.append(AddClip(track_id=tid, asset_id=a_.id, start_frame=at,
+                                    duration_frames=len(frames_), clip_id=str(uuid4()),
+                                    transform=tf))  # fmt: skip
+                at += len(frames_)
+            still = await self._png(project_id, frames_[-1], f"年号（T43）{year}")
+            n = ln.start + n_all - at
+            cid = str(uuid4())
+            cmds.append(AddClip(track_id=tid, asset_id=still.id, start_frame=at,
+                                duration_frames=n, clip_id=cid, transform=tf))  # fmt: skip
+            keys = []
+            if first:
+                keys += [Keyframe(frame=0, opacity=0.0), Keyframe(frame=min(6, n - 1), opacity=1.0)]
+            if n > 14:
+                keys += [Keyframe(frame=n - 7, opacity=1.0), Keyframe(frame=n - 1, opacity=0.0)]
+            if len(keys) >= 2 and len({k.frame for k in keys}) == len(keys):
+                cmds.append(SetClipAnimation(clip_id=cid, animation=ClipAnimation(keyframes=keys)))
+            first = False
 
     async def _n_cards(
         self,
@@ -2239,6 +2294,11 @@ class DirectionService:
             skipped += await self._h_cards(
                 p.id, prof, plan, lines, chap, cmds, lane, total, fps, w, h, font, ink
             )
+
+        # 統合版 T43: 台詞の年号を右上に（2 回目からは前の年から回す）
+        if prof is not None and prof.purpose in T43_PURPOSES:
+            await self._years(p.id, prof, lines, cmds, lane, total, fps, w, h,
+                              self.titles.font_path(heading_font), ink)  # fmt: skip
 
         # 統合版 N1・N7・N8・N11: 台本の語だけで出せる図解
         if prof is not None:

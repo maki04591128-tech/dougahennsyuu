@@ -1194,3 +1194,23 @@ async def test_n_cards_from_script_words(dclient):
     tl, _ = await _apply(c, pid, sid, "interview")
     names = {a["id"]: a["name"] for a in tl["assets"]}
     assert "引用カード（N11）" in names.values()
+
+
+async def test_year_roll_in_documentary(dclient):
+    """統合版 T43: 1 回目の年はフェード、2 回目からは前の年から回して右上に出す。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "1964年に東京で大会が開かれました。"},
+        {"speaker": "B", "text": "そして2021年に再び開かれました。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _ = await _apply(c, pid, sid, "documentary")
+    tracks = {t["id"]: t["name"] for t in tl["tracks"]}
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    ys = sorted(
+        (x for x in tl["clips"] if tracks[x["track_id"]] == "演出・年号"),
+        key=lambda x: x["start_frame"],
+    )
+    got = [names[x["asset_id"]] for x in ys]
+    assert got == ["年号（T43）1964", "年号が回る（T43）2021", "年号（T43）2021"]
+    assert ys[0]["transform"]["x"] > 0.3 and ys[0]["transform"]["y"] < -0.3  # 右上

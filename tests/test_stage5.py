@@ -682,3 +682,18 @@ def test_effect_frames():
     assert len(fx.focus_lines(96, 54)) == 6
     sm, em = fx.smoke(96, 54), fx.embers(96, 54)
     assert len(sm) == len(em) == 150
+
+
+def test_number_roll_and_year():
+    """統合版 T35（左の桁が 12f、右へ 3f ずつ遅れて止まる）・T43（年号）。"""
+    from video_automation.services.rendering import numbers as nb
+
+    assert nb.find_year("1964年の東京で") == "1964" and nb.find_year("3000年") is None
+    assert nb.roll_text("2024", 12)[0] == "2" and nb.roll_text("2024", 12)[1] != "0"
+    assert nb.roll_text("2024", 21) == "2024"
+    assert nb.roll_text("2024", 11)[0] == "1"  # 止まる 1 フレーム前は 1 つ手前の数字
+    assert nb.roll_text("1,234円", 30) == "1,234円"  # カンマ・単位は回さない
+    assert nb.roll_frames_count("2024") == 22
+    fr = nb.year_frames("2024", 360, None, "#FFFFFF", "#000000", True)
+    assert len(fr) == 22 and fr[0].size == fr[-1].size
+    assert len(nb.year_frames("2024", 360, None, "#FFFFFF", "#000000", False)) == 1
