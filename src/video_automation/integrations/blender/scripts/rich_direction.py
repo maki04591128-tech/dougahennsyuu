@@ -195,8 +195,9 @@ LYRIC_TEXTURE = A.get("lyric_texture") or ""  # 統合版 M7: ジャンルの質
 
 
 def kinetic_text_scene(
-    name, text, size, color, length, delay=2, dur=12, out_at=None, y=0.0, font_path="", texture=""
-):
+    name, text, size, color, length, delay=2, dur=12, out_at=None, y=0.0, font_path="", texture="",
+    outline_light=False,
+):  # fmt: skip
     sc = eevee_scene(name, length)
     ob = bpy.data.objects.new(name, bpy.data.meshes.new(name))
     sc.collection.objects.link(ob)
@@ -292,7 +293,14 @@ def kinetic_text_scene(
     L.new(sci.outputs[0], rlz.inputs[0])
     L.new(rlz.outputs[0], fill.inputs["Curve"])
     L.new(fill.outputs[0], setm.inputs["Geometry"])
-    L.new(setm.outputs[0], out.inputs["Geometry"])
+    if outline_light:  # 統合版 T19: 輪郭の線の長さ 15% の光の区間を 24f で 1 周させる
+        light = outline_light_nodes(N, L, rlz.outputs[0], frame, math_node)
+        join = N.new("GeometryNodeJoinGeometry")
+        L.new(setm.outputs[0], join.inputs[0])
+        L.new(light, join.inputs[0])
+        L.new(join.outputs[0], out.inputs["Geometry"])
+    else:
+        L.new(setm.outputs[0], out.inputs["Geometry"])
     mat = bpy.data.materials.new(name)
     b = mat.node_tree.nodes["Principled BSDF"]
     b.inputs["Base Color"].default_value = (*color, 1)
@@ -321,6 +329,39 @@ def kinetic_text_scene(
 
 
 PX = 16.0 / W  # 文字の場面の 1px（カメラの可視幅は長辺で 16）
+T19_PERIOD = 24  # 1 周のフレーム数
+T19_LEN = 0.15  # 光の区間の長さ（輪郭の長さに対する比）
+
+
+def outline_light_nodes(N, L, curves, frame, math_node):
+    """統合版 T19: 文字の輪郭（曲線）を Trim Curve で長さ 15% に切り、24f で 1 周させて、
+    太さ 2px の線（白・発光。L4 のグローの代わりに発光を強く）にする。出力は線の形。"""
+    start = math_node("FRACT", math_node("DIVIDE", frame, T19_PERIOD))
+    end = math_node("MINIMUM", math_node("ADD", start, T19_LEN), 1.0)
+    trim = N.new("GeometryNodeTrimCurve")
+    try:
+        trim.mode = "FACTOR"
+    except Exception:  # noqa: BLE001
+        pass
+    L.new(curves, trim.inputs["Curve"])
+    facs = [i for i in trim.inputs if i.name in ("Start", "End") and i.enabled]
+    L.new(start, next(i for i in facs if i.name == "Start"))
+    L.new(end, next(i for i in facs if i.name == "End"))
+    prof = N.new("GeometryNodeCurvePrimitiveCircle")
+    prof.inputs["Resolution"].default_value = 6
+    prof.inputs["Radius"].default_value = PX  # 太さ 2px
+    c2m = N.new("GeometryNodeCurveToMesh")
+    L.new(trim.outputs[0], c2m.inputs["Curve"])
+    L.new(prof.outputs["Curve"], c2m.inputs["Profile Curve"])
+    lm = bpy.data.materials.get("T19_light") or bpy.data.materials.new("T19_light")
+    b = lm.node_tree.nodes["Principled BSDF"]
+    b.inputs["Base Color"].default_value = (1, 1, 1, 1)
+    b.inputs["Emission Color"].default_value = (1, 1, 1, 1)
+    b.inputs["Emission Strength"].default_value = 4.0
+    sm = N.new("GeometryNodeSetMaterial")
+    sm.inputs["Material"].default_value = lm
+    L.new(c2m.outputs[0], sm.inputs["Geometry"])
+    return sm.outputs[0]
 
 
 def _key(ob, path, frame, value, index=-1):
@@ -414,10 +455,26 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
             for f_, u in ((1, 0.0), (8, 0.5), (21, 1.0)):
                 _key(ob, "location", f_, x0 - 0.4 * W * PX * (1 - u), 0)
                 _key(ob, "location", f_, y0 + 0.08 * H * PX * math.sin(math.pi * u), 1)
+        elif entrance == "stack":  # 並べて動かす: 同じ行を縦に 3 つ、4f ずつ遅らせて上から落とす
+            hh = max(0.3, ob.dimensions.y) * 1.15
+            copies = [ob]
+            for _j in (1, 2):
+                cp = ob.copy()  # 形（データ）は共有する
+                cp.animation_data_clear()
+                sc.collection.objects.link(cp)
+                copies.append(cp)
+            # 上（1 つ目の写し）→ 中央（元の物体）→ 下（2 つ目の写し）の順に、4f ずつ遅らせる
+            for k, (cp, yj) in enumerate(
+                ((copies[1], y0 + hh), (copies[0], y0), (copies[2], y0 - hh))
+            ):
+                f0 = 1 + 4 * k
+                _key(cp, "location", 1, yj + 0.08 * H * PX, 1)
+                _key(cp, "location", f0, yj + 0.08 * H * PX, 1)
+                _key(cp, "location", f0 + 8, yj, 1)
         elif entrance == ent_a:
             pass  # ネオン（不透明度だけ）
         else:
-            entrance = "bounce"  # morph（T23）・stack・slam 以外の未対応は 1 文字ずつの弾み
+            entrance = "bounce"  # morph（T23）は未対応なので 1 文字ずつの弾み
         hold_end = max(12, out_at)
         if hold == "breathe":  # 呼吸: 1.000→1.015→1.000、周期 3.2 秒
             per = round(3.2 * FPS)
@@ -450,7 +507,7 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
                 _key(ob, "location", f, x0 + (8 * PX if k % 2 else -8 * PX) * (k > 0), 0)
                 f += per // 2
                 k += 1
-        elif hold not in ("static",):
+        elif hold not in ("static", "outline_light"):  # T19 は文字の場面のノードが受け持つ
             hold = "static"
         end_ = min(length, out_at + EXIT_F)
         if exit_ == "shrink" and out_at < length:  # 縮んで消える: 1→0.8（文字ごとの出と重ねる）
@@ -967,6 +1024,7 @@ def main():
                     y=ry,
                     font_path=LYRIC_FONT,
                     texture=LYRIC_TEXTURE,
+                    outline_light=bool(c.get("motion")) and c["motion"][1] == "outline_light",
                 )
                 ksc.eevee.taa_render_samples = 1 if DRAFT else 8
                 if sec in ("chorus", "chorus_first"):  # 統合版 M3: サビは斜め（−8°）

@@ -5,6 +5,7 @@ from typing import Any
 
 from video_automation.database.database import Database
 from video_automation.database.models import (
+    Asset,
     AudioFile,
     Clip,
     Project,
@@ -175,6 +176,12 @@ class DesignService:
             rec = (p.design_manifest or {}).get("direction") or {}
         return dict(rec.get("outline") or {})
 
+    async def recorded(self, project_id: str, source: str) -> dict[str, Any]:
+        """record() で置いた、演出の処理（source）の記録（無ければ空）。"""
+        async with self.db.session_factory() as s:
+            p = await self._project(s, project_id)
+            return dict((p.design_manifest or {}).get(source) or {})
+
     async def series_for(self, project_id: str) -> SeriesSettings | None:
         """プロジェクトに付けたシリーズの設定（無い・消えたときは None）。"""
         d = await self.get(project_id)
@@ -253,7 +260,19 @@ class DesignService:
                     .where(Clip.project_id == project_id)
                 )
             ).all()
+            asset_names = list(
+                (
+                    await s.execute(
+                        select(Asset.name)
+                        .join(Clip, Clip.asset_id == Asset.id)
+                        .where(Clip.project_id == project_id)
+                    )
+                ).scalars()
+            )
         m = DesignManifest(vertical=h > w, size=(w, h))
+        from video_automation.services.design.motion_elements import parts_in
+
+        m.parts = parts_in(asset_names)  # 統合版 Z2
         for st, en, anim, track_id, kind in clip_rows:
             m.duration_sec = max(m.duration_sec, float(Fraction(en) / fps))
             if kind == "video":  # 動きの検査（統合版 G2・G3・M4・Q2）に使う

@@ -246,6 +246,7 @@ class TitleCardService:
                     "sun_beams": req.sun_beams,
                     "solid3d": req.solid3d,
                     "vertical": req.vertical,
+                    "rack_focus": req.rack_focus,
                     "gloss_frames": gloss_frames(fps_num / fps_den),
                 },
             )
@@ -557,6 +558,33 @@ def card_surface(path: Path, kind: str, canvas_h: int, only_item: int | None = N
         out.alpha_composite(card)
         card = out
     elif kind == "comic":
+        # Y9 の網点: 面（最も多い不透明度の画素）の下 40% を影として、間隔 8px・45° の点で塗る
+        arr = np.asarray(card).copy()
+        al = arr[..., 3]
+        vals, cnt = np.unique(al[al > 0], return_counts=True)
+        if len(vals):
+            panel = al == vals[int(np.argmax(cnt))]
+            dots = Image.new("L", card.size, 0)
+            dd = ImageDraw.Draw(dots)
+            step = max(4.0, 8 * k)
+            r = max(1.0, step * 0.28)
+            y0 = card.height * 0.6
+            row = 0
+            y = y0
+            while y < card.height + step:
+                off = step / 2 if row % 2 else 0.0  # 45° の並び（行ごとに半分ずらす）
+                x = off
+                while x < card.width + step:
+                    dd.ellipse((x - r, y - r, x + r, y + r), fill=round(255 * 0.35))
+                    x += step
+                y += step / 2
+                row += 1
+            d_arr = np.asarray(dots) * panel
+            rgb = arr[..., :3].astype(np.float32)
+            f = (d_arr / 255.0)[..., None]
+            arr[..., :3] = (rgb * (1 - f) + 17 * f).astype(np.uint8)
+            card = Image.fromarray(arr, "RGBA")
+            a = card.getchannel("A")
         lw = max(1, round(6 * k))
         pad = lw
         big = Image.new("L", (card.width + 2 * pad, card.height + 2 * pad), 0)

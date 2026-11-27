@@ -79,6 +79,7 @@ from video_automation.services.direction import mv_shots as mv
 from video_automation.services.direction import purpose_parts as pp
 from video_automation.services.direction import slides as sl
 from video_automation.services.direction.service import MARK_TRACK, native_transform
+from video_automation.services.rendering import lyric_screen as ls_
 from video_automation.services.rendering import sync as sync_audio
 from video_automation.services.rendering.beats import detect_file
 from video_automation.services.rendering.lyrics import sections as lyric_sections
@@ -152,6 +153,7 @@ MV_INK_TRACK = "MV・インク"  # 統合版 V6
 MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
 MV_KEY_TRACK = "MV・キーの一字"  # 統合版 T26
 MV_T29_TRACK = "MV・文字の絵"  # 統合版 T29
+MV_U_TRACK = "MV・歌詞の画面"  # 統合版 U2〜U5（曲の方向性を選んだとき）
 X4_TRACK = "演出・擬音"  # 統合版 X4
 MV_X7_TRACK = "MV・落ちサビの粒"  # 統合版 X7
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
@@ -1763,6 +1765,13 @@ class BuildService:
                 cmds.append(AddClip(track_id=x7_tid, asset_id=a_.id, start_frame=pos,
                                     duration_frames=n, clip_id=str(uuid4())))  # fmt: skip
                 pos += n
+        # 統合版 U2〜U5: 曲の方向性を選んでいれば、歌の区間をフレーズごとの歌詞の画面にする
+        n_u = 0
+        if dsg.lyric_direction in ls_.PRESETS:
+            n_u = await self._lyric_screens(project_id, dsg.lyric_direction, cues, secs, bt,
+                                            src, fps, w, h, cmds, track)  # fmt: skip
+        elif MV_U_TRACK in tracks:
+            track(MV_U_TRACK, None)  # 前に作った歌詞の画面を消す
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
         await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
         await c.timeline.submit(
@@ -1783,6 +1792,7 @@ class BuildService:
                 "ink": len(entries),
                 "motif": len(bars),
                 "v7": v7,
+                "lyric_screens": n_u,
             },
         )
         notes = [
@@ -1795,6 +1805,11 @@ class BuildService:
             notes.append("イントロに拍の輪、2 回目からの間奏にスペクトラムを入れました")
         if n_t29:
             notes.append("最初の間奏の頭の 1 小節を、直前の歌詞の文字で描いた絵にしました")
+        if n_u:
+            notes.append(
+                f"歌の区間を、方向性「{ls_.DIRECTION_NAMES[dsg.lyric_direction]}」の歌詞の画面"
+                f" {n_u} 枚にしました（A メロ・B メロとサビで組み方を替えています）"
+            )
         v7_text = [
             t
             for t, k in (
@@ -1811,6 +1826,54 @@ class BuildService:
                 f"サビの前の {len(bars)} 小節に、白と黒の{mv.MOTIF_LABEL[shape]}を置きました"
             )
         return notes
+
+    async def _lyric_screens(
+        self,
+        project_id: str,
+        direction: str,
+        cues: list[Any],
+        secs: list[str],
+        bt: Any,
+        src: Path,
+        fps: float,
+        w: int,
+        h: int,
+        cmds: list[Any],
+        track: Any,
+    ) -> int:
+        """統合版 U2〜U5: 歌の区間を、フレーズ（同じセクションの続く最大 4 行）ごとの歌詞の画面
+        （不透明の画の列）にして、ショットの上に置く。イントロ・間奏は文字なし（UR0）のまま、
+        今のショットを見せる。歌詞は書き出しの Blender の歌詞を出さない（render が記録を見る）。"""
+        from PIL import Image
+
+        c = self.c
+        spans = [((x.start_frame or 0), (x.end_frame or x.start_frame or 0)) for x in cues]
+        beats = [round(t * fps) for t in bt.times]
+        phs = ls_.phrases([x.text for x in cues], spans, secs, beats)
+        if not phs:
+            return 0
+        pic = await asyncio.to_thread(lambda: Image.open(src).convert("RGBA"))
+        tid = track(MV_U_TRACK, MV_MOTIF_TRACKS[1])
+
+        def fonts(name: str) -> str | None:
+            return c.titles.font_path(name)
+
+        made = 0
+        for i, ph in enumerate(phs):
+            scr = ls_.screen_for(direction, ph.section)
+            gen = ls_.frames(scr, ph, pic, w, h, fonts, fps, seed=i)
+            a = await c.direction._overlay(
+                project_id,
+                gen,
+                f"歌詞の画面（{ls_.DIRECTION_NAMES.get(direction, direction)}）",
+                fps,
+            )
+            cmds.append(
+                AddClip(track_id=tid, asset_id=a.id, start_frame=ph.start,
+                        duration_frames=ph.end - ph.start, clip_id=str(uuid4()))
+            )  # fmt: skip
+            made += 1
+        return made
 
     async def _onomatopoeia(
         self,

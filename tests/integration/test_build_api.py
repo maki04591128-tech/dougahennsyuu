@@ -759,3 +759,77 @@ async def test_lecture_from_slides(bclient, fake, media_dir):
     assert order.index("画面録画") < order.index("手描きの印")
     fixed = next(x for x in marks if clips[1]["start_frame"] <= x["start_frame"])
     assert max(k.get("zoom") or 1 for k in fixed["animation"]["keyframes"]) > 1.0
+
+
+async def test_music_video_lyric_screens_by_direction(bclient, media_dir):
+    """統合版 U2〜U5: 曲の方向性を選ぶと、歌の区間をフレーズごとの歌詞の画面にする。"""
+    import wave
+
+    import numpy as np
+    from PIL import Image
+
+    from video_automation.services.transcribe.align import Word
+    from video_automation.services.transcribe.service import Recognized
+
+    sr, sec = 22050, 16
+    t = np.arange(sr * sec) / sr
+    x = np.zeros_like(t)
+    n = int(0.08 * sr)
+    for k in range(int(sec / 0.5)):  # 120 BPM のキック
+        s = int(k * 0.5 * sr)
+        x[s : s + n] += np.sin(2 * np.pi * 70 * t[:n]) * np.exp(-t[:n] * 30)
+    song = media_dir / "beat.wav"
+    with wave.open(str(song), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        f.writeframes((np.clip(x, -1, 1) * 30000).astype("<i2").tobytes())
+    img = Image.new("RGBA", (400, 600), (0, 0, 0, 0))
+    img.paste((240, 120, 160, 255), (100, 50, 300, 580))
+    img.save(media_dir / "chara.png")
+    c = bclient
+    await c.post("/providers/discover")
+    plan = (
+        await c.post(
+            "/build/plan",
+            json={
+                "instruction": "この曲の MV を作って",
+                "music": str(song),
+                "lyrics": "夜をこえて\n光のほうへ",
+                "image": str(media_dir / "chara.png"),
+            },
+        )
+    ).json()
+    pid = plan["project_id"]
+    r = await c.put(f"/projects/{pid}/design", json={"lyric_direction": "rap"})
+    assert r.status_code == 200, r.text
+
+    def fake(audio, language):
+        return Recognized(
+            words=[Word("よるを", 4.1, 4.8), Word("こえて", 4.8, 6.2), Word("ほうへ", 8.3, 9.9)],
+            segments=[("夜を越えて", 4.1, 6.2), ("方へ", 8.3, 9.9)],
+            language="ja",
+            duration=16.0,
+        )
+
+    c.app.state.container.transcriber._recognizer = fake
+    r = await c.post(f"/build/{pid}/run", json={"script_id": plan["script_id"]})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    assert any("歌詞の画面" in n for n in job.result["notes"]), job.result["notes"]
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    names = [t["name"] for t in tl["tracks"]]
+    tr = next(t for t in tl["tracks"] if t["name"] == "MV・歌詞の画面")
+    clips = [x for x in tl["clips"] if x["track_id"] == tr["id"]]
+    assert clips and all(x["start_frame"] >= 4 * 30 - 1 for x in clips)  # イントロは文字なし
+    assert names.index("MV・歌詞の画面") > names.index("MV・ショット")
+    rec = await c.app.state.container.design.recorded(pid, "mv_shots")
+    assert rec["lyric_screens"] == len(clips)
+    # 方向性を外すと、作り直しで歌詞の画面を消す
+    await c.put(f"/projects/{pid}/design", json={"lyric_direction": ""})
+    r = await c.post(f"/build/{pid}/run", json={"script_id": plan["script_id"]})
+    job = await c.app.state.jobs.wait(r.json()["id"])
+    assert job.status == "SUCCEEDED", job.error
+    tl = (await c.get(f"/projects/{pid}/timeline")).json()
+    tr = next((t for t in tl["tracks"] if t["name"] == "MV・歌詞の画面"), None)
+    assert tr is None or not [x for x in tl["clips"] if x["track_id"] == tr["id"]]

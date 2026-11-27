@@ -468,3 +468,5 @@ class TitleCardRequest(BaseModel):
     sun_beams: bool = False  # 統合版 L3: 文字から下へ光の筋（コンポジタの Sun Beams）
     solid3d: bool = False  # 統合版 T24 立体の文字（L1 3 点照明・L2 リム。予告編のタイトルカード）
     vertical: bool = False  # 統合版 T11 縦書き（Y10 墨と和紙の題名）
+    # 統合版 L6: 被写界深度（F-Stop 2.8）。焦点を奥から文字へ 24f で送る（ラックフォーカス）
+    rack_focus: bool = False

@@ -105,6 +105,7 @@ class DesignManifest:
     clips: list[ClipMotion] = field(default_factory=list)  # 映像のクリップ（動きの検査）
     texts: list[TextUse] = field(default_factory=list)  # カード・テロップの文字（文字の検査）
     end_screen_at: float | None = None  # 終了画面の始まり（秒。統合版 S9。変化の間隔の検査の外）
+    parts: list[str] = field(default_factory=list)  # 置いた 5d の部品（統合版 Z2 の検査）
 
     def add(self, c: Component, n: int = 1) -> None:
         self.used[c] = self.used.get(c, 0) + n
@@ -762,6 +763,10 @@ def check(
                     message=f"「{LABELS[pl.component]}」が安全範囲の外にかかっています",
                 )
             )
+    from video_automation.services.design.motion_elements import check_parts
+
+    for msg in check_parts(m.parts):  # 統合版 Z2: 部品を要素に読み替えた組み合わせの決まり
+        out.append(Violation(code="motion_elements", severity="warning", message=msg))
     return DesignCheck(
         purpose=profile.purpose,
         ok=not any(v.severity == "error" for v in out),

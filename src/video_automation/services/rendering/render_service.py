@@ -1169,6 +1169,11 @@ class RenderService:
             rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
         lyric_args: dict[str, Any] = {}
         if rich.parts.get("lyrics") and cues:
+            # 統合版 U2〜U5: 歌詞の画面（MV のショットの上の画）を作っていれば、歌詞は二重に出さない
+            if (await self.design.recorded(req.project_id, "mv_shots")).get("lyric_screens"):
+                rich.parts["lyrics"] = False
+                rich.notes.append("歌詞は歌詞の画面に描いたので、Blender の歌詞は出しませんでした")
+        if rich.parts.get("lyrics") and cues:
             # 統合版 M3（セクションごとの置き方）・M7（ジャンルの書体と質感）・M5（コマ打ち）
             dsg_ = await self.design.get(req.project_id)
             direction = dsg_.lyric_direction or None

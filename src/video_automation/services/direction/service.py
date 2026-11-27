@@ -2853,6 +2853,9 @@ class DirectionService:
                         sun_beams=beams,
                         solid3d=prof is not None and prof.purpose == Purpose.TRAILER,  # T24
                         vertical=prof is not None and prof.look == "Y10",  # T11（墨と和紙）
+                        # L6: ドキュメンタリー・予告編の題名は焦点を奥から文字へ送る
+                        rack_focus=prof is not None
+                        and prof.purpose in (Purpose.DOCUMENTARY, Purpose.TRAILER),
                     )
                 )
             t_len = min(title_end, media_frames(t_asset, title_end))
