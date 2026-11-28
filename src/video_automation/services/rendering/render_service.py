@@ -1205,11 +1205,13 @@ class RenderService:
             rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
         lyric_args: dict[str, Any] = {}
         covered: list[tuple[int, int]] = []
+        by_screens = False  # 歌詞を歌詞の画面に描いた（字幕として焼き込まない）
         if rich.parts.get("lyrics") and cues:
             # 統合版 U2〜U5・U9: 歌詞の画面（MV のショットの上の画）で描いた範囲の歌詞は、Blender で
             # 二重に出さない。範囲の記録が無い（前の版で作った）ときは、歌詞をすべて出さない
             rec_ = await self.design.recorded(req.project_id, "mv_shots")
             if rec_.get("lyric_screens"):
+                by_screens = True
                 spans_ = rec_.get("lyric_spans")
                 if spans_ is None:
                     rich.parts["lyrics"] = False
@@ -1366,6 +1368,10 @@ class RenderService:
         kinetic = bool(rich.parts.get("lyrics")) and "lyrics" not in failed
         if kinetic:
             rich.notes.append("字幕は動く文字（キネティックタイポグラフィ）で出しました")
+        if by_screens and "lyrics" not in failed:
+            # 歌詞の画面（と残りの動く文字）で歌詞を出したので、字幕を焼き込まない（二重になる。
+            # PC の確認で、バラードの歌詞の画面の下に字幕が重なっていた）
+            kinetic = True
         if req.script_id:
             if req.burn_subtitles and not kinetic:
                 # 冒頭の演出の分だけ字幕を後ろへずらす（offset が負＝後ろへ）

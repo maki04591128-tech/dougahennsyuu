@@ -907,10 +907,21 @@ async def test_music_video_lyric_screens_by_direction(bclient, media_dir):
         )
 
     c.app.state.container.transcriber._recognizer = fake
+    burned: list[str] = []
+    rs = c.app.state.container.render
+    orig = rs._ass_for
+
+    async def spy(*a, **kw):
+        burned.append(str(a[0]))
+        return await orig(*a, **kw)
+
+    rs._ass_for = spy
     r = await c.post(f"/build/{pid}/run", json={"script_id": plan["script_id"]})
     job = await c.app.state.jobs.wait(r.json()["id"])
+    rs._ass_for = orig
     assert job.status == "SUCCEEDED", job.error
     assert any("歌詞の画面" in n for n in job.result["notes"]), job.result["notes"]
+    assert not burned  # 歌詞の画面があるときは字幕を焼き込まない（二重になる）
     tl = (await c.get(f"/projects/{pid}/timeline")).json()
     names = [t["name"] for t in tl["tracks"]]
     tr = next(t for t in tl["tracks"] if t["name"] == "MV・歌詞の画面")
