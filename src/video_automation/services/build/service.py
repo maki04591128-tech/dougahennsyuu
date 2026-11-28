@@ -83,6 +83,7 @@ from video_automation.services.rendering import lyric_screen as ls_
 from video_automation.services.rendering import sync as sync_audio
 from video_automation.services.rendering.beats import detect_file
 from video_automation.services.rendering.lyrics import sections as lyric_sections
+from video_automation.services.rendering.render_service import FILTER_SCRIPT_THRESHOLD
 from video_automation.services.transcribe.service import TranscribeRequest
 
 if TYPE_CHECKING:
@@ -1960,9 +1961,15 @@ class BuildService:
             for gi, (a, b) in enumerate(spans):
                 part = tmp / f"part_{gi:03d}.mp4"
                 last = 1 if b == len(items) else 0
-                await c.ffmpeg.run(
-                    ["-y", *mv_bake.group_args(items[a:b], fps_f, tl.width, tl.height, part, last)]
-                )
+                args = mv_bake.group_args(items[a:b], fps_f, tl.width, tl.height, part, last)
+                k = args.index("-filter_complex")
+                if (
+                    len(args[k + 1]) > FILTER_SCRIPT_THRESHOLD
+                ):  # Windows のコマンド行は 32767 字まで
+                    gfile = tmp / f"part_{gi:03d}.filtergraph.txt"
+                    gfile.write_text(args[k + 1], encoding="utf-8")
+                    args[k : k + 2] = await c.ffmpeg.filter_script_args(str(gfile))
+                await c.ffmpeg.run(["-y", *args])
                 parts.append(part)
             lst = tmp / "list.txt"
             lst.write_text(mv_bake.concat_list(parts), encoding="utf-8")

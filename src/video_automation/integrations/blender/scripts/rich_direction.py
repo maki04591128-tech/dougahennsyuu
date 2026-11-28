@@ -1150,6 +1150,14 @@ def main():
             if sec in ("verse", "drop"):  # 統合版 M3: A メロは中央（落ちサビの縦書きは未対応）
                 y = 0.0
             # 行ごとに別の場面にして縦に並べる（複数行の文字列は中央に揃わないため）
+            mo = c.get("motion")
+            prev_rows = (
+                [x for x in str(cues[i - 1].get("text") or "").split("\n") if x.strip()]
+                if i > 0
+                else []
+            )
+            # T23: 変形する行は、本来の文字を変形の後にそのまま見せる（1 文字ずつの入りを重ねない）
+            morph_ = bool(mo) and mo[0] == "morph" and len(rows) == 1 and bool(prev_rows)
             for r, row in enumerate(rows):
                 ry = y + ((len(rows) - 1) / 2 - r) * size * 1.4
                 ksc = kinetic_text_scene(
@@ -1158,8 +1166,8 @@ def main():
                     size,
                     col,
                     length,
-                    delay=2 if longest <= 14 else 1,
-                    dur=10,
+                    delay=0 if morph_ else (2 if longest <= 14 else 1),
+                    dur=1 if morph_ else 10,
                     out_at=max(8, length - 14),
                     y=ry,
                     font_path=LYRIC_FONT,
@@ -1171,13 +1179,9 @@ def main():
                     for ob_ in ksc.objects:
                         ob_.rotation_euler.z = math.radians(-8.0)
                 center_x(ksc, f"Lyric{i}_{r}", max(2, length - 16))
-                mo = c.get("motion")
                 alpha_keys = []
-                if mo and mo[0] == "morph" and i > 0 and len(rows) == 1:  # 統合版 T23
-                    prev_rows = [
-                        x for x in str(cues[i - 1].get("text") or "").split("\n") if x.strip()
-                    ]
-                    if prev_rows and morph_line(ksc, prev_rows[-1], row, size, ry, col,
+                if morph_:  # 統合版 T23
+                    if morph_line(ksc, prev_rows[-1], row, size, ry, col,
                                                 LYRIC_FONT, length):  # fmt: skip
                         REPORT.setdefault("morphed", 0)
                         REPORT["morphed"] += 1

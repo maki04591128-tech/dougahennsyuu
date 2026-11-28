@@ -519,9 +519,16 @@ async def test_music_video_from_song_and_lyrics(bclient, media_dir):
     assert calls == []
 
 
-async def test_music_video_shots_from_image(bclient, media_dir):
-    """統合版 V1・V2: 絵を渡すと、拍に合わせて 8 種のショットを切り替える。"""
+async def test_music_video_shots_from_image(bclient, media_dir, monkeypatch):
+    """統合版 V1・V2: 絵を渡すと、拍に合わせて 8 種のショットを切り替える。
+
+    カットを焼くフィルタグラフはファイルで渡す（Windows のコマンド行の長さの上限。
+    PC で 17 行の曲が WinError 206 になった）。ここでは長さによらずファイルにする。"""
     import wave
+
+    from video_automation.services.build import service as build_service
+
+    monkeypatch.setattr(build_service, "FILTER_SCRIPT_THRESHOLD", 0)
 
     import numpy as np
     from PIL import Image
@@ -573,6 +580,7 @@ async def test_music_video_shots_from_image(bclient, media_dir):
     job = await c.app.state.jobs.wait(r.json()["id"])
     assert job.status == "SUCCEEDED", job.error
     assert any("カットに切り替えました" in n for n in job.result["notes"]), job.result["notes"]
+    assert not any("作れませんでした" in n for n in job.result["notes"]), job.result["notes"]
     tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
     tr = next(t for t in tl["tracks"] if t["name"] == "MV・ショット")
     shots = sorted(
