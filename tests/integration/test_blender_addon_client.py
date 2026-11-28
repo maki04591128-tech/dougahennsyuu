@@ -234,3 +234,17 @@ def test_find_app_dir_and_engine_command(tmp_path):
     ]
     with pytest.raises(BridgeError):
         bridge.engine_command(str(tmp_path / "none"))
+
+
+def test_build_plan_sends_mv_picture_and_direction(monkeypatch):
+    """統合版 V1・U1: つくる画面の「絵」と「曲の方向性」は、曲があるときだけ送る。"""
+    sent: list[dict] = []
+    monkeypatch.setattr(Client, "call", lambda self, m, path, body=None, **kw: sent.append(body))
+    c = Client("http://127.0.0.1:8765")
+    c.build_plan("MV", music="C:/m/song.wav", lyrics="a\nb", image="C:/p/a.png",
+                 lyric_direction="rap")  # fmt: skip
+    assert sent[-1]["image"] == "C:/p/a.png" and sent[-1]["lyric_direction"] == "rap"
+    c.build_plan("MV", music="C:/m/song.wav")
+    assert "image" not in sent[-1] and "lyric_direction" not in sent[-1]
+    c.build_plan("解説", image="C:/p/a.png", lyric_direction="rap")  # 曲が無い
+    assert "image" not in sent[-1] and "lyric_direction" not in sent[-1]

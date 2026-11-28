@@ -109,12 +109,20 @@ class Client:
         screen_recording: str = "",
         music: str = "",
         lyrics: str = "",
+        image: str = "",
+        lyric_direction: str = "",
     ) -> dict[str, Any]:
+        """image: MV のショットを作る 1 枚の絵（統合版 V1）。lyric_direction: 曲の方向性
+        （統合版 U1。"" はおまかせ）。どちらも曲（music）があるときだけ送る。"""
         body: dict[str, Any] = {"instruction": instruction, "orientation": orientation}
         if music.strip():
             body["music"] = music.strip()
             if lyrics.strip():
                 body["lyrics"] = lyrics[:20000]
+            if image.strip():
+                body["image"] = image.strip()
+            if lyric_direction:
+                body["lyric_direction"] = lyric_direction
         if screen_recording.strip():
             body["screen_recording"] = screen_recording.strip()
         if duration_sec:

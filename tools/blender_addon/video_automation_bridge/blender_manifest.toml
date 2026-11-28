@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "video_automation_bridge"
-version = "0.2.4"
+version = "0.2.5"
 name = "動画自動化ブリッジ"
 tagline = "Blender の動画編集から動画自動化アプリを操作します"
 maintainer = "dougahennsyuu"
