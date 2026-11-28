@@ -1111,7 +1111,31 @@ def frames(
               if b.up == "UP5" or b.role == "UR3"}  # 絵の後ろに置く文字  # fmt: skip
     out_start = n - 10  # フレーズの終わりで全部を 10f で消す（UT5 と見出し）
     layers = [it for it in bd.items if id(it) in behind]
-    front = [it for it in bd.items if id(it) not in behind]
+    # 読ませる字幕（UR1）は、見出し・模様の前に描く（PC の確認で、バラードのサビの巨大な列が
+    # 下の字幕に重なって読めなかった）
+    sub_ids = {id(it) for b, it in zip(owner, bd.items, strict=True) if b.role == "UR1"}
+    # 下の字幕（UP7）に重なる見出し・模様の列は、字幕の上端の 8px 上で切る（端からはみ出す
+    # 巨大な列でも、読ませる行を隠さない）
+    subs = [
+        (it.x - it.im.width / 2, it.x + it.im.width / 2, it.y - it.im.height / 2)
+        for b, it in zip(owner, bd.items, strict=True)
+        if b.role == "UR1" and b.up == "UP7"
+    ]
+    if subs:
+        x0 = min(a for a, _b, _t in subs)
+        x1 = max(b for _a, b, _t in subs)
+        top = min(t for _a, _b, t in subs) - 8 * bd.k
+        for b, it in zip(owner, bd.items, strict=True):
+            if b.role == "UR1" or id(it) in behind:
+                continue
+            left, right = it.x - it.im.width / 2, it.x + it.im.width / 2
+            bottom = it.y + it.im.height / 2
+            if right > x0 and left < x1 and bottom > top and it.y - it.im.height / 2 < top:
+                keep = max(1, round(top - (it.y - it.im.height / 2)))
+                it.y -= (it.im.height - keep) / 2
+                it.im = it.im.crop((0, 0, it.im.width, keep))
+    front = [it for it in bd.items if id(it) not in behind and id(it) not in sub_ids]
+    front += [it for it in bd.items if id(it) not in behind and id(it) in sub_ids]
     k = bd.k
 
     def state(it: Item, t: int, swap: bool) -> tuple[Any, ...] | None:

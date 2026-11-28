@@ -118,3 +118,19 @@ def test_u16_last_word_and_card() -> None:
     assert fr[-1].convert("RGB").getpixel((2, 2)) == (0x8E, 0x2F, 0x35)
     v = list(ls.word_card("題名", 1, 320, 180, lambda n: None, 12, vertical=True))
     assert v[-1].convert("RGB").getpixel((2, 2)) == (0xF3, 0xE9, 0xD8)
+
+
+def test_big_column_does_not_cover_bottom_subtitle() -> None:
+    """下の字幕（UR1・UP7）の範囲には、巨大な列（UR2）を重ねない（PC の確認: バラードのサビ）。"""
+    from dataclasses import replace
+
+    pic = Image.new("RGBA", (600, 900), (0, 0, 0, 0))
+    ImageDraw.Draw(pic).rectangle((150, 80, 450, 880), fill=(240, 120, 160, 255))
+    ph = ls.Phrase("chorus", ["テキストテキスト", "サンプルサンプル"], [(0, 40), (40, 80)], 0, 90,
+                   0, list(range(0, 90, 15)))  # fmt: skip
+    full = ls.screen_for("ballad", "chorus")
+    only = replace(full, blocks=tuple(b for b in full.blocks if b.role == "UR1"))
+    a = list(ls.frames(full, ph, pic, 960, 540, lambda n: None, 30))[60].convert("RGB")
+    b = list(ls.frames(only, ph, pic, 960, 540, lambda n: None, 30))[60].convert("RGB")
+    box = (300, 470, 660, 512)  # 下の字幕のあたり
+    assert a.crop(box).tobytes() == b.crop(box).tobytes()
