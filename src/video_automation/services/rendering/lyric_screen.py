@@ -88,7 +88,7 @@ DRAWN = {
     "US1", "US2", "US3", "US4", "US5", "US6", "US7", "UF1", "UF2", "UF3", "UF4", "UF5", "UF6",
     "UG0", "UG1", "UG3", "UG4", "UG5", "UK1", "UK2", "UK3", "UK5",
     "UH1", "UH2", "UH3", "UH4", "UH5", "UH7", "UH8", "UT1", "UT2", "UT3", "UT4", "UT5", "UT6",
-    "UD0", "UD1", "UD3",
+    "UD0", "UD1", "UD3", "UK4",
 }  # fmt: skip
 
 
@@ -405,7 +405,12 @@ EXTRA: dict[str, Screen] = {
     "U18": Screen((Block("UR2", uc="UC2", up="UP3", ul="UL5", us="US3", uf="UF4", ut="UT3",
                          px=84),),
                   uh="UH3", uk="UK2", colors=("#0C0C0C", "#FFFFFF", "#BDBDBD")),
+    # U9 下の帯に小さな歌詞（方向性を選んでいない曲で、絵が全面のとき。A メロ・B メロ）
+    "U9": Screen((Block("UR1", uc="UC1", up="UP1", ul="UL2", us="US2", uf="UF5", ut="UT2"),),
+                 uh="UH1", uk="UK5", colors=("#0E0E10", "#F3EFE6", "#F3EFE6")),
 }  # fmt: skip
+U9_SECTIONS = ("verse", "bridge")  # U9 を使うセクション（サビは動く文字のまま）
+BAND_TOP = 830  # UC1: 絵を画面の上から 830px（77%）に収め、その下を帯にする
 
 # 方向性 → (セクション, 何回目（0 から。None はすべて）) → 例の画面
 SECTION_SCREENS: dict[str, list[tuple[str, int | None, str]]] = {
@@ -619,6 +624,12 @@ class Builder:
         pic = self.pic.convert("RGBA") if self.pic is not None else None
         if pic is None:
             return bg
+        if any(b.uc == "UC1" for b in s.blocks):  # U9: 絵を上の 830px に、その下を帯に
+            top = round(BAND_TOP * k)
+            band = Image.new("RGBA", (w, h), (*_rgb(s.colors[0]), 255))
+            band.alpha_composite(ImageOps.fit(pic.convert("RGB"), (w, top)).convert("RGBA"))
+            self.pic_box = (w * 0.5, top / 2, w, top)
+            return band
         has_alpha = pic.getchannel("A").getextrema()[0] < 250
         if s.uk == "UK5" and has_alpha:  # 背景の無い絵（立ち絵）: 暗い地に人物を左下 380px
             self.ground = (20, 10, 30)
@@ -776,7 +787,8 @@ class Builder:
         if b.ul == "UL2" and b.role == "UR1":  # 横 2 行: 2 行ずつ組み、行間は文字の 1.3 倍
             for i in range(0, len(ph.lines), 2):
                 pair = ph.lines[i : i + 2]
-                ims = [self._line_img(b, t, size, ink) for t in pair]
+                trk = 0.10 if b.uc == "UC1" else 0.0  # U9 の字間 +10%
+                ims = [self._line_img(b, t, size, ink, track=trk) for t in pair]
                 for j, im in enumerate(ims):
                     if im.width > w * 0.94:
                         r = w * 0.94 / im.width
@@ -786,7 +798,11 @@ class Builder:
                 a = ph.frames[i][0]
                 nxt = ph.frames[i + 2][0] if i + 2 < len(ph.frames) else None
                 for j, im in enumerate(ims):
-                    y = h - 56 * k - size * 1.3 * (len(ims) - 1 - j) - im.height / 2
+                    if b.uc == "UC1":  # 帯の中: 1 行は上端から 52px、2 行は 22px
+                        top = BAND_TOP * k + (52 if len(ims) == 1 else 22) * k
+                        y = top + size * 1.3 * j + size / 2
+                    else:
+                        y = h - 56 * k - size * 1.3 * (len(ims) - 1 - j) - im.height / 2
                     self.items.append(Item(im, w / 2, y, a, nxt, "fade"))
             return
         if b.ul == "UL1" and b.role == "UR1":  # 1 行ずつ（UT2）か 1 行の札（UT3 は拍に 1 枚）
@@ -1191,6 +1207,78 @@ def frames(
             wh = Image.new("RGBA", (w, h), (255, 255, 255, round(255 * 0.9 * (1 - t / 3))))
             im.alpha_composite(wh)
         prev_key, prev = key, im
+        yield im
+
+
+# ---- U16 単色のカードと 1 語（ボカロ（しっとり系）・バラード） --------------------------------
+U16_DIRECTIONS = ("vocaloid_calm", "ballad")
+U16_COLORS = (("#8E2F35", "#F3E9D8"), ("#F3E9D8", "#243A4A"), ("#243A4A", "#F3E9D8"))
+U16_LEN = 18  # 行の終わりの前に見せるフレーム数（最後の語を歌っている間）
+_SEP = (" ", "\u3000", "、", "，", ",")
+
+
+def _is_kanji_kata(ch: str) -> bool:
+    return "\u4e00" <= ch <= "\u9fff" or "\u30a1" <= ch <= "\u30fa" or ch in "々〆"
+
+
+def last_word(line: str) -> str:
+    """行の最後の語。空白・読点があれば最後の区切りの後ろ。無ければ、最後の漢字・カタカナの
+    続き（とその後ろのひらがな）を語とみなす（「光の方へ」→「方へ」）。漢字・カタカナが無い行は
+    行の全体。句読点・記号は除く。"""
+    t = line.strip().rstrip("。．.！!？?〜～ー…")
+    cut = max(t.rfind(x) for x in _SEP)
+    if cut >= 0:
+        return t[cut + 1 :].strip()
+    i = len(t)
+    while i > 0 and not _is_kanji_kata(t[i - 1]):
+        i -= 1
+    if i == 0:
+        return t
+    while i > 0 and _is_kanji_kata(t[i - 1]):
+        i -= 1
+    return t[i:]
+
+
+def word_card(word: str, idx: int, w: int, h: int, fonts: Callable[[str], str | None],
+              n: int, vertical: bool = False) -> Iterator[Any]:  # fmt: skip
+    """U16: 単色の全面に 1 語（1 字 300px・2 字 220px、Shippori Mincho ExtraBold）を
+    scale 1.15→1・10f で置く。入りは右から左へ進む斜めの境目（傾きは画面の幅の 30%）、8f
+    （easeOutExpo）。vertical は間奏の頭の 40px の縦書き 1 列（1 文字 3f ずらし）。"""
+    from PIL import Image, ImageDraw
+
+    k = h / 1080
+    ground, ink = (_rgb(c) for c in U16_COLORS[idx % len(U16_COLORS)])
+    size = round((40 if vertical else (300 if len(word) <= 1 else 220)) * k)
+    f = _font(fonts, "UF2", size)
+    glyphs = [_glyph(ch, f, size, ink) for ch in word if not ch.isspace()]
+    base = Image.new("RGBA", (w, h), (*ground, 255))
+    for t in range(n):
+        im = base.copy()
+        if vertical:
+            y0 = h / 2 - size * len(glyphs) / 2
+            for i, g in enumerate(glyphs):
+                if t >= i * 3:
+                    im.alpha_composite(
+                        g,
+                        (round(w / 2 - g.width / 2), round(y0 + i * size - (g.height - size) / 2)),
+                    )
+        elif glyphs:
+            u = min(1.0, t / 10)
+            sc = 1.15 - 0.15 * (1 - (1 - u) ** 3)
+            row = Image.new("RGBA", (sum(g.width for g in glyphs), glyphs[0].height), (0, 0, 0, 0))
+            x = 0
+            for g in glyphs:
+                row.alpha_composite(g, (x, 0))
+                x += g.width
+            row = row.resize((max(1, round(row.width * sc)), max(1, round(row.height * sc))))
+            im.alpha_composite(row, (round(w / 2 - row.width / 2), round(h / 2 - row.height / 2)))
+        if t < 8:  # 右から左へ進む斜めの境目（境目より右だけ見せ、左は透明）
+            u = 1 - 2 ** (-10 * (t + 1) / 8)
+            edge = w * (1.3 - 1.3 * u)
+            m = Image.new("L", (w, h), 0)
+            ImageDraw.Draw(m).polygon([(edge, 0), (w * 2, 0), (w * 2, h), (edge - w * 0.3, h)],
+                                      fill=255)  # fmt: skip
+            im.putalpha(m)
         yield im
 
 

@@ -1959,6 +1959,27 @@ async def test_kids_cards_tremble_f3(dclient):
     assert all(names2[x["asset_id"]] != "線のふるえ（F3）" for x in by2.get("card", []))
 
 
+async def test_kids_diagram_trembles_f3(dclient):
+    """統合版 F3: 子ども向けの図形（図解のトラックの N7 定義カード）もふるわせる。"""
+    c = dclient
+    lines = [
+        {"speaker": "A", "text": "今日はずんだもちのお話をするよ。"},
+        {"speaker": "B", "text": "ずんだもちとは、えだまめをつぶしたおかしのことです。"},
+        {"speaker": "A", "text": "みどりいろでとってもきれいだね。"},
+    ]
+    pid, sid = await _ready_script(c, lines)
+    tl, _by = await _apply(c, pid, sid, "kids")
+    names = {a["id"]: a["name"] for a in tl["assets"]}
+    tr = next((t for t in tl["tracks"] if t["name"] == "演出・図解"), None)
+    assert tr is not None, [t["name"] for t in tl["tracks"]]
+    clips = [x for x in tl["clips"] if x["track_id"] == tr["id"]]
+    assert clips and all(names[x["asset_id"]] == "線のふるえ（F3）" for x in clips)
+    # 統合版 T52: 題名の文字も大きさの段数に数える
+    rec = await c.app.state.container.design.direction_record(pid)
+    kinds = {t[0] for t in rec.get("texts") or []}
+    assert "title" in kinds, kinds
+
+
 async def test_glass_cards_blur_what_is_behind_y8(dclient, tmp_path):
     """統合版 Y8: ガラスの型のカード・強調テロップは、カードの形の所だけ下の画をぼかして敷く。"""
     import shutil

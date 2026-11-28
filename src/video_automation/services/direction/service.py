@@ -342,7 +342,7 @@ _T35_NUM = re.compile(r"[0-9]{2,}")
 T28_PURPOSES = frozenset({Purpose.EXPLAINER, Purpose.LECTURE, Purpose.KIDS})
 T28_ENTER = 10
 # 統合版 F3: 子ども向けで縁をふるわせるクリップ（役割）と、ずらす量（1080p の px）
-F3_ROLES = frozenset({"card", "keyword"})
+F3_ROLES = frozenset({"card", "keyword", "chart"})  # 図表（D）の図形も
 F3_PX = 1.5
 F3_MAX = 40
 
@@ -1271,7 +1271,7 @@ class DirectionService:
         targets = [
             (i, c)
             for i, c in enumerate(cmds)
-            if isinstance(c, AddClip) and roles.get(c.clip_id or "") in F3_ROLES
+            if isinstance(c, AddClip) and roles.get(c.clip_id or "") in F3_ROLES | {"diagram"}
             and (c.duration_frames or 0) > 0
         ]  # fmt: skip
         if not targets:
@@ -2859,6 +2859,14 @@ class DirectionService:
                     )
                 )
             t_len = min(title_end, media_frames(t_asset, title_end))
+            # 統合版 T52: 題名の文字の大きさ（Blender の題名は幅の 80%・高さの 25% に収めて
+            # size 倍。1 行の文字はほぼ正方形として、字の高さを見積もる）
+            n_ch = max(1, max((len(x) for x in plan.title[:100].split("\n")), default=1))
+            t_px = min(0.8 * w / n_ch, 0.25 * h) * t_size
+            texts.append(
+                TextUse("title", [round(t_px / min(w, h), 4)], len(plan.title[:100]),
+                        sec(t_at), sec(t_at + t_len))
+            )  # fmt: skip
             t_cid = add(
                 txt_t,
                 t_asset.id,
@@ -3410,6 +3418,14 @@ class DirectionService:
                 )
                 use(Component.LOWER_THIRD)
                 animate(cid, n, slide_preset("left", mspec))
+                # 統合版 T52: 名前帯の 2 行（P1: 画面の高さの 4.5% と 3.5%）
+                job = info.get("job_title", "")
+                texts.append(
+                    TextUse("lower_third",
+                            [round(r * h / min(w, h), 4) for r in ((0.045, 0.035) if job
+                                                                   else (0.045,))],
+                            len(spk) + len(job), sec(at), sec(at + n))
+                )  # fmt: skip
         texts_all = [x.text for x in lines]
         part_dir = Path(self.settings.data_dir) / "projects" / p.id / "assets"
         font = self.titles.font_path(heading_font)
@@ -3744,6 +3760,10 @@ class DirectionService:
             if prof.purpose in (Purpose.TRAILER, Purpose.STORY):  # T44: 最初の台詞
                 no_subs.append((lines[0].start, lines[0].end))
         if prof is not None and prof.purpose == Purpose.KIDS:  # 統合版 F3: カード・図の縁のふるえ
+            # 図解のトラック（N7 定義・N10 クイズ など）のクリップも図形として揺らす
+            for c_ in cmds:
+                if isinstance(c_, AddClip) and c_.track_id == track.get(DIAGRAM_TRACK):
+                    roles.setdefault(c_.clip_id or "", "diagram")
             await self._f3_cards(p.id, cmds, roles, fps, h)
         res = await self.timeline.submit(
             p.id,
