@@ -676,7 +676,10 @@ async def test_music_video_ink_and_motif(bclient, media_dir):
     by = {t["name"]: t["id"] for t in tl["tracks"]}
     names = [t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"])]
     i = names.index("MV・ショット")
-    assert names[i + 1 : i + 5] == ["MV・キーの一字", "MV・形（白）", "MV・形（黒）", "MV・インク"]
+    # 全面の絵（透明なし）なので、A メロ・B メロは U9 の歌詞の画面（形の上・インクの下）
+    assert names[i + 1 : i + 6] == [
+        "MV・キーの一字", "MV・形（白）", "MV・形（黒）", "MV・歌詞の画面", "MV・インク"
+    ]  # fmt: skip
     # 統合版 T26: サビの間、背景に巨大な一字
     key = [x for x in tl["clips"] if x["track_id"] == by["MV・キーの一字"]]
     assert key and all(x["end_frame"] > x["start_frame"] for x in key)
@@ -790,6 +793,66 @@ async def test_lecture_from_slides(bclient, fake, media_dir):
     assert order.index("画面録画") < order.index("手描きの印")
     fixed = next(x for x in marks if clips[1]["start_frame"] <= x["start_frame"])
     assert max(k.get("zoom") or 1 for k in fixed["animation"]["keyframes"]) > 1.0
+
+
+async def test_music_video_u9_band_and_u16_cards(bclient, media_dir):
+    """統合版 U9: 方向性なしで全面の絵なら、A メロ・B メロを帯の画面にし、その範囲を記録する
+    （書き出しはその範囲の Blender の歌詞を外す）。U16: バラードは短い語で終わる行にカード。"""
+    import wave
+
+    import numpy as np
+    from PIL import Image
+
+    from video_automation.services.transcribe.align import Word
+    from video_automation.services.transcribe.service import Recognized
+
+    sr, sec = 22050, 16
+    song = media_dir / "beat_u9.wav"
+    with wave.open(str(song), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        t = np.arange(sr * sec) / sr
+        f.writeframes((np.sin(2 * np.pi * 70 * t) * 3000).astype("<i2").tobytes())
+    Image.new("RGB", (640, 360), (90, 140, 200)).save(media_dir / "full.png")
+    c = bclient
+    await c.post("/providers/discover")
+
+    def fake(audio, language):
+        return Recognized(
+            words=[Word("よるを", 4.1, 4.8), Word("こえて", 4.8, 6.2), Word("ほうへ", 8.3, 9.9)],
+            segments=[("夜を越えて", 4.1, 6.2), ("方へ", 8.3, 9.9)],
+            language="ja",
+            duration=16.0,
+        )
+
+    c.app.state.container.transcriber._recognizer = fake
+    for direction in ("", "ballad"):
+        body = {
+            "instruction": "「夜の歌」の MV を作って",
+            "music": str(song),
+            "lyrics": "夜を こえて\n光の 方へ",
+            "image": str(media_dir / "full.png"),
+        }
+        if direction:
+            body["lyric_direction"] = direction
+        plan = (await c.post("/build/plan", json=body)).json()  # fmt: skip
+        assert plan["title"] == "夜の歌"
+        pid = plan["project_id"]
+        r = await c.post(f"/build/{pid}/run", json={"script_id": plan["script_id"]})
+        job = await c.app.state.jobs.wait(r.json()["id"])
+        assert job.status == "SUCCEEDED", job.error
+        notes = job.result["notes"]
+        rec = await c.app.state.container.design.recorded(pid, "mv_shots")
+        tl = (await c.get(f"/projects/{pid}/timeline")).json()
+        names = {a["id"]: a["name"] for a in tl["assets"]}
+        if not direction:
+            assert any("U9" in n for n in notes), notes
+            assert rec["lyric_screens"] >= 1 and len(rec["lyric_spans"]) == rec["lyric_screens"]
+            assert any(v == "歌詞の画面（U9）" for v in names.values())
+        else:
+            assert rec["word_cards"] >= 1, notes
+            assert any(v == "単色のカード「方へ」" for v in names.values()), names
 
 
 async def test_music_video_lyric_screens_by_direction(bclient, media_dir):

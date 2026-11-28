@@ -1204,11 +1204,23 @@ class RenderService:
             rich.params["intro_frames"] = 0
             rich.notes.append("題名カードがあるため、冒頭の題名は付けませんでした")
         lyric_args: dict[str, Any] = {}
+        covered: list[tuple[int, int]] = []
         if rich.parts.get("lyrics") and cues:
-            # 統合版 U2〜U5: 歌詞の画面（MV のショットの上の画）を作っていれば、歌詞は二重に出さない
-            if (await self.design.recorded(req.project_id, "mv_shots")).get("lyric_screens"):
-                rich.parts["lyrics"] = False
-                rich.notes.append("歌詞は歌詞の画面に描いたので、Blender の歌詞は出しませんでした")
+            # 統合版 U2〜U5・U9: 歌詞の画面（MV のショットの上の画）で描いた範囲の歌詞は、Blender で
+            # 二重に出さない。範囲の記録が無い（前の版で作った）ときは、歌詞をすべて出さない
+            rec_ = await self.design.recorded(req.project_id, "mv_shots")
+            if rec_.get("lyric_screens"):
+                spans_ = rec_.get("lyric_spans")
+                if spans_ is None:
+                    rich.parts["lyrics"] = False
+                else:
+                    covered = [(int(a) - r0, int(b) - r0) for a, b in spans_]
+                    if all(any(a <= c_["start_frame"] < b for a, b in covered) for c_ in cues):
+                        rich.parts["lyrics"] = False
+                if not rich.parts.get("lyrics"):
+                    rich.notes.append(
+                        "歌詞は歌詞の画面に描いたので、Blender の歌詞は出しませんでした"
+                    )
         if rich.parts.get("lyrics") and cues:
             # 統合版 M3（セクションごとの置き方）・M7（ジャンルの書体と質感）・M5（コマ打ち）
             dsg_ = await self.design.get(req.project_id)
@@ -1246,6 +1258,12 @@ class RenderService:
                 cue_["motion"] = list(mo_)
                 if s_ == "bridge":
                     cue_["small"] = particle_spans(cue_["text"])
+            if covered:  # 歌詞の画面で描いた行は、セクションと動きを決めた後で外す
+                cues = [x for x in cues
+                        if not any(a <= x["start_frame"] < b for a, b in covered)]  # fmt: skip
+                rich.notes.append(
+                    "A メロ・B メロの歌詞は歌詞の画面に描き、サビは動く文字で出しました"
+                )
             fam, weight, texture = genre_style(genre)
             gfont = (
                 self.font_for(f"{fam} {weight}") or self.font_for(fam) if self.font_for else None

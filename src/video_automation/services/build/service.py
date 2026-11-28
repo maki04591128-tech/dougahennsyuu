@@ -155,6 +155,7 @@ MV_VIS_TRACK = "MV・音の視覚化"  # 統合版 M10・M11
 MV_KEY_TRACK = "MV・キーの一字"  # 統合版 T26
 MV_T29_TRACK = "MV・文字の絵"  # 統合版 T29
 MV_U_TRACK = "MV・歌詞の画面"  # 統合版 U2〜U5（曲の方向性を選んだとき）
+MV_U16_TRACK = "MV・歌詞のカード"  # 統合版 U16（しっとり系・バラードの短い語）
 X4_TRACK = "演出・擬音"  # 統合版 X4
 MV_X7_TRACK = "MV・落ちサビの粒"  # 統合版 X7
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
@@ -204,6 +205,29 @@ def _title(instruction: str) -> str:
         if t.endswith(suf):
             t = t[: -len(suf)]
     return (t.strip(" 　。") or "新しい動画")[:40]
+
+
+def _is_opaque(path: Path) -> bool:
+    """透明の部分が無い画像（全面の絵）か。読めなければ False。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            if im.mode not in ("RGBA", "LA", "P"):
+                return True
+            return im.convert("RGBA").getchannel("A").getextrema()[0] >= 250
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _song_title(instruction: str, music: Path) -> str:
+    """MV・リリックの題名: 指示の文に「」か『』で囲んだ曲名があればそれ、無ければ曲の
+    ファイル名（拡張子を除き、_ と - を空白に）。「この曲の MV」を題名にしない。"""
+    m = re.search(r"[「『]([^」』]{1,40})[」』]", instruction)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    stem = re.sub(r"[_\-]+", " ", music.stem).strip()
+    return (stem or "新しい曲")[:40]
 
 
 VERTICAL_STRUCTURE = (
@@ -437,6 +461,8 @@ class BuildService:
             uniq.setdefault(x.name, x)
         chars = list(uniq.values())
         title = _title(req.instruction)
+        if music_path is not None:  # 曲から作るときは、指示の文ではなく曲の名前を題名にする
+            title = _song_title(req.instruction, music_path)
         async with c.db.session_factory() as s:
             p = Project(name=title, width=w, height=h, fps_num=30, fps_den=1)
             s.add(p)
@@ -1768,13 +1794,26 @@ class BuildService:
                 cmds.append(AddClip(track_id=x7_tid, asset_id=a_.id, start_frame=pos,
                                     duration_frames=n, clip_id=str(uuid4())))  # fmt: skip
                 pos += n
-        # 統合版 U2〜U5: 曲の方向性を選んでいれば、歌の区間をフレーズごとの歌詞の画面にする
-        n_u = 0
+        # 統合版 U2〜U5: 曲の方向性を選んでいれば、歌の区間をフレーズごとの歌詞の画面にする。
+        # U9: 選んでいなくても、絵が全面（透明の無い画像）なら A メロ・B メロを帯の画面にする
+        n_u, u_spans = 0, []
+        opaque = await asyncio.to_thread(_is_opaque, src)
         if dsg.lyric_direction in ls_.PRESETS:
-            n_u = await self._lyric_screens(project_id, dsg.lyric_direction, cues, secs, bt,
-                                            src, fps, w, h, cmds, track)  # fmt: skip
+            n_u, u_spans = await self._lyric_screens(
+                project_id, dsg.lyric_direction, cues, secs, bt, src, fps, w, h, cmds, track
+            )
+        elif opaque:
+            n_u, u_spans = await self._lyric_screens(
+                project_id, "", cues, secs, bt, src, fps, w, h, cmds, track
+            )
         elif MV_U_TRACK in tracks:
             track(MV_U_TRACK, None)  # 前に作った歌詞の画面を消す
+        # 統合版 U16: しっとり系・バラードは、最後の語が 2 字以下の行と間奏の頭に単色のカード
+        n_card = 0
+        if dsg.lyric_direction in ls_.U16_DIRECTIONS:
+            n_card = await self._word_cards(project_id, cues, fps, w, h, cmds, track)
+        elif MV_U16_TRACK in tracks:
+            track(MV_U16_TRACK, None)
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
         await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
         await c.timeline.submit(
@@ -1796,6 +1835,8 @@ class BuildService:
                 "motif": len(bars),
                 "v7": v7,
                 "lyric_screens": n_u,
+                "lyric_spans": u_spans,  # 歌詞の画面で歌詞を描いた範囲（Blender の歌詞を出さない）
+                "word_cards": n_card,
             },
         )
         notes = [
@@ -1808,11 +1849,17 @@ class BuildService:
             notes.append("イントロに拍の輪、2 回目からの間奏にスペクトラムを入れました")
         if n_t29:
             notes.append("最初の間奏の頭の 1 小節を、直前の歌詞の文字で描いた絵にしました")
-        if n_u:
+        if n_u and dsg.lyric_direction in ls_.PRESETS:
             notes.append(
                 f"歌の区間を、方向性「{ls_.DIRECTION_NAMES[dsg.lyric_direction]}」の歌詞の画面"
                 f" {n_u} 枚にしました（A メロ・B メロとサビで組み方を替えています）"
             )
+        elif n_u:
+            notes.append(
+                f"A メロ・B メロ {n_u} か所を、絵の下の帯に小さな歌詞を出す画面にしました（U9）"
+            )
+        if n_card:
+            notes.append(f"短い語で終わる行と間奏の頭 {n_card} か所に、単色のカードをはさみました")
         v7_text = [
             t
             for t, k in (
@@ -1843,7 +1890,7 @@ class BuildService:
         h: int,
         cmds: list[Any],
         track: Any,
-    ) -> int:
+    ) -> tuple[int, list[list[int]]]:
         """統合版 U2〜U5: 歌の区間を、フレーズ（同じセクションの続く最大 4 行）ごとの歌詞の画面
         （不透明の画の列）にして、ショットの上に置く。イントロ・間奏は文字なし（UR0）のまま、
         今のショットを見せる。歌詞は書き出しの Blender の歌詞を出さない（render が記録を見る）。"""
@@ -1853,8 +1900,10 @@ class BuildService:
         spans = [((x.start_frame or 0), (x.end_frame or x.start_frame or 0)) for x in cues]
         beats = [round(t * fps) for t in bt.times]
         phs = ls_.phrases([x.text for x in cues], spans, secs, beats)
+        if not direction:  # U9: A メロ・B メロだけ
+            phs = [x for x in phs if x.section in ls_.U9_SECTIONS]
         if not phs:
-            return 0
+            return 0, []
         pic = await asyncio.to_thread(lambda: Image.open(src).convert("RGBA"))
         tid = track(MV_U_TRACK, MV_MOTIF_TRACKS[1])
 
@@ -1862,24 +1911,61 @@ class BuildService:
             return c.titles.font_path(name)
 
         made = 0
+        covered: list[list[int]] = []
         seen: dict[str, int] = {}
         for i, ph in enumerate(phs):
             kind = "chorus" if ph.section == "chorus_first" else ph.section
             nth = seen.get(kind, 0)
             seen[kind] = nth + 1
-            scr = ls_.screen_for(direction, ph.section, nth)
+            scr = ls_.screen_for(direction, ph.section, nth) if direction else ls_.EXTRA["U9"]
             gen = ls_.frames(scr, ph, pic, w, h, fonts, fps, seed=i)
-            a = await c.direction._overlay(
-                project_id,
-                gen,
-                f"歌詞の画面（{ls_.DIRECTION_NAMES.get(direction, direction)}）",
-                fps,
-            )
+            label = ls_.DIRECTION_NAMES.get(direction, direction) if direction else "U9"
+            a = await c.direction._overlay(project_id, gen, f"歌詞の画面（{label}）", fps)
             cmds.append(
                 AddClip(track_id=tid, asset_id=a.id, start_frame=ph.start,
                         duration_frames=ph.end - ph.start, clip_id=str(uuid4()))
             )  # fmt: skip
+            covered.append([ph.start, ph.end])
             made += 1
+        return made, covered
+
+    async def _word_cards(
+        self, project_id: str, cues: list[Any], fps: float, w: int, h: int, cmds: list[Any],
+        track: Any,
+    ) -> int:  # fmt: skip
+        """統合版 U16: 最後の語が 2 字以下の行の終わり（18f）と、間奏の頭（2 秒）に単色のカード。
+        間奏は、前の行の終わりから次の行まで 6 秒以上あいた所（最初の行の前は除く）。
+        間奏の頭には曲の題名（プロジェクトの名前）を 40px の縦書きで出す。"""
+        c = self.c
+        tid = track(MV_U16_TRACK, MV_U_TRACK)
+
+        def fonts(name: str) -> str | None:
+            return c.titles.font_path(name)
+
+        async with c.db.session_factory() as s:
+            p = await s.get(Project, project_id)
+            title = (p.name if p else "")[:12]
+        made = 0
+        timed = [x for x in cues if x.start_frame is not None]
+        for i, x in enumerate(timed):
+            st, en = int(x.start_frame or 0), int(x.end_frame or x.start_frame or 0)
+            word = ls_.last_word(x.text)
+            if 0 < len(word) <= 2 and en - st > ls_.U16_LEN + 6:
+                n = ls_.U16_LEN
+                gen = ls_.word_card(word, made, w, h, fonts, n)
+                a = await c.direction._overlay(project_id, gen, f"単色のカード「{word}」", fps)
+                cmds.append(AddClip(track_id=tid, asset_id=a.id, start_frame=en - n,
+                                    duration_frames=n, clip_id=str(uuid4())))  # fmt: skip
+                made += 1
+            nxt = timed[i + 1] if i + 1 < len(timed) else None
+            gap = (int(nxt.start_frame or 0) - en) if nxt is not None else 0
+            if title and nxt is not None and gap >= round(6 * fps):
+                n = round(2 * fps)
+                gen = ls_.word_card(title, made, w, h, fonts, n, vertical=True)
+                a = await c.direction._overlay(project_id, gen, "単色のカード（間奏の頭）", fps)
+                cmds.append(AddClip(track_id=tid, asset_id=a.id, start_frame=en + round(0.5 * fps),
+                                    duration_frames=n, clip_id=str(uuid4())))  # fmt: skip
+                made += 1
         return made
 
     async def _onomatopoeia(

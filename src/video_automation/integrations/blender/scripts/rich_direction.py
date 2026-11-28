@@ -196,7 +196,7 @@ LYRIC_TEXTURE = A.get("lyric_texture") or ""  # 統合版 M7: ジャンルの質
 
 def kinetic_text_scene(
     name, text, size, color, length, delay=2, dur=12, out_at=None, y=0.0, font_path="", texture="",
-    outline_light=False,
+    outline_light=False, edge=0.0,
 ):  # fmt: skip
     sc = eevee_scene(name, length)
     ob = bpy.data.objects.new(name, bpy.data.meshes.new(name))
@@ -293,14 +293,17 @@ def kinetic_text_scene(
     L.new(sci.outputs[0], rlz.inputs[0])
     L.new(rlz.outputs[0], fill.inputs["Curve"])
     L.new(fill.outputs[0], setm.inputs["Geometry"])
+    body = setm.outputs[0]
+    if edge > 0:  # 読みやすさ（G1）: 文字の後ろに暗い縁（V12 の黒、太さは文字の大きさ × edge）
+        body = edge_nodes(N, L, rlz.outputs[0], setm.outputs[0], size * edge)
     if outline_light:  # 統合版 T19: 輪郭の線の長さ 15% の光の区間を 24f で 1 周させる
         light = outline_light_nodes(N, L, rlz.outputs[0], frame, math_node)
         join = N.new("GeometryNodeJoinGeometry")
-        L.new(setm.outputs[0], join.inputs[0])
+        L.new(body, join.inputs[0])
         L.new(light, join.inputs[0])
         L.new(join.outputs[0], out.inputs["Geometry"])
     else:
-        L.new(setm.outputs[0], out.inputs["Geometry"])
+        L.new(body, out.inputs["Geometry"])
     mat = bpy.data.materials.new(name)
     b = mat.node_tree.nodes["Principled BSDF"]
     b.inputs["Base Color"].default_value = (*color, 1)
@@ -331,6 +334,36 @@ def kinetic_text_scene(
 PX = 16.0 / W  # 文字の場面の 1px（カメラの可視幅は長辺で 16）
 T19_PERIOD = 24  # 1 周のフレーム数
 T19_LEN = 0.15  # 光の区間の長さ（輪郭の長さに対する比）
+
+
+EDGE_RGB = (0.0056, 0.0056, 0.0056)  # V12 の黒 #111111（線形）
+LYRIC_EDGE = 0.06  # 歌詞の縁の太さ（文字の大きさに対する比。C1 の縁と同じ値）
+
+
+def edge_nodes(N, L, curves, body, radius):
+    """文字の輪郭（曲線）を太さ radius の線にして暗い色で塗り、面の少し後ろに置いて合わせる。
+    明るいショットの上でも明るい色の歌詞が読めるようにする（G1）。"""
+    prof = N.new("GeometryNodeCurvePrimitiveCircle")
+    prof.inputs["Resolution"].default_value = 8
+    prof.inputs["Radius"].default_value = radius
+    c2m = N.new("GeometryNodeCurveToMesh")
+    L.new(curves, c2m.inputs["Curve"])
+    L.new(prof.outputs["Curve"], c2m.inputs["Profile Curve"])
+    em = bpy.data.materials.get("lyric_edge") or bpy.data.materials.new("lyric_edge")
+    b = em.node_tree.nodes["Principled BSDF"]
+    b.inputs["Base Color"].default_value = (*EDGE_RGB, 1)
+    b.inputs["Emission Color"].default_value = (*EDGE_RGB, 1)
+    b.inputs["Emission Strength"].default_value = 1.0
+    sm = N.new("GeometryNodeSetMaterial")
+    sm.inputs["Material"].default_value = em
+    L.new(c2m.outputs[0], sm.inputs["Geometry"])
+    back = N.new("GeometryNodeTransform")
+    back.inputs["Translation"].default_value = (0.0, 0.0, -radius * 2)
+    L.new(sm.outputs[0], back.inputs["Geometry"])
+    join = N.new("GeometryNodeJoinGeometry")
+    L.new(back.outputs[0], join.inputs[0])
+    L.new(body, join.inputs[0])
+    return join.outputs[0]
 
 
 def outline_light_nodes(N, L, curves, frame, math_node):
@@ -1173,6 +1206,7 @@ def main():
                     font_path=LYRIC_FONT,
                     texture=LYRIC_TEXTURE,
                     outline_light=bool(c.get("motion")) and c["motion"][1] == "outline_light",
+                    edge=LYRIC_EDGE,
                 )
                 ksc.eevee.taa_render_samples = 1 if DRAFT else 8
                 if sec in ("chorus", "chorus_first"):  # 統合版 M3: サビは斜め（−8°）
