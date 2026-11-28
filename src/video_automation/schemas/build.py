@@ -32,6 +32,11 @@ class BuildRequest(BaseModel):
     lyrics: str = Field(default="", max_length=20000)
     # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
     image: str = Field(default="", max_length=1000)
+    # 統合版 U1: 曲の方向性（MV・リリック）。指定すると歌の区間を方向性の歌詞の画面にする
+    lyric_direction: str = Field(
+        default="",
+        pattern=r"^(|vocaloid_cool|vocaloid_cute|vocaloid_calm|anison|ballad|rap|pop|idol)$",
+    )
     # 統合版 P3: 講義のスライドの PDF（絶対パス・取り込みを許可したフォルダの中）。
     # 指定すると用途は「講義」になり、ページを 2 倍の解像度の画像にして話に合わせて切り替える
     slides: str = Field(default="", max_length=1000)

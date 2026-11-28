@@ -444,6 +444,8 @@ class BuildService:
             pid = p.id
             await s.commit()
         await c.design.set(pid, ProjectDesign(purpose=purpose))
+        if req.lyric_direction:  # 統合版 U1
+            await c.design.set(pid, ProjectDesign(lyric_direction=req.lyric_direction))
         if music_path is not None:
             await c.timeline.import_asset(
                 AssetImportRequest(

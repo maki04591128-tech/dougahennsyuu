@@ -117,6 +117,29 @@ async def test_build_needs_music_for_mv(bclient):
     assert any("曲のファイル" in n for n in plan["notes"])
 
 
+async def test_plan_sets_lyric_direction_and_keeps_purpose(bclient):
+    """統合版 U1: 計画のときに曲の方向性を渡せる。方向性だけの更新で用途は消えない
+    （PC のプレイテストで、方向性だけを PUT したら用途が消えて画面演出が付かなかった）。"""
+    c = bclient
+    await c.post("/providers/discover")
+    plan = (
+        await c.post(
+            "/build/plan",
+            json={"instruction": "この曲のリリックビデオを作って", "lyric_direction": "rap"},
+        )
+    ).json()
+    pid = plan["project_id"]
+    d = (await c.get(f"/projects/{pid}/design")).json()
+    assert d["lyric_direction"] == "rap" and d["purpose"] == plan["purpose"]
+    r = await c.put(f"/projects/{pid}/design", json={"lyric_direction": "pop"})
+    assert r.status_code == 200 and r.json()["purpose"] == plan["purpose"], r.text
+    assert r.json()["lyric_direction"] == "pop"
+    r = await c.put(f"/projects/{pid}/design", json={"purpose": None})  # 明示すれば外せる
+    assert r.json()["purpose"] is None
+    bad = await c.post("/build/plan", json={"instruction": "MV", "lyric_direction": "jazz"})
+    assert bad.status_code == 422
+
+
 async def test_voice_engine_started_after_the_app_is_found(bclient, fake):
     """アプリより後に VOICEVOX を起動しても、確かめ直して使えるようになる。"""
     c = bclient
