@@ -158,7 +158,8 @@ def ocr_samples(
 class Finish:
     """仕上げの計画（録画の時刻・画素）。"""
 
-    pii: list[fin.Track] = field(default_factory=list)
+    pii: list[fin.Track] = field(default_factory=list)  # ぼかす個人情報
+    found: list[fin.Track] = field(default_factory=list)  # 見つけた個人情報（外した物も含む）
     segs: list[tuple[float, float, int]] = field(default_factory=list)
     keys: list[tuple[float, str]] = field(default_factory=list)
     cursor: list[tuple[float, float, float]] = field(default_factory=list)
@@ -431,6 +432,7 @@ class ScreencastService:
         speedup: bool = True,
         blur_pii: bool = True,
         spotlight: bool | None = None,
+        unblur: list[int] | None = None,
     ) -> AssetRead:
         """録画の素材から、操作している所へ寄った映像を作り、新しい素材として登録する。"""
         async with self.db.session_factory() as s:
@@ -456,7 +458,7 @@ class ScreencastService:
         changes = [c for c in changes if all(abs(c.t - k.t) > 1.0 for k in click_f)]
         shots = plan_shots(click_f + changes, dur, (w, h), params)
         fx, notes = await self._finish(
-            ff, src, dur, info.has_audio, motion, cursor, keys, speedup, blur_pii
+            ff, src, dur, info.has_audio, motion, cursor, keys, speedup, blur_pii, unblur
         )
         if spotlight is None:  # 既定は用途が操作説明のときだけ（統合版 N14）
             spotlight = await self._purpose(project_id) == "tutorial"
@@ -493,14 +495,17 @@ class ScreencastService:
             project_id, out, AssetKind.VIDEO, "screencast", f"{a.name}（自動ズーム）"
         )
         rep: dict[str, Any] = {
+            # index は外すときに unblur で指す番号。blurred は今回ぼかしたか
             "pii": [
                 {
+                    "index": i,
                     "kind": tr.kind,
                     "text": fin.mask(tr.text),
                     "start": round(max(0.0, tr.t0), 2),
                     "end": round(min(dur, tr.t1), 2),
+                    "blurred": any(tr is x for x in fx.pii),
                 }
-                for tr in fx.pii
+                for i, tr in enumerate(fx.found)
             ],
             "fast": [[round(a, 2), round(b, 2)] for a, b, sp in fx.segs if sp > 1],
             "notes": notes,
@@ -537,6 +542,7 @@ class ScreencastService:
         keys: list[tuple[float, str]] | None,
         speedup: bool,
         blur_pii: bool,
+        unblur: list[int] | None = None,
     ) -> tuple[Finish, list[str]]:
         notes: list[str] = []
         fx = Finish(cursor=sorted(cursor or []), keys=fin.visible_keys(keys or []))
@@ -558,7 +564,13 @@ class ScreencastService:
             else:
                 try:
                     samples = await asyncio.to_thread(ocr_samples, ff, src, self.ocr)
-                    fx.pii = fin.track(samples)
+                    fx.found = fin.track(samples)
+                    # W3: 利用者が一覧で確かめて「ぼかさない」とした物（番号）を外す
+                    skip = set(unblur or [])
+                    fx.pii = [t for i, t in enumerate(fx.found) if i not in skip]
+                    if skip & set(range(len(fx.found))):
+                        n_ = len(skip & set(range(len(fx.found))))
+                        notes.append(f"指定された {n_} 件の個人情報はぼかしませんでした")
                 except (OcrUnavailable, subprocess.CalledProcessError) as exc:
                     notes.append(f"個人情報のぼかしを省きました（{type(exc).__name__}）")
         return fx, notes

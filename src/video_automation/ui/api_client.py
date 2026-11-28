@@ -515,10 +515,35 @@ class ApiClient:
         return self._json(self._http.get(f"/projects/{project_id}/design"))
 
     def set_project_design(
-        self, project_id: str, purpose: str | None, extras: list[str] | None = None
+        self,
+        project_id: str,
+        purpose: str | None,
+        extras: list[str] | None = None,
+        hearing_aid: bool | None = None,
     ) -> dict[str, Any]:
-        body = {"purpose": purpose, "extras": extras or []}
+        """用途を保存する。extras・hearing_aid は渡したときだけ変える（統合版 Q7 の切り替え）。"""
+        body: dict[str, Any] = {"purpose": purpose}
+        if extras is not None:
+            body["extras"] = extras
+        if hearing_aid is not None:
+            body["hearing_aid"] = hearing_aid
         return self._json(self._http.put(f"/projects/{project_id}/design", json=body))
+
+    # ----- 統合版 W2: 直しから作った既定値の提案 -----
+    def edit_proposals(self) -> list[dict[str, Any]]:
+        return self._json(self._http.get("/design/edits/proposals"))
+
+    def accept_edit(self, purpose: str, component: str, item: str) -> dict[str, Any]:
+        body = {"purpose": purpose, "component": component, "item": item}
+        return self._json(self._http.post("/design/edits/accept", json=body))
+
+    def reject_edit(self, purpose: str, component: str, item: str) -> dict[str, Any]:
+        body = {"purpose": purpose, "component": component, "item": item}
+        return self._json(self._http.post("/design/edits/reject", json=body))
+
+    def reset_defaults(self, purpose: str | None = None) -> dict[str, Any]:
+        params = {"purpose": purpose} if purpose else {}
+        return self._json(self._http.delete("/design/defaults", params=params))
 
     def design_check(self, project_id: str, script_id: str | None = None) -> dict[str, Any]:
         params = {"script_id": script_id} if script_id else {}

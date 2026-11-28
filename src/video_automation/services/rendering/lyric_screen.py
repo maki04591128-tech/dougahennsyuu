@@ -1279,14 +1279,16 @@ def last_word(line: str) -> str:
 
 
 def word_card(word: str, idx: int, w: int, h: int, fonts: Callable[[str], str | None],
-              n: int, vertical: bool = False) -> Iterator[Any]:  # fmt: skip
+              n: int, vertical: bool = False,
+              colors: tuple[str, str] | None = None) -> Iterator[Any]:  # fmt: skip
     """U16: 単色の全面に 1 語（1 字 300px・2 字 220px、Shippori Mincho ExtraBold）を
     scale 1.15→1・10f で置く。入りは右から左へ進む斜めの境目（傾きは画面の幅の 30%）、8f
     （easeOutExpo）。vertical は間奏の頭の 40px の縦書き 1 列（1 文字 3f ずらし）。"""
     from PIL import Image, ImageDraw
 
     k = h / 1080
-    ground, ink = (_rgb(c) for c in U16_COLORS[idx % len(U16_COLORS)])
+    pair = colors or U16_COLORS[idx % len(U16_COLORS)]  # colors: U23 で流用するときの（地, 文字）
+    ground, ink = (_rgb(c) for c in pair)
     size = round((40 if vertical else (300 if len(word) <= 1 else 220)) * k)
     f = _font(fonts, "UF2", size)
     glyphs = [_glyph(ch, f, size, ink) for ch in word if not ch.isspace()]

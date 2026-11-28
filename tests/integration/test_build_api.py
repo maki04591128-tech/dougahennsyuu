@@ -430,6 +430,33 @@ async def test_game_play_from_recording_and_play_log(bclient, fake, media_dir):
         t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"]) if t["kind"] == "video"
     ]
     assert vids[-1] == "ワイプ", vids
+    # カード・図の間はワイプを半分にする（真ん中のカードに重ねない）。図のトラックに
+    # クリップ（1 秒）を置いて確かめる
+    from video_automation.schemas.timeline import AddClip as _Add
+    from video_automation.schemas.timeline import AddTrack as _Track
+    from video_automation.schemas.timeline import CommandRequest as _Req
+    from video_automation.schemas.timeline import TrackKind as _Kind
+
+    cont = c.app.state.container
+    pid = plan["project_id"]
+    fig = tracks.get("演出・図", {}).get("id")
+    cmds_ = []
+    if fig is None:
+        fig = "fig-test"
+        cmds_.append(_Track(kind=_Kind.VIDEO, name="演出・図", track_id=fig))
+    cmds_.append(_Add(track_id=fig, asset_id=wp[0]["asset_id"], start_frame=20,
+                      duration_frames=30))  # fmt: skip
+    for cmd in cmds_:
+        await cont.timeline.submit(pid, _Req(command=cmd, description="test"))
+    got = await cont.build._wipe_yield(pid)
+    assert got and "半分" in got[0], got
+    tl2 = (await c.get(f"/projects/{pid}/timeline")).json()
+    wp2 = next(x for x in tl2["clips"] if x["id"] == wp[0]["id"])
+    keys = wp2["animation"]["keyframes"]
+    assert [k["frame"] for k in keys] == [12, 20, 50, 58]
+    # 隅へ寄せる（ワイプの中心から見て隅の向き）
+    t_ = wp2["transform"]
+    assert keys[1]["scale"] == 0.5 and keys[1]["x"] * t_["x"] > 0 and keys[1]["y"] * t_["y"] > 0
 
 
 async def test_game_duo_with_timed_lines(bclient, fake, media_dir):
@@ -988,3 +1015,20 @@ async def test_music_video_placeholder_image(bclient, media_dir, media_settings)
     assert len(names[0]) == 1 and names[0] == names[1]
     plan = (await c.post("/build/plan", json={**body, "placeholder": False})).json()
     assert not any("仮の絵" in n for n in plan["notes"])
+
+
+async def test_podcast_cover_is_imported(bclient, media_dir):
+    """統合版 P2: 構成の cover はポッドキャストのときだけ「カバー: 」の名前で取り込む。"""
+    from PIL import Image
+
+    Image.new("RGB", (600, 600), (40, 80, 160)).save(media_dir / "pc.png")
+    c = bclient
+    await c.post("/providers/discover")
+    body = {"instruction": "2人で話すポッドキャストの動画", "cover": str(media_dir / "pc.png")}
+    plan = (await c.post("/build/plan", json=body)).json()
+    assert plan["purpose"] == "podcast", plan
+    assert any("カバー" in n and "中央" in n for n in plan["notes"]), plan["notes"]
+    tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+    assert any(a["name"] == "カバー: pc.png" for a in tl["assets"])
+    plan = (await c.post("/build/plan", json={**body, "instruction": "解説動画"})).json()
+    assert any("ポッドキャストのときだけ" in n for n in plan["notes"]), plan["notes"]

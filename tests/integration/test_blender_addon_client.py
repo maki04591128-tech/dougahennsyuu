@@ -259,3 +259,14 @@ def test_build_plan_sends_facecam_only_with_recording(monkeypatch):
     assert sent[-1]["facecam"] == "C:/v/cam.mp4"
     c.build_plan("ゲーム実況", facecam="C:/v/cam.mp4")
     assert "facecam" not in sent[-1]
+
+
+def test_build_plan_sends_cover(monkeypatch):
+    """統合版 P2: カバーの画像は指定したときだけ送る（使うかはエンジンが用途で決める）。"""
+    sent: list[dict] = []
+    monkeypatch.setattr(Client, "call", lambda self, m, path, body=None, **kw: sent.append(body))
+    c = Client("http://127.0.0.1:8765")
+    c.build_plan("ポッドキャスト", cover="C:/p/cover.png")
+    assert sent[-1]["cover"] == "C:/p/cover.png"
+    c.build_plan("ポッドキャスト")
+    assert "cover" not in sent[-1]

@@ -730,6 +730,35 @@ class SubtitleService:
             warnings=warnings,
         )
 
+    async def _hearing_aid_rows(
+        self,
+        project_id: str,
+        rows: list[tuple[int, int, str, str]],
+        fps: Fraction,
+        cues: list[Any],
+    ) -> list[tuple[int, int, str, str]]:
+        """統合版 Q7: 書き出す字幕ファイル（SRT・ASS）にも聴覚補助の行を入れる。"""
+        if self.design is None:
+            return rows
+        from video_automation.database.models import Clip, Track
+        from video_automation.services.design.profiles import HEARING_AID
+        from video_automation.services.subtitle.formats import hearing_aid
+
+        d = await self.design.get(project_id)
+        if not d.hearing_aid or d.purpose not in HEARING_AID:
+            return rows
+        async with self.db.session_factory() as s:
+            q = (
+                select(Clip.start_frame, Clip.end_frame)
+                .join(Track, Track.id == Clip.track_id)
+                .where(Clip.project_id == project_id, Track.name == "BGM", Track.muted.is_(False))
+            )
+            spans = [(a, b) for a, b in (await s.execute(q)).all()]
+        music = (min(a for a, _ in spans), max(b for _, b in spans)) if spans else None
+        multi = len({c.speaker for c in cues if c.speaker}) >= 2
+        style = await self.project_style(project_id)
+        return hearing_aid(rows, fps, music, multi and not getattr(style, "speaker_label", False))
+
     async def export(self, req: SubtitleExportRequest) -> SubtitleExportResult:
         async with self.db.session_factory() as s:
             script, project = await self._project_of(s, req.script_id)
@@ -740,6 +769,7 @@ class SubtitleService:
         if any(c.start_frame is None or c.end_frame is None for c in cues):
             raise SubtitleStateError("synchronize subtitles first")
         rows = [(c.start_frame or 0, c.end_frame or 0, c.speaker, c.text) for c in cues]
+        rows = await self._hearing_aid_rows(project.id, rows, fps, cues)
         if req.format == SubtitleFormat.ASS:
             rb = await self.ruby_map(req.script_id)
             content = build_ass(
@@ -757,7 +787,7 @@ class SubtitleService:
                 ruby={i: rb[c.id] for i, c in enumerate(cues) if c.id in rb},
             )
         else:
-            content = build_srt(rows, fps)
+            content = build_srt(sorted(rows, key=lambda r: (r[0], r[1])), fps)
         out_dir = self.settings.data_dir / "projects" / project.id / "subtitles"
         out_dir.mkdir(parents=True, exist_ok=True)
         path: Path = out_dir / f"{script.id}.{req.format.value}"

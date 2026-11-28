@@ -58,6 +58,16 @@ def test_design_widget_classify_save_check(api):
     w.refresh()
     assert w.purpose_combo.currentData() == "explainer"
 
+    # 統合版 Q7: 聴覚補助の字幕は、選べる用途（字幕動画など）でだけ切り替えられる
+    assert not w.hearing_check.isEnabled()
+    w.purpose_combo.setCurrentIndex(w.purpose_combo.findData("subtitle"))
+    assert w.hearing_check.isEnabled()
+    w.hearing_check.setChecked(True)
+    w.save()
+    assert api.project_design(pid)["hearing_aid"] is True
+    w.refresh()
+    assert w.hearing_check.isChecked()
+
 
 def test_voice_characters_widget(api):
     from video_automation.ui.voice.characters import VoiceCharactersWidget
@@ -211,3 +221,34 @@ def test_project_widget_creates_and_imports(api, media_dir, settings):
     w.import_file()
     assert "取り込みました" in w.message_label.text() and w.asset_list.count() == 1
     assert w.asset_list.item(0).text().startswith("[動画]")
+
+
+def test_design_widget_edit_proposals(api, monkeypatch):
+    """統合版 W2: 直しから作った案を一覧にし、取り入れる・断る・元に戻すを API に送る。"""
+    from video_automation.ui.design.widget import DesignWidget
+
+    _qapp()
+    calls: list = []
+    props = [
+        {"purpose": "explainer", "component": "keyword", "item": "y", "amount": -0.04,
+         "videos": 5, "agree": 5, "text": "要点テロップを少し上に置く（5 本中 5 本で直した）"},
+    ]  # fmt: skip
+    monkeypatch.setattr(api, "edit_proposals", lambda: list(props))
+    monkeypatch.setattr(api, "accept_edit", lambda *k: calls.append(("accept", k)) or {})
+    monkeypatch.setattr(api, "reject_edit", lambda *k: calls.append(("reject", k)) or {})
+    monkeypatch.setattr(api, "reset_defaults", lambda *k: calls.append(("reset", k)) or {})
+    w = DesignWidget(api)
+    w.refresh()
+    assert w.proposal_tree.topLevelItemCount() == 1
+    assert "上に置く" in w.proposal_tree.topLevelItem(0).text(1)
+    w._choose(True)
+    assert calls[-1] == ("accept", ("explainer", "keyword", "y"))
+    assert "取り入れました" in w.status_label.text()
+    w._choose(False)
+    assert calls[-1] == ("reject", ("explainer", "keyword", "y"))
+    w.reset_learned()
+    assert calls[-1][0] == "reset"
+    props.clear()
+    w.load_proposals()
+    assert not w.accept_button.isEnabled()
+    assert "案がありません" in w.proposal_tree.topLevelItem(0).text(1)

@@ -145,6 +145,11 @@ class VA_Settings(bpy.types.PropertyGroup):
             "置きます"
         ),
     )
+    cover: StringProperty(  # type: ignore[valid-type]
+        name="カバーの画像",
+        subtype="FILE_PATH",
+        description="ポッドキャストの画面の中央に置く画像（任意。ポッドキャストのときだけ使います）",
+    )
     music: StringProperty(  # type: ignore[valid-type]
         name="曲",
         subtype="FILE_PATH",
@@ -926,6 +931,7 @@ class VA_OT_make_plan(bpy.types.Operator):
         server, orient = st.server, st.orientation
         rec = bpy.path.abspath(st.recording) if st.recording else ""
         cam = bpy.path.abspath(st.facecam) if st.facecam and st.recording else ""
+        cov = bpy.path.abspath(st.cover) if st.cover else ""
         song = bpy.path.abspath(st.music) if st.music else ""
         words = st.lyrics.as_string() if st.lyrics else ""
         pic = bpy.path.abspath(st.mv_image) if st.mv_image else ""
@@ -945,7 +951,7 @@ class VA_OT_make_plan(bpy.types.Operator):
                     ),
                 )
             )
-            plan = cl.build_plan(text, dur, orient, ref, rec, song, words, pic, direction, cam)
+            plan = cl.build_plan(text, dur, orient, ref, rec, song, words, pic, direction, cam, cov)
             _jobs.put(("plan", plan))
             _jobs.put(("status", "構成を確認してください"))
 
@@ -1155,6 +1161,8 @@ class VA_PT_make(bpy.types.Panel):
         if st.recording:
             box.label(text="録画の中身は AI に見えません。操作の手順も文章に書いてください")
             box.prop(st, "facecam")
+        if "ポッドキャスト" in st.instruction:
+            box.prop(st, "cover")
         box.prop(st, "music")
         if st.music:
             box.prop(st, "lyrics")

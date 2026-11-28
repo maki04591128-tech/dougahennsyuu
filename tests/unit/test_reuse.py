@@ -16,7 +16,7 @@ def test_reuse_table_uses_known_elements():
     for r in ru.REUSE:
         for code in r.codes:
             assert code in ls.ELEMENTS, (r.target, code)
-    assert {r.target for r in ru.REUSE if r.drawn} == {"N11"}
+    assert {r.target for r in ru.REUSE if r.drawn} == {"N11", "H1"}
 
 
 def test_quote_vertical_stacks_columns_and_keeps_them():
@@ -53,3 +53,13 @@ def test_quote_vertical_key_word_is_the_end_of_the_quote():
     src = inspect.getsource(ru.quote_vertical)
     assert "last_word(text)[-4:]" in src
     assert ls.last_word("テキストサンプルテキ光")[-4:] == "ルテキ光"
+
+
+def test_chapter_word_for_the_summary_card():
+    """U23（解説の章の「まとめ」）: 見出し → 単色のカードの 1〜4 字の語。"""
+    from video_automation.services.direction.service import chapter_word
+
+    assert chapter_word("仕組み") == "仕組み"
+    assert chapter_word("光合成のしくみ") == "光合成"
+    assert chapter_word("東京スカイツリーの高さ") == "高さ"
+    assert all(1 <= len(chapter_word(x)) <= 4 for x in ("はじめに", "まとめ", "テキストサンプル"))

@@ -24,6 +24,9 @@ class ZoomRequest(BaseModel):
     blur_pii: bool = True  # メール・API キー・電話番号を OCR で見つけてぼかす
     # 統合版 N14: クリックの前後にクリックの位置の外を暗くする（None は用途が操作説明のときだけ）
     spotlight: bool | None = None
+    # 統合版 W3: 前の仕上げの一覧（finish.pii の index）で、ぼかさない物の番号。OCR の結果は
+    # 同じ録画なら同じ順になるので、確かめた一覧の番号をそのまま渡して作り直す
+    unblur: list[int] = Field(default_factory=list, max_length=1000)
 
 
 @router.post("/zoom", response_model=JobRead, status_code=202)
@@ -42,6 +45,7 @@ async def zoom(project_id: str, body: ZoomRequest, c: AppContainer = Depends(get
             speedup=body.speedup,
             blur_pii=body.blur_pii,
             spotlight=body.spotlight,
+            unblur=body.unblur,
         )
         # 個人情報の一覧（伏せ字）・早送りの区間を付ける。利用者が確かめる
         return {**a.model_dump(mode="json"), "finish": c.screencast.reports.get(a.id, {})}
