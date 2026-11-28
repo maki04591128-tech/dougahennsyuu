@@ -544,6 +544,41 @@ def shorten_animation(cmds: list[Any], clip_id: str | None, old_len: int, cut: i
         cmds[k] = c.model_copy(update={"animation": anim})
 
 
+def yield_to_span(cmds: list[Any], track_ids: set[str], at: int, end: int, keep: int) -> bool:
+    """[at, end) に始まるクリップ（track_ids のトラック）を end の後へ回す（同じ所に重ねない）。
+
+    end より後まで続くクリップは頭を切って end から出し、[at, end) に収まるクリップは外す。
+    外すと end の後に何も残らない（残りが keep フレーム未満）ときは何もせず False を返す
+    （呼び出し側が重ねる物を出さない）。PC の確認で、章の題名（H1）がカードの上に重なった。"""
+    hits = [
+        (k, c)
+        for k, c in enumerate(cmds)
+        if isinstance(c, AddClip)
+        and c.track_id in track_ids
+        and c.duration_frames is not None
+        and at <= c.start_frame < end
+    ]
+    if not hits:
+        return True
+    if max(c.start_frame + c.duration_frames for _, c in hits) - end < keep:
+        return False
+    drop: set[str] = set()
+    for k, c in hits:
+        dur = c.duration_frames or 0
+        if c.start_frame + dur <= end:
+            if c.clip_id is None:  # 後で指せないクリップは外せないので、重ねる物を出さない
+                return False
+            drop.add(c.clip_id)
+            continue
+        cut = end - c.start_frame
+        cmds[k] = c.model_copy(update={"start_frame": end, "duration_frames": dur - cut})
+        shorten_animation(cmds, c.clip_id, dur, cut)
+    cmds[:] = [
+        c for c in cmds if not (isinstance(c, (AddClip, SetClipAnimation)) and c.clip_id in drop)
+    ]
+    return True
+
+
 def native_transform(
     aw: int,
     ah: int,
@@ -1086,9 +1121,12 @@ class DirectionService:
         if pv in H1_PURPOSES:  # H1: 2 章目からの頭に章の題名カード（2.5 秒、出は B4 の 6f）
             n = round(2.5 * fps)
             last = -1
+            body_ids = {lane(TRACKS[1])}  # カード・図（章の頭のカードは題名の後に出す）
             for k, (at0, text) in enumerate([c_ for c_ in chapters if c_[0] > 0], start=2):
                 at = at0 + (toc_n if len(chapters) >= 3 else 0)  # N6 の後
                 if at < last or at + n > total:
+                    continue
+                if not yield_to_span(cmds, body_ids, at, at + n, round(fps)):
                     continue
                 if pv == Purpose.GAME:  # T48: 題を縁だけで出してから、左から塗る
                     num, ttl, mask = await asyncio.to_thread(
@@ -1784,6 +1822,7 @@ class DirectionService:
     ) -> list[str]:
         """統合版 N1（手順）・N7（定義）・N8（正誤）・N11（引用）。1 本のトラックに重ねずに置く。"""
         from video_automation.services.rendering import n_cards as nc
+        from video_automation.services.rendering import reuse as ru
 
         pv = prof.purpose
         pal = prof.palette
@@ -1846,7 +1885,27 @@ class DirectionService:
             elif pv in (Purpose.INTERVIEW, Purpose.DOCUMENTARY, Purpose.STORY) and (
                 q := nc.quote(ln.text)
             ):  # N11
-                if free(ln.start, end):
+                split = pv != Purpose.STORY  # U23: インタビュー・ドキュメンタリーは UH12
+                if free(ln.start, end) and ru.fits_vertical(q, w, h, split):
+                    # 統合版 U23: 歌詞の画面の積む縦書き（UL4・UF1・UT5）で引用を組む
+                    a_ = await self._overlay(
+                        project_id,
+                        ru.quote_vertical(
+                            w,
+                            h,
+                            q,
+                            ln.speaker,
+                            self.titles.font_path,
+                            ink,
+                            pal.accent,
+                            end - ln.start,
+                            split,
+                        ),  # fmt: skip
+                        "引用カード（N11・U23 の縦書き）",
+                        fps,
+                    )
+                    put(a_, ln.start, end - ln.start, fade(end - ln.start))
+                elif free(ln.start, end):
                     img = await asyncio.to_thread(nc.quote_card, w, h, q, ln.speaker, font,
                                                   pal.accent, ink)  # fmt: skip
                     a_ = await self._png(project_id, img, "引用カード（N11）")

@@ -137,6 +137,14 @@ class VA_Settings(bpy.types.PropertyGroup):
             "寄ります。ビデオ・デスクトップ・ダウンロードのフォルダに置いてください"
         ),
     )
+    facecam: StringProperty(  # type: ignore[valid-type]
+        name="顔の映像",
+        subtype="FILE_PATH",
+        description=(
+            "ゲーム実況のワイプに入れる顔の映像（任意）。録画の HUD を避けた隅に、画面の 18% で"
+            "置きます"
+        ),
+    )
     music: StringProperty(  # type: ignore[valid-type]
         name="曲",
         subtype="FILE_PATH",
@@ -917,6 +925,7 @@ class VA_OT_make_plan(bpy.types.Operator):
         dur = int(st.length) or None
         server, orient = st.server, st.orientation
         rec = bpy.path.abspath(st.recording) if st.recording else ""
+        cam = bpy.path.abspath(st.facecam) if st.facecam and st.recording else ""
         song = bpy.path.abspath(st.music) if st.music else ""
         words = st.lyrics.as_string() if st.lyrics else ""
         pic = bpy.path.abspath(st.mv_image) if st.mv_image else ""
@@ -936,7 +945,7 @@ class VA_OT_make_plan(bpy.types.Operator):
                     ),
                 )
             )
-            plan = cl.build_plan(text, dur, orient, ref, rec, song, words, pic, direction)
+            plan = cl.build_plan(text, dur, orient, ref, rec, song, words, pic, direction, cam)
             _jobs.put(("plan", plan))
             _jobs.put(("status", "構成を確認してください"))
 
@@ -1145,6 +1154,7 @@ class VA_PT_make(bpy.types.Panel):
         box.prop(st, "recording")
         if st.recording:
             box.label(text="録画の中身は AI に見えません。操作の手順も文章に書いてください")
+            box.prop(st, "facecam")
         box.prop(st, "music")
         if st.music:
             box.prop(st, "lyrics")

@@ -221,6 +221,11 @@ uv run python tools/fetch_fonts.py   # 演出に使う自由な書体（OFL）�
 一覧と演出との組み合わせ（曲の方向性・見た目の型など）は `services/rendering/font_catalog.py`、
 取得後は `data/fonts/FONTS.md` にも書き出す。無い書体は既定の書体（メイリオなど）で代わりに描く。
 
+絵の無い MV の下書きに使う仮の絵は、利用者が `data/placeholders` に PNG・JPEG を置く（自動では
+取ってこない。素材サイトの絵を使うときは、そのサイトの規約を利用者が確かめる。いらすとやは
+1 本の動画で 20 点まで）。曲の名前で 1 枚を選ぶので、同じ曲は同じ絵になる。使わないときは
+構成の `placeholder` を false にする。本番は `image` で使いたい絵を指定する。
+
 ## 起動
 
 ```powershell

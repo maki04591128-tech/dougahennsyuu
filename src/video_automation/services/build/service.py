@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import shutil
@@ -161,6 +162,8 @@ MV_X7_TRACK = "MV・落ちサビの粒"  # 統合版 X7
 MV_BAR_TRACKS = ("MV・黒帯（上）", "MV・黒帯（下）")  # 統合版 V10
 RECORDING_NAME = "画面録画: "  # 構成で取り込んだ画面録画の素材の名前の頭
 RECORDING_TRACK = "画面録画"
+FACECAM_NAME = "顔の映像: "  # 統合版 P6: ゲーム実況のワイプの素材の名前の頭
+WIPE_TRACK = "ワイプ"
 MAX_REC_MARKS = 60  # 統合版 N12・N13（録画）: OCR する文の数の上限
 # 録画を置く枠（画面比）: 上 100px は見出しの帯、下は字幕。立ち絵があれば左右に各 300px 空ける
 REC_CY = 0.44
@@ -380,6 +383,13 @@ class BuildService:
             if not info.has_video:
                 raise BuildError("画面録画のファイルに映像がありません")
             rec_sec = info.duration_sec
+        cam_path = None
+        if req.facecam.strip():
+            if rec_path is None:
+                raise BuildError("顔の映像（ワイプ）は、ゲームの画面録画と一緒に指定してください")
+            cam_path = self._allowed_file(req.facecam.strip(), "顔の映像")
+            if not (await c.ffmpeg.probe(cam_path)).has_video:
+                raise BuildError("顔の映像のファイルに映像がありません")
         music_path = None
         music_sec = None
         if req.music.strip():
@@ -490,6 +500,18 @@ class BuildService:
                 )
             )
             notes.append("絵から 8 種のショットを作り、曲の拍に合わせて切り替えます")
+        elif music_path is not None and req.placeholder:  # 統合版 U8: 仮の絵
+            ph = self._placeholder_image(music_path.name)
+            if ph is not None:
+                await c.timeline.import_asset(
+                    AssetImportRequest(
+                        project_id=pid, path=str(ph), name=f"{MV_IMAGE_NAME}仮の絵 {ph.name}"
+                    )
+                )
+                notes.append(
+                    f"絵が無いので、仮の絵（{ph.name}）でショットを作ります。"
+                    "本番では使いたい絵を指定してください"
+                )
         reference = req.lyrics if music_path is not None else req.reference
         if slides_path is not None:
             text, snotes = await self._import_slides(pid, slides_path, w / h)
@@ -498,6 +520,12 @@ class BuildService:
                 reference = (
                     "スライドの順に 1 枚ずつ説明する。スライドの文字:\n" + text + "\n\n" + reference
                 )[:20000]
+        if cam_path is not None:
+            await c.timeline.import_asset(
+                AssetImportRequest(
+                    project_id=pid, path=str(cam_path), name=f"{FACECAM_NAME}{cam_path.name}"
+                )
+            )
         if rec_path is not None:
             await c.timeline.import_asset(
                 AssetImportRequest(
@@ -896,6 +924,24 @@ class BuildService:
         except Exception:  # noqa: BLE001 - 分からなければ操作説明として扱う
             return False
 
+    PLACEHOLDER_EXT = (".png", ".jpg", ".jpeg")
+
+    def _placeholder_image(self, key: str) -> Path | None:
+        """統合版 U8: data/placeholders に利用者が置いた仮の絵から 1 枚を決める。
+
+        曲の名前で選ぶので、同じ曲なら同じ絵になる（作り直しても絵が変わらない）。
+        絵は自動では取ってこない（素材サイトの規約の確認は利用者がする）。"""
+        root = Path(self.c.settings.data_dir) / "placeholders"
+        if not root.is_dir():
+            return None
+        files = sorted(
+            p for p in root.iterdir() if p.is_file() and p.suffix.lower() in self.PLACEHOLDER_EXT
+        )
+        if not files:
+            return None
+        h = int(hashlib.sha1(key.encode("utf-8")).hexdigest(), 16)
+        return files[h % len(files)]
+
     def _allowed_file(self, path: str, label: str) -> Path:
         """利用者が渡したファイル（取り込みを許可したフォルダの中だけ）。"""
         p = Path(path)
@@ -1030,6 +1076,95 @@ class BuildService:
             CommandRequest(command=Batch(commands=cmds), description="画面録画を置く"),
         )
         return notes
+
+    async def _raise_track(self, project_id: str, name: str) -> None:
+        """名前のトラックを最も上に描く（演出が後からトラックを足しても隠れないように）。"""
+        tl = await self.c.timeline.get_timeline(project_id)
+        t = next((x for x in tl.tracks if x.name == name), None)
+        if t is None:
+            return
+        await self.c.timeline.submit(
+            project_id,
+            CommandRequest(
+                command=MoveTrack(track_id=t.id, index=1000),
+                origin=CommandOrigin.USER,
+                description=f"{name}を最も上に",
+            ),
+        )
+
+    async def _place_wipe(self, project_id: str, sid: str, rec: AssetRead) -> list[str]:
+        """統合版 P6: ゲーム実況で顔の映像があれば、録画の HUD を避けた隅にワイプで置く
+        （画面の面積の 18%・白の縁・入り出 12f）。立ち絵があるときは、立ち絵の無い上の隅から
+        選ぶ。"""
+        from video_automation.services.rendering import wipe
+
+        c = self.c
+        cam = await self._asset(project_id, FACECAM_NAME, AssetKind.VIDEO)
+        if cam is None or not await self._is_game(sid):
+            return []
+        tl = await c.timeline.get_timeline(project_id)
+        w, h, fps = tl.width, tl.height, tl.fps_num / tl.fps_den
+        src = c.settings.data_dir / rec.path
+        dur = max(0.5, float(rec.duration_sec or 1.0))
+        raw = await c.ffmpeg.run_capture(
+            ["-i", str(src), "-vf",
+             f"fps={wipe.SAMPLES / dur:.5f},scale={wipe.SAMPLE_W}:{wipe.SAMPLE_H},format=gray",
+             "-frames:v", str(wipe.SAMPLES), "-f", "rawvideo", "-"]
+        )  # fmt: skip
+        frames = wipe.frames_from_raw(raw)
+        tachie = any(t.name == "立ち絵" for t in tl.tracks)
+        allowed = ("top_right", "top_left") if tachie else wipe.CORNERS
+        if len(frames) >= 2:
+            corner, scores = wipe.pick_corner(wipe.hud_mask(frames), allowed)
+        else:
+            corner, scores = allowed[0], {}
+        x0, y0, x1, y1 = wipe.box(corner, w, h)
+        bw, bh = x1 - x0, y1 - y0
+        b = max(2, round(h * wipe.BORDER))
+        ends = [x.end_frame for x in (await c.studio.detail(sid)).segments if x.end_frame]
+        total = max(ends) if ends else tl.duration_frames
+        out = (
+            c.settings.data_dir / "projects" / project_id / "assets" / f"wipe_{uuid4().hex[:8]}.mp4"
+        )
+        await c.ffmpeg.run(
+            ["-y", "-i", str(c.settings.data_dir / cam.path), "-t", f"{total / fps:.3f}", "-vf",
+             f"scale={bw - 2 * b}:{bh - 2 * b}:force_original_aspect_ratio=increase,"
+             f"crop={bw - 2 * b}:{bh - 2 * b},pad={bw}:{bh}:{b}:{b}:white,fps={fps:.5f},"
+             "format=yuv420p", "-an", "-c:v", "libx264", "-preset", "veryfast", str(out)]
+        )  # fmt: skip
+        a = AssetRead.model_validate(
+            await c.timeline.register_generated(
+                project_id, out, AssetKind.VIDEO, "build", f"ワイプ（P6・{corner}）"
+            )
+        )
+        n = max(1, min(total, int(float(a.duration_sec or 0) * fps) or total))
+        cmds: list[Any] = []
+        track = next((t for t in tl.tracks if t.name == WIPE_TRACK), None)
+        if track is not None:
+            cmds += [DeleteClip(clip_id=x.id) for x in tl.clips if x.track_id == track.id]
+            tid = track.id
+        else:
+            tid = str(uuid4())
+            cmds.append(AddTrack(kind=TrackKind.VIDEO, name=WIPE_TRACK, track_id=tid))
+        cmds.append(
+            AddClip(
+                track_id=tid, asset_id=a.id, start_frame=0, duration_frames=n,
+                transform=native_transform(bw, bh, w, h, cx=(x0 + x1) / 2 / w,
+                                           cy=(y0 + y1) / 2 / h, max_h=1.0, max_w=1.0),
+                volume=0.0, fade_in_frames=wipe.FADE, fade_out_frames=wipe.FADE,
+            )
+        )  # fmt: skip
+        await c.timeline.submit(
+            project_id, CommandRequest(command=Batch(commands=cmds), description="ワイプを置く")
+        )
+        names = {
+            "bottom_right": "右下",
+            "bottom_left": "左下",
+            "top_right": "右上",
+            "top_left": "左上",
+        }
+        hud = f"（HUD との重なり {scores.get(corner, 0.0):.0%}）" if scores else ""
+        return [f"顔の映像を{names[corner]}のワイプ（画面の 18%）に置きました{hud}"]
 
     async def _recording_marks(
         self,
@@ -1815,7 +1950,9 @@ class BuildService:
         elif MV_U16_TRACK in tracks:
             track(MV_U16_TRACK, None)
         # 統合版 V10: イントロは 2.39:1 の黒帯、最初のサビの頭で 12f で開く。落ちサビで閉じる
-        await self._letterbox(project_id, tl, spans, total_sec, work, cmds)
+        await self._letterbox(
+            project_id, tl, spans, total_sec, work, cmds, [(a / fps, b / fps) for a, b in u_spans]
+        )
         await c.timeline.submit(
             project_id,
             CommandRequest(
@@ -2121,12 +2258,16 @@ class BuildService:
         total_sec: float,
         work: Path,
         cmds: list[Any],
+        avoid: list[tuple[float, float]] | None = None,
     ) -> None:
         c = self.c
         w, h = tl.width, tl.height
         fps = tl.fps_num / tl.fps_den
         bar = mv.letterbox_bar(w, h)
         boxes = mv.letterbox_spans(spans, total_sec) if bar > 0 and w > h else []
+        boxes = mv.letterbox_minus(
+            boxes, avoid or [], mv.LETTERBOX_FRAMES / fps
+        )  # 歌詞の画面には重ねない
         if not boxes:
             return
         bars = {}
@@ -2514,6 +2655,7 @@ class BuildService:
             if rec is not None:
                 await at("recording")
                 notes += await self._place_recording(project_id, sid, rec, at)
+                notes += await self._place_wipe(project_id, sid, rec)
             notes += await self._anchor_lag(project_id, sid)
         if not req.keep_script:
             notes += await self._place_slides(project_id, sid)
@@ -2537,6 +2679,7 @@ class BuildService:
             DirectionApplyRequest(script_id=sid, plan=plan, text_scale=text_scale)
         )
         notes += skipped_notes(list(getattr(res, "skipped", []) or []))
+        await self._raise_track(project_id, WIPE_TRACK)  # P6: 演出の後でワイプを最も上に
         try:
             notes += await self._place_audio(project_id, sid)
         except Exception as exc:  # noqa: BLE001 - BGM・効果音が無くても動画は作る

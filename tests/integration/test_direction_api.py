@@ -1183,6 +1183,22 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
     ]  # fmt: skip
     anims = [x for x in cmds if isinstance(x, SetClipAnimation)]
     assert anims[0].animation.keyframes[-1].opacity == 0.0
+    # PC で見つけた不具合: 章の頭のカード（演出・図）に題名カードが重なった。カードは題名の後へ
+    cmds = [
+        AddClip(track_id="演出・図", asset_id="a", start_frame=360, duration_frames=200,
+                clip_id="card"),
+        AddClip(track_id="演出・図", asset_id="b", start_frame=660, duration_frames=40,
+                clip_id="short"),
+    ]  # fmt: skip
+    await d._h_cards(pid, PROFILES[Purpose.EXPLAINER], DirectionPlan(), [], [(0, "はじめに"),
+                     (300, "仕組み"), (600, "まとめ")], cmds, lambda n: n, 900, 30.0, 640, 360,
+                     None, "#FFFFFF")  # fmt: skip
+    card = next(x for x in cmds if isinstance(x, AddClip) and x.clip_id == "card")
+    assert (card.start_frame, card.duration_frames) == (435, 125)
+    # 題名の間に収まるだけの短いカードは、外さずに題名カードを出さない
+    assert any(isinstance(x, AddClip) and x.clip_id == "short" for x in cmds)
+    h1 = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
+    assert [x.start_frame for x in h1] == [300, 600, 360]
     cmds = []
     await d._h_cards(pid, PROFILES[Purpose.PROMO], DirectionPlan(title="新しい靴"), [], [], cmds,
                      lambda n: n, 900, 30.0, 640, 360, None, "#FFFFFF")  # fmt: skip
@@ -1221,7 +1237,7 @@ async def test_n_cards_from_script_words(dclient):
     pid, sid = await _ready_script(c, q + lines[1:2])
     tl, _ = await _apply(c, pid, sid, "interview")
     names = {a["id"]: a["name"] for a in tl["assets"]}
-    assert "引用カード（N11）" in names.values()
+    assert "引用カード（N11・U23 の縦書き）" in names.values()
 
 
 async def test_year_roll_in_documentary(dclient):

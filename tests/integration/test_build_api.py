@@ -381,6 +381,7 @@ async def test_game_play_from_recording_and_play_log(bclient, fake, media_dir):
         json={
             "instruction": "AIが自作ゲームを遊んだゲーム実況のプレイ動画",
             "screen_recording": str(media_dir / "clip.mp4"),
+            "facecam": str(media_dir / "clip.mp4"),  # 統合版 P6 のワイプ
             "reference": "プレイ記録（時刻は録画の頭から）:\n[0:01] 迷宮の1階に入った",
         },
     )
@@ -419,6 +420,16 @@ async def test_game_play_from_recording_and_play_log(bclient, fake, media_dir):
     rec = [x for x in tl["clips"] if x["track_id"] == tracks["画面録画"]["id"]]
     assert rec and rec[0]["volume"] == 0.25
     assert not any("ズーム" in n for n in job.result["notes"])
+    # 統合版 P6: 顔の映像を隅のワイプ（画面の 18%）に、入り出 12f で置く
+    assert any("ワイプ" in n for n in job.result["notes"]), job.result["notes"]
+    wp = [x for x in tl["clips"] if x["track_id"] == tracks["ワイプ"]["id"]]
+    assert len(wp) == 1 and wp[0]["fade_in_frames"] == 12 and wp[0]["volume"] == 0.0
+    assert abs(wp[0]["transform"]["x"]) > 0.2 and abs(wp[0]["transform"]["y"]) > 0.2  # 隅
+    # PC で見つけた不具合: 演出が後から足したトラックの下に隠れていた。最も上に描く
+    vids = [
+        t["name"] for t in sorted(tl["tracks"], key=lambda t: t["index"]) if t["kind"] == "video"
+    ]
+    assert vids[-1] == "ワイプ", vids
 
 
 async def test_game_duo_with_timed_lines(bclient, fake, media_dir):
@@ -850,6 +861,11 @@ async def test_music_video_u9_band_and_u16_cards(bclient, media_dir):
             assert any("U9" in n for n in notes), notes
             assert rec["lyric_screens"] >= 1 and len(rec["lyric_spans"]) == rec["lyric_screens"]
             assert any(v == "歌詞の画面（U9）" for v in names.values())
+            bar_ids = {t["id"] for t in tl["tracks"] if t["name"].startswith("MV・黒帯")}
+            for x in tl["clips"]:  # 黒帯は歌詞の画面の区間に重ねない
+                if x["track_id"] in bar_ids:
+                    for a, b in rec["lyric_spans"]:
+                        assert x["end_frame"] <= a or b <= x["start_frame"], (x, a, b)
         else:
             assert rec["word_cards"] >= 1, notes
             assert any(v == "単色のカード「方へ」" for v in names.values()), names
@@ -938,3 +954,37 @@ async def test_music_video_lyric_screens_by_direction(bclient, media_dir):
     tl = (await c.get(f"/projects/{pid}/timeline")).json()
     tr = next((t for t in tl["tracks"] if t["name"] == "MV・歌詞の画面"), None)
     assert tr is None or not [x for x in tl["clips"] if x["track_id"] == tr["id"]]
+
+
+async def test_music_video_placeholder_image(bclient, media_dir, media_settings):
+    """統合版 U8: 絵が無い MV は data/placeholders の仮の絵でショットを作る（同じ曲は同じ絵）。"""
+    import wave
+
+    import numpy as np
+    from PIL import Image
+
+    sr = 22050
+    song = media_dir / "ph.wav"
+    with wave.open(str(song), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        f.writeframes(np.zeros(sr * 4, dtype="<i2").tobytes())
+    ph = media_settings.data_dir / "placeholders"
+    ph.mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        Image.new("RGB", (64, 64), (40 * i, 80, 120)).save(ph / f"p{i}.png")
+    (ph / "readme.txt").write_text("x", encoding="utf-8")
+    c = bclient
+    await c.post("/providers/discover")
+    body = {"instruction": "この曲の MV を作って", "music": str(song), "lyrics": "テキストサンプル"}
+    names = []
+    for _ in range(2):
+        plan = (await c.post("/build/plan", json=body)).json()
+        assert any("仮の絵" in n for n in plan["notes"]), plan["notes"]
+        tl = (await c.get(f"/projects/{plan['project_id']}/timeline")).json()
+        assets = tl["assets"]
+        names.append(sorted(a["name"] for a in assets if a["name"].startswith("MVの絵: 仮の絵")))
+    assert len(names[0]) == 1 and names[0] == names[1]
+    plan = (await c.post("/build/plan", json={**body, "placeholder": False})).json()
+    assert not any("仮の絵" in n for n in plan["notes"])

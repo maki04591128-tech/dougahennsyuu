@@ -26,12 +26,16 @@ class BuildRequest(BaseModel):
     # 操作説明に使う画面録画のファイル（絶対パス・取り込みを許可したフォルダの中）。
     # 指定すると用途は「操作説明」になり、録画を中央の枠に置いて操作箇所へ寄る
     screen_recording: str = Field(default="", max_length=1000)
+    # 統合版 P6: ゲーム実況のワイプに入れる顔の映像（任意。録画と一緒に渡す）
+    facecam: str = Field(default="", max_length=1000)
     # MV・リリックに使う曲のファイル（絶対パス・取り込みを許可したフォルダの中）と、
     # 分かっていれば歌詞（1 行 1 字幕。利用者が持っている歌詞を貼る）
     music: str = Field(default="", max_length=1000)
     lyrics: str = Field(default="", max_length=20000)
     # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
     image: str = Field(default="", max_length=1000)
+    # 統合版 U8: 絵が無い MV で、data/placeholders に置いた仮の絵を使う（本番は image を指定）
+    placeholder: bool = True
     # 統合版 U1: 曲の方向性（MV・リリック）。指定すると歌の区間を方向性の歌詞の画面にする
     lyric_direction: str = Field(
         default="",

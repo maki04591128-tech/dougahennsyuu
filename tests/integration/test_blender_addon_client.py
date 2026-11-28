@@ -248,3 +248,14 @@ def test_build_plan_sends_mv_picture_and_direction(monkeypatch):
     assert "image" not in sent[-1] and "lyric_direction" not in sent[-1]
     c.build_plan("解説", image="C:/p/a.png", lyric_direction="rap")  # 曲が無い
     assert "image" not in sent[-1] and "lyric_direction" not in sent[-1]
+
+
+def test_build_plan_sends_facecam_only_with_recording(monkeypatch):
+    """統合版 P6: 顔の映像（ワイプ）は画面録画があるときだけ送る。"""
+    sent: list[dict] = []
+    monkeypatch.setattr(Client, "call", lambda self, m, path, body=None, **kw: sent.append(body))
+    c = Client("http://127.0.0.1:8765")
+    c.build_plan("ゲーム実況", screen_recording="C:/v/play.mp4", facecam="C:/v/cam.mp4")
+    assert sent[-1]["facecam"] == "C:/v/cam.mp4"
+    c.build_plan("ゲーム実況", facecam="C:/v/cam.mp4")
+    assert "facecam" not in sent[-1]

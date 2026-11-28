@@ -527,6 +527,30 @@ def letterbox_spans(
     return [(a, min(b, total_sec)) for a, b in out if b > a]
 
 
+def letterbox_minus(
+    boxes: list[tuple[float, float]], avoid: list[tuple[float, float]], margin: float = 0.0
+) -> list[tuple[float, float]]:
+    """黒帯の区間（秒）から、歌詞の画面の区間（秒）を除く。
+
+    歌詞の画面は 1 枚で完結した画面（U9 の下の帯・UP7 の字幕を含む）なので、黒帯を重ねると
+    下の行が隠れる（PC の確認で見つけた: U9 の帯の 2 行目が下の黒帯に隠れた）。
+    margin は帯が開く動きの長さ（秒）。歌詞の画面の頭までに開き終わるよう、その分早く切る。"""
+    out = list(boxes)
+    for a0, b in sorted(avoid):
+        a = a0 - margin
+        nxt: list[tuple[float, float]] = []
+        for x, y in out:
+            if b <= x or y <= a:
+                nxt.append((x, y))
+                continue
+            if x < a:
+                nxt.append((x, a))
+            if b < y:
+                nxt.append((b, y))
+        out = nxt
+    return out
+
+
 # ---------------- V6 マットの転換（インク） ----------------
 
 INK_FRAMES = 10
