@@ -148,6 +148,7 @@ MV_STEPS = [
     ("check", "デザインを検査する"),
     ("render", "書き出す"),
 ]
+COVER_NAME = "カバー: "  # 統合版 P2（direction の COVER_NAME と同じ）
 MV_IMAGE_NAME = "MVの絵: "  # 構成で取り込んだ MV のショットの絵（統合版 V1）
 MV_SHOT_TRACK = "MV・ショット"
 MV_MOTIF_TRACKS = ("MV・形（白）", "MV・形（黒）")  # 統合版 V11
@@ -512,6 +513,15 @@ class BuildService:
                     f"絵が無いので、仮の絵（{ph.name}）でショットを作ります。"
                     "本番では使いたい絵を指定してください"
                 )
+        if req.cover.strip():  # 統合版 P2: ポッドキャストのカバーの画像
+            if purpose == Purpose.PODCAST:
+                cv = self._allowed_file(req.cover.strip(), "カバーの画像")
+                await c.timeline.import_asset(
+                    AssetImportRequest(project_id=pid, path=str(cv), name=f"{COVER_NAME}{cv.name}")
+                )
+                notes.append("カバーの画像を画面の中央に、波形をその下に置きます")
+            else:
+                notes.append("カバーの画像はポッドキャストのときだけ使います")
         reference = req.lyrics if music_path is not None else req.reference
         if slides_path is not None:
             text, snotes = await self._import_slides(pid, slides_path, w / h)
@@ -1076,6 +1086,52 @@ class BuildService:
             CommandRequest(command=Batch(commands=cmds), description="画面録画を置く"),
         )
         return notes
+
+    WIPE_YIELD_TRACKS = ("演出・図", "演出・項目", "演出・章", "演出・図解")
+
+    async def _wipe_yield(self, project_id: str) -> list[str]:
+        """P6: カード・図が出ている間は、ワイプを隅に寄せたまま半分の大きさにする。"""
+        from video_automation.services.rendering import wipe
+
+        c = self.c
+        tl = await c.timeline.get_timeline(project_id)
+        t = next((x for x in tl.tracks if x.name == WIPE_TRACK), None)
+        if t is None:
+            return []
+        clip = next((x for x in tl.clips if x.track_id == t.id), None)
+        asset = next((a for a in tl.assets if clip is not None and a.id == clip.asset_id), None)
+        if clip is None or asset is None or "・" not in asset.name:
+            return []
+        corner = asset.name.rsplit("・", 1)[-1].rstrip("）")
+        if corner not in wipe.CORNERS:
+            return []
+        ids = {x.id for x in tl.tracks if x.name in self.WIPE_YIELD_TRACKS}
+        spans = [
+            (max(0, x.start_frame - clip.start_frame), x.end_frame - clip.start_frame)
+            for x in tl.clips
+            if x.track_id in ids and x.end_frame > clip.start_frame
+        ]
+        length = clip.end_frame - clip.start_frame
+        keys = wipe.shrink_keys(corner, tl.width, tl.height, spans, length)
+        if not keys:
+            return []
+        await c.timeline.submit(
+            project_id,
+            CommandRequest(
+                command=SetClipAnimation(
+                    clip_id=clip.id,
+                    animation=ClipAnimation(
+                        keyframes=[
+                            Keyframe(frame=f, scale=s_, x=x_, y=y_, easing=Easing.CUBIC_OUT)
+                            for f, s_, x_, y_ in keys
+                        ]
+                    ),
+                ),
+                origin=CommandOrigin.USER,
+                description="カード・図の間はワイプを小さく",
+            ),
+        )
+        return [f"カード・図が出ている {len(keys) // 4} か所で、ワイプを半分の大きさにしました"]
 
     async def _raise_track(self, project_id: str, name: str) -> None:
         """名前のトラックを最も上に描く（演出が後からトラックを足しても隠れないように）。"""
@@ -2680,6 +2736,7 @@ class BuildService:
         )
         notes += skipped_notes(list(getattr(res, "skipped", []) or []))
         await self._raise_track(project_id, WIPE_TRACK)  # P6: 演出の後でワイプを最も上に
+        notes += await self._wipe_yield(project_id)
         try:
             notes += await self._place_audio(project_id, sid)
         except Exception as exc:  # noqa: BLE001 - BGM・効果音が無くても動画は作る

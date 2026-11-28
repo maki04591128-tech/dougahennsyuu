@@ -108,6 +108,17 @@ async def test_zoom_finish_blurs_pii_and_speeds_up_still_silence(client, setting
     assert fin["fast"] and fin["fast"][0][1] - fin["fast"][0][0] >= 2.0
     assert out["duration_sec"] < 5.0  # 止まっていた所が 4 倍速
     assert out["has_audio"]
+    assert fin["pii"][0]["index"] == 0 and fin["pii"][0]["blurred"] is True
+    # 統合版 W3: 一覧で確かめて「ぼかさない」とした番号を渡すと、ぼかさずに作り直す
+    job = await client.post(
+        f"/projects/{pid}/screencast/zoom",
+        json={"asset_id": a["id"], "unblur": [0], "speedup": False},
+    )
+    done = await client.app.state.jobs.wait(job.json()["id"])
+    assert done.status == "SUCCEEDED", done.error
+    fin = done.result["finish"]
+    assert fin["pii"][0]["blurred"] is False
+    assert any("ぼかしませんでした" in n for n in fin["notes"]), fin["notes"]
 
 
 def _pixel(path, t, x, y):

@@ -769,6 +769,9 @@ def test_rich_direction_more_lyric_motions(tmp_path):
         for name in m:
             assert got.get(name, 0) >= 1, (name, got)
     assert rep.get("morphed") == 1, rep  # T23: 字数の同じ前の行から変形した
+    # 穴・離れた部分（「ら」の上の点）も、縮めて消す線・広げる線として形に入れる（以前は外側の線
+    # だけで、変形の間は穴が塗りつぶされた）
+    assert rep.get("morph_loops", 0) > 2, rep
 
 
 @pytest.mark.skipif(not BPY, reason="VA_BPY_PYTHON is not set")

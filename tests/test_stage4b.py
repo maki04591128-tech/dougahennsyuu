@@ -43,6 +43,13 @@ def test_opening_motion_needs_an_entrance_in_the_first_15_frames() -> None:
         )
     ]
     assert not opening_motion(m)  # ケン・バーンズは数えない
+    # 題名（Blender の動画。入りを画の中に持つ）が最初から出ていれば入りの動きがある
+    from video_automation.services.design.guard import TextUse
+
+    m.texts = [TextUse("title", [0.08], 6, 0.0, 3.0)]
+    assert opening_motion(m)
+    m.texts = [TextUse("title", [0.08], 6, 2.0, 3.0), TextUse("card", [0.05], 6, 0.0, 3.0)]
+    assert not opening_motion(m)
 
 
 def test_end_screen_purposes_follow_2_3() -> None:
@@ -102,3 +109,20 @@ def test_thumbnail_checks_find_problems(tmp_path: Path) -> None:
     r = T.ThumbResult(p, "あいう", "x", 60, (3500, 1900, 3800, 2100))
     bad = T.checks(r)
     assert len(bad) == 3  # 字数・右下・10% での高さ
+
+
+def test_end_screen_wraps_at_word_boundaries():
+    """終了画面のまとめの文字を、語の途中（「ランキ／ング」）で折らない。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    from video_automation.services.rendering.end_screen import _wrap
+
+    f = ImageFont.load_default(40)
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    text = "今日のランキングを見てくれてありがとう"
+    w = int(d.textlength("今日のランキ", font=f)) + 2
+    lines = _wrap(d, text, f, w)
+    assert "".join(lines) == text
+    assert all(d.textlength(x, font=f) <= w for x in lines)
+    assert not any(x.endswith("ランキ") for x in lines)
+    assert _wrap(d, "短い", f, 500) == ["短い"] and _wrap(d, "", f, 100) == []

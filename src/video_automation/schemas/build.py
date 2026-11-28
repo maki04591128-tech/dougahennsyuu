@@ -34,6 +34,8 @@ class BuildRequest(BaseModel):
     lyrics: str = Field(default="", max_length=20000)
     # 統合版 V1: MV のショットを作る 1 枚の絵（透明の部分があれば切り抜きとして使う）
     image: str = Field(default="", max_length=1000)
+    # 統合版 P2: ポッドキャストの中央に置くカバーの画像（任意。ポッドキャストのときだけ使う）
+    cover: str = Field(default="", max_length=1000)
     # 統合版 U8: 絵が無い MV で、data/placeholders に置いた仮の絵を使う（本番は image を指定）
     placeholder: bool = True
     # 統合版 U1: 曲の方向性（MV・リリック）。指定すると歌の区間を方向性の歌詞の画面にする

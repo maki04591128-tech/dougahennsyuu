@@ -7,6 +7,7 @@ from typing import Any
 
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -63,6 +64,8 @@ def _names(items: Any) -> str:
 
 
 MOTION = ["フェードのみ", "控えめ", "標準", "強め", "拍に同期・強い演出"]
+# 統合版 Q7: 聴覚補助の字幕を選べる用途（services/design/profiles.py の HEARING_AID と同じ）
+HEARING_AID = ("subtitle", "interview", "news")
 
 
 class DesignWidget(QWidget):
@@ -83,6 +86,8 @@ class DesignWidget(QWidget):
         self.purpose_combo.currentIndexChanged.connect(self._show_profile)
         self.save_button = QPushButton("この用途にする")
         self.save_button.clicked.connect(self.save)
+        self.hearing_check = QCheckBox("聴覚補助の字幕（BGM の ♪・話者が替わったときの名前）")
+        self.hearing_check.setToolTip("字幕動画・インタビュー・ニュースで選べます")
         self.profile_label = QLabel("")
         self.profile_label.setWordWrap(True)
         self.script_combo = QComboBox()
@@ -94,6 +99,17 @@ class DesignWidget(QWidget):
         self.tree.setColumnWidth(0, 140)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
+        # 統合版 W2: 利用者の直しから作った、既定値の変更の提案（取り入れるのは承認したものだけ）
+        self.proposal_tree = QTreeWidget()
+        self.proposal_tree.setColumnCount(2)
+        self.proposal_tree.setHeaderLabels(["用途", "直しから見つけた傾向"])
+        self.proposal_tree.setColumnWidth(0, 140)
+        self.accept_button = QPushButton("取り入れる")
+        self.accept_button.clicked.connect(lambda: self._choose(True))
+        self.reject_button = QPushButton("断る")
+        self.reject_button.clicked.connect(lambda: self._choose(False))
+        self.reset_button = QPushButton("取り入れた既定値を元に戻す")
+        self.reset_button.clicked.connect(self.reset_learned)
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("プロジェクト"))
@@ -112,9 +128,18 @@ class DesignWidget(QWidget):
         layout = QVBoxLayout(self)
         for r in (row1, row2, row3):
             layout.addLayout(r)
+        layout.addWidget(self.hearing_check)
         layout.addWidget(self.profile_label)
         layout.addLayout(row4)
         layout.addWidget(self.tree, 1)
+        layout.addWidget(
+            QLabel("直しから見つけた既定値の変更の案（取り入れると次に作るときから使う）")
+        )
+        layout.addWidget(self.proposal_tree)
+        row5 = QHBoxLayout()
+        for b in (self.accept_button, self.reject_button, self.reset_button):
+            row5.addWidget(b)
+        layout.addLayout(row5)
         layout.addWidget(self.status_label)
 
     def _err(self, what: str, exc: BaseException) -> None:
@@ -140,6 +165,7 @@ class DesignWidget(QWidget):
             self.project_combo.addItem(p["name"], p["id"])
         self.project_combo.blockSignals(False)
         self.load_project()
+        self.load_proposals()
 
     def load_project(self, *_: Any) -> None:
         pid = self.project_combo.currentData()
@@ -153,6 +179,7 @@ class DesignWidget(QWidget):
             self._err("読み込み", exc)
             return
         self._select(d.get("purpose"))
+        self.hearing_check.setChecked(bool(d.get("hearing_aid")))
         self.script_combo.clear()
         self.script_combo.addItem("（字幕を検査しない）", None)
         for s in scripts:
@@ -164,6 +191,7 @@ class DesignWidget(QWidget):
         self._show_profile()
 
     def _show_profile(self, *_: Any) -> None:
+        self.hearing_check.setEnabled(self.purpose_combo.currentData() in HEARING_AID)
         p = self.profiles.get(self.purpose_combo.currentData() or "")
         if p is None:
             self.profile_label.setText(
@@ -206,7 +234,10 @@ class DesignWidget(QWidget):
         if not pid:
             return
         try:
-            d = self.api.set_project_design(pid, self.purpose_combo.currentData())
+            purpose = self.purpose_combo.currentData()
+            d = self.api.set_project_design(
+                pid, purpose, hearing_aid=self.hearing_check.isChecked() and purpose in HEARING_AID
+            )
         except Exception as exc:  # noqa: BLE001
             self._err("保存", exc)
             return
@@ -237,3 +268,48 @@ class DesignWidget(QWidget):
             ("書き出せます" if r["ok"] else "このままでは書き出しが止まります")
             + (f"（使った部品: {used}）" if used else "")
         )
+
+    # ----- 統合版 W2 -----
+    def load_proposals(self) -> None:
+        self.proposal_tree.clear()
+        try:
+            props = self.api.edit_proposals()
+        except Exception:  # noqa: BLE001 - 直しの記録を使っていない（404）など
+            props = []
+        for p in props:
+            label = self.profiles.get(p["purpose"], {}).get("label", p["purpose"])
+            item = QTreeWidgetItem([label, p["text"]])
+            item.setData(0, 256, (p["purpose"], p["component"], p["item"]))  # Qt.UserRole
+            self.proposal_tree.addTopLevelItem(item)
+        has = bool(props)
+        self.accept_button.setEnabled(has)
+        self.reject_button.setEnabled(has)
+        if not has:
+            self.proposal_tree.addTopLevelItem(
+                QTreeWidgetItem(["—", "今は案がありません（同じ用途で 5 本以上直すと出ます）"])
+            )
+
+    def _choose(self, accept: bool) -> None:
+        item = self.proposal_tree.currentItem() or self.proposal_tree.topLevelItem(0)
+        key = item.data(0, 256) if item is not None else None
+        if not key:
+            self.status_label.setText("案を選んでください")
+            return
+        try:
+            (self.api.accept_edit if accept else self.api.reject_edit)(*key)
+        except Exception as exc:  # noqa: BLE001
+            self._err("取り入れ" if accept else "断り", exc)
+            return
+        self.status_label.setText(
+            "取り入れました。次に作るときから使います" if accept else "断りました"
+        )
+        self.load_proposals()
+
+    def reset_learned(self) -> None:
+        try:
+            self.api.reset_defaults()
+        except Exception as exc:  # noqa: BLE001
+            self._err("元に戻すの", exc)
+            return
+        self.status_label.setText("取り入れた既定値を元に戻しました")
+        self.load_proposals()

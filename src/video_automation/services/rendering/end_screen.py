@@ -32,14 +32,18 @@ def _font(path: str | None, size: int) -> ImageFont.FreeTypeFont | ImageFont.Ima
 
 
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font, width: int) -> list[str]:  # noqa: ANN001
-    lines, cur = [], ""
-    for ch in text:
-        if draw.textlength(cur + ch, font=font) > width and cur:
-            lines.append(cur)
-            cur = ch
-        else:
-            cur += ch
-    return [*lines, cur] if cur else lines
+    """幅に収まるように、語の切れ目（字幕と同じ規則）で折り返す。
+
+    以前は 1 文字ずつ詰めて幅を超えた所で切っていたので「ランキ／ング」と語の途中で折れた。"""
+    from video_automation.services.subtitle.text import wrap_lines
+
+    if not text or draw.textlength(text, font=font) <= width:
+        return [text] if text else []
+    for n in range(len(text), 0, -1):  # 全部の行が幅に収まる最大の字数で、語の切れ目で折る
+        lines = wrap_lines(text, n)
+        if all(draw.textlength(ln, font=font) <= width for ln in lines):
+            return lines
+    return list(text)
 
 
 def draw_end_screen(

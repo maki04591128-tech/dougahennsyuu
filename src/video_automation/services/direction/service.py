@@ -210,7 +210,11 @@ TRACKS = ("演出・背景", "演出・図", "演出・文字")
 ITEM_TRACK, LOWER_THIRD_TRACK = "演出・項目", "演出・名前帯"
 PART_TRACK, STEP_TRACK = "演出・部品", "演出・手順"  # 統合版 P4・P5・P8
 SERIES_TRACK, LOGO_TRACK = "演出・シリーズ", "演出・ロゴ"  # 統合版 Q4
+LOGO_GLOSS_TRACK = "演出・ロゴの光沢"  # 統合版 L7
 WAVE_TRACK = "演出・波形"  # 統合版 P2
+COVER_TRACK = "演出・カバー"  # 統合版 P2 の中央の絵
+COVER_NAME = "カバー: "  # 構成（build）の cover で取り込んだ画像の名前の頭
+COVER_CY, COVER_H = 0.42, 0.52  # カバーの中心の高さと、大きさの上限（画面の高さに対する比）
 CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
 FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
@@ -275,7 +279,9 @@ EXTRA_TRACKS = (
     STEP_TRACK,
     SERIES_TRACK,
     LOGO_TRACK,
+    LOGO_GLOSS_TRACK,
     WAVE_TRACK,
+    COVER_TRACK,
 )
 TACHIE_TRACK = "立ち絵"  # characters.service.TRACK
 RECORDING_TRACK = "画面録画"  # 画面録画を中央の枠に置くトラック（build.service）
@@ -542,6 +548,20 @@ def shorten_animation(cmds: list[Any], clip_id: str | None, old_len: int, cut: i
                 keys.append(kf.model_copy(update={"frame": f}))
         anim = c.animation.model_copy(update={"keyframes": keys})
         cmds[k] = c.model_copy(update={"animation": anim})
+
+
+def chapter_word(text: str) -> str:
+    """U23: 章の見出し → 単色のカードに出す 1〜4 字の語。
+
+    見出しの最後の語（U16 と同じ決め方）が 4 字以下ならそのまま。長ければ、その中の最も長い
+    漢字・カタカナの続き（「光合成のしくみ」→「光合成」）の終わり 4 字。"""
+    from video_automation.services.rendering import lyric_screen as ls
+
+    w = ls.last_word(text.strip())
+    if len(w) <= 4:
+        return w
+    runs = re.findall(r"[\u4E00-\u9FFF\u3005\u30A0-\u30FF]+", w)
+    return (max(runs, key=len) if runs else w)[-4:]
 
 
 def yield_to_span(cmds: list[Any], track_ids: set[str], at: int, end: int, keep: int) -> bool:
@@ -1031,6 +1051,51 @@ class DirectionService:
         )
         return AssetRead.model_validate(row)
 
+    CHAPTER_WORD_SEC = 1.0  # U23: 章の最後の 1 語のカードの長さ
+    CHAPTER_WORD_MIN_SEC = 4.0  # これより短い章には出さない
+
+    async def _chapter_words(
+        self,
+        project_id: str,
+        prof: DesignProfile,
+        chapters: list[tuple[int, str]],
+        cmds: list[Any],
+        lane: Any,
+        total: int,
+        fps: float,
+        w: int,
+        h: int,
+        ink: str,
+    ) -> list[str]:
+        """統合版 U23: 解説の各章の終わりに、章の見出しの語（1〜4 字）を単色の全面で 1 秒見せる。
+
+        語は chapter_word（見出しの最後の語。長ければその中の最も長い漢字・カタカナの続き）。
+        色は型の主色の地に文字の色。章の題名（H1）の前に終わるので重ならない。"""
+        from video_automation.services.rendering import lyric_screen as ls
+
+        n = round(self.CHAPTER_WORD_SEC * fps)
+        starts = [st for st, _ in chapters]
+        made = 0
+        for k, (st, text) in enumerate(chapters):
+            end = starts[k + 1] if k + 1 < len(starts) else None
+            if end is None:  # 最後の章は締め（H5・終了画面）に任せる
+                continue
+            at = end - n
+            word = chapter_word(text)
+            if not word or at - st < round(self.CHAPTER_WORD_MIN_SEC * fps) or at + n > total:
+                continue
+            if not yield_to_span(cmds, {lane(TRACKS[1])}, at, at + n, 0):
+                continue
+            gen = ls.word_card(word, k, w, h, self.titles.font_path, n,
+                               colors=(prof.palette.main, ink))  # fmt: skip
+            a = await self._overlay(project_id, gen, f"章のまとめの語（U23）「{word}」", fps)
+            cmds.append(
+                AddClip(track_id=lane(CHAPTER_TRACK), asset_id=a.id, start_frame=at,
+                        duration_frames=n, clip_id=str(uuid4()))
+            )  # fmt: skip
+            made += 1
+        return [f"章の終わり {made} か所に、見出しの語を 1 秒見せました（U23）"] if made else []
+
     async def _h_cards(
         self,
         project_id: str,
@@ -1155,6 +1220,11 @@ class DirectionService:
                            Keyframe(frame=n - 7, opacity=1.0, scale=1.0, easing=Easing.CUBIC_IN),
                            Keyframe(frame=n - 1, opacity=0.0, scale=0.96)])  # fmt: skip
                 last = at + n
+        if pv == Purpose.EXPLAINER and len(chapters) >= 2:
+            # 統合版 U23（解説の章の中の「説明」と「まとめ」）: 章の最後の 1 秒に、単色の全面
+            # （UC5）に章の見出しの語を 1 語（UL1・US5 の大きさ。1 字 300px・2 字以上 220px）
+            notes += await self._chapter_words(project_id, prof, chapters, cmds, lane, total,
+                                               fps, w, h, ink)  # fmt: skip
         if pv in (Purpose.PROMO, Purpose.EVENT) and plan.title:  # H5: 最後の 3 秒に締めのカード
             n = round(3 * fps)
             at = total - n
@@ -3507,6 +3577,23 @@ class DirectionService:
             aw, ah = row.width or 1, row.height or 1
             return native_transform(aw, ah, w, h, cx=left_x + aw / w / 2, cy=top_y + ah / h / 2)
 
+        # 統合版 P2: ポッドキャストの中央の絵（カバーの画像。構成の cover で渡したとき）
+        if prof is not None and prof.purpose == Purpose.PODCAST:
+            cover = next(
+                (a for a in assets.values() if a.name.startswith(COVER_NAME) and a.kind == "image"),
+                None,
+            )
+            if cover is not None:
+                aw, ah = cover.width or 1, cover.height or 1
+                add(
+                    lane(COVER_TRACK),
+                    cover.id,
+                    0,
+                    total,
+                    role="image",
+                    transform=native_transform(aw, ah, w, h, cx=0.5, cy=COVER_CY,
+                                               max_h=COVER_H, max_w=COVER_H * h / w),
+                )  # fmt: skip
         # 統合版 P2: ポッドキャストの波形（話者ごとに、話している人の声だけを話者の色で）
         if prof is not None and prof.purpose == Purpose.PODCAST:
             wave_ = await self._podcast_waves(p, req.script_id, total, part_dir)
@@ -3724,6 +3811,19 @@ class DirectionService:
                         max_h=0.12,
                     ),
                 )
+                # 統合版 L7: 光沢のスイープの用途では、ロゴにも 1 回通す（題名とロゴに 1 回ずつ）
+                if prof is not None and prof.allows(Component.GLOSS):
+                    from video_automation.services.rendering import logo_gloss as lg
+
+                    at = frames(lg.START_SEC)
+                    if at + lg.FRAMES <= total:
+                        src_ = Path(self.settings.data_dir) / logo.path
+                        g = await self._overlay(p.id, lg.frames(src_), "ロゴの光沢（L7）", fps)
+                        tf = native_transform(logo.width or 1, logo.height or 1, w, h,
+                                              cx=1 - sa.right - lw / 2, cy=sa.top + lh / 2,
+                                              max_w=lw, max_h=0.12)  # fmt: skip
+                        add(lane(LOGO_GLOSS_TRACK), g.id, at, lg.FRAMES, role="logo_gloss",
+                            transform=tf)  # fmt: skip
         # 統合版 X1・X2・X3・X5・X6: 効果と粒
         if prof is not None:
             # 予告編の題名は台詞の後（t_at から tr_title フレーム）。他の用途は 0〜title_end

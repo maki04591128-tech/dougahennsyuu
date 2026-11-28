@@ -595,10 +595,12 @@ def line_motion(sc, entrance, hold, exit_, length, out_at, beats=()):
 
 T23_POINTS = 64
 T23_FRAMES = 12
+T23_EXTRA_POINTS = 32  # 穴・離れた部分の線の点の数
 
 
 def _glyph_outlines(text, size, font_path):
-    """文字列の各文字の最も外側の輪郭（最も大きい閉じた線）を、T23_POINTS 点の列で返す。
+    """文字列の各文字の輪郭を返す。各文字は (最も大きい閉じた線を T23_POINTS 点にした列,
+    ほかの線（穴・離れた部分）を T23_EXTRA_POINTS 点にした列のリスト)。
     文字の区切りは、輪郭の中心の x を字数で等分した帯で決める（和文はほぼ等幅のため）。"""
     from mathutils import Vector
     from mathutils.geometry import interpolate_bezier
@@ -649,9 +651,11 @@ def _glyph_outlines(text, size, font_path):
         ]
         if not mine:
             c = Vector((x0 + bw * (k + 0.5), 0.0))
-            out.append([c.copy() for _ in range(T23_POINTS)])
+            out.append(([c.copy() for _ in range(T23_POINTS)], []))
             continue
-        out.append(_resample(max(mine, key=area), T23_POINTS))
+        big = max(mine, key=area)
+        rest = [_resample(lp, T23_EXTRA_POINTS) for lp in mine if lp is not big]
+        out.append((_resample(big, T23_POINTS), rest))
     return out
 
 
@@ -681,6 +685,19 @@ def morph_line(sc, prev_text, text, size, y, color, font_path, length):
     b = _glyph_outlines(text, size, font_path)
     if not a or len(a) != len(b):
         return False
+    # 外側の線は a → b へ移す。穴・離れた部分（「あ」の内側・「ら」の点など）は、前の行の線を
+    # その中心へ縮めて消し、次の行の線を中心から広げる（2D の塗りは入れ子の線を穴にする）。
+    # 以前は外側の線だけを変形したので、変形の間は穴が塗りつぶされていた
+    pairs = []  # (前の形, 次の形)
+    for (oa, ra), (ob_, rb) in zip(a, b, strict=True):
+        pairs.append((oa, ob_))
+        for lp in ra:
+            c = sum(lp, lp[0] * 0) / len(lp)
+            pairs.append((lp, [c.copy() for _ in lp]))
+        for lp in rb:
+            c = sum(lp, lp[0] * 0) / len(lp)
+            pairs.append(([c.copy() for _ in lp], lp))
+    REPORT["morph_loops"] = REPORT.get("morph_loops", 0) + len(pairs)
     mat = bpy.data.materials.new("t23")
     bs = mat.node_tree.nodes["Principled BSDF"]
     bs.inputs["Base Color"].default_value = (*color, 1)
@@ -689,9 +706,9 @@ def morph_line(sc, prev_text, text, size, y, color, font_path, length):
     cu = bpy.data.curves.new("t23_shape", "CURVE")
     cu.dimensions = "2D"
     cu.fill_mode = "BOTH"
-    for la in a:
+    for la, _lb in pairs:
         sp = cu.splines.new("POLY")
-        sp.points.add(T23_POINTS - 1)
+        sp.points.add(len(la) - 1)
         for q, v in zip(sp.points, la, strict=True):
             q.co = (v.x, v.y, 0.0, 1.0)
         sp.use_cyclic_u = True
@@ -705,7 +722,7 @@ def morph_line(sc, prev_text, text, size, y, color, font_path, length):
     ob.shape_key_add(name="Basis")
     key = ob.shape_key_add(name="Next")
     i = 0
-    for lb in b:
+    for _la, lb in pairs:
         for v in lb:
             key.data[i].co = (v.x, v.y, 0.0)
             i += 1

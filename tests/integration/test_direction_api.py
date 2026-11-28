@@ -815,6 +815,16 @@ async def test_series_logo_op_and_check(dclient, media_dir):
     (lg,) = by["series_logo"]
     assert lg["transform"]["x"] > 0.3 and lg["transform"]["y"] < -0.3  # 右上
     assert "end_screen" not in by  # シリーズで終了画面を外した
+    assert "logo_gloss" not in by  # 解説は光沢のスイープ（L7）を使わない
+    # 統合版 L7: 光沢の用途（商品紹介）では、ロゴにも 0.5 秒後に 25f の帯を 1 回通す
+    tl, by = await _apply(c, pid, sid, "product", series_id=s["id"])
+    (gl,) = by["logo_gloss"]
+    (lg,) = by["series_logo"]
+    assert gl["start_frame"] == 15 and gl["end_frame"] - gl["start_frame"] == 25
+    assert (
+        gl["transform"]["x"] == lg["transform"]["x"]
+        and gl["transform"]["y"] == lg["transform"]["y"]
+    )
     prof = await c.app.state.container.design.profile_for(pid)
     assert prof.palette.main == "#123456"
     d = (await c.get(f"/projects/{pid}/design")).json()
@@ -905,10 +915,21 @@ async def test_hearing_aid_subtitles(dclient, tmp_path):
     ass = (await render._ass_for(sid, 640, 360, tmp_path / "b.ass")).read_text("utf-8-sig")
     assert ",♪～" in ass.replace("}", ",") and "～♪" in ass
     assert "（A）" in ass and "（B）" in ass
+    # 書き出す字幕ファイル（SRT）にも入れ、時刻の順に並べる
+    srt = (await c.post("/subtitles/export", json={"script_id": sid, "format": "srt"})).json()[
+        "content"
+    ]
+    assert "♪～" in srt and "～♪" in srt and "（A）" in srt
+    starts = [ln.split(" --> ")[0] for ln in srt.splitlines() if " --> " in ln]
+    assert starts == sorted(starts)
     # オフに戻すと付けない
     await c.put(f"/projects/{pid}/design", json={"hearing_aid": False})
     ass = (await render._ass_for(sid, 640, 360, tmp_path / "c.ass")).read_text("utf-8-sig")
     assert "♪" not in ass
+    srt = (await c.post("/subtitles/export", json={"script_id": sid, "format": "srt"})).json()[
+        "content"
+    ]
+    assert "♪" not in srt
 
 
 async def test_emotion_subtitles_only_where_allowed(dclient, tmp_path):
@@ -993,6 +1014,29 @@ async def test_podcast_waveform_per_speaker(dclient):
     # 解説では波形を出さない
     _, by = await _apply(c, pid, sid, "explainer")
     assert not by.get("podcast_wave")
+
+
+async def test_podcast_cover_in_the_center(dclient, media_dir):
+    """統合版 P2: 構成で渡したカバーの画像（名前が「カバー: 」で始まる）を、波形の上の中央に置く。"""
+    from PIL import Image
+
+    c = dclient
+    pid, sid = await _ready_script(c)
+    Image.new("RGB", (800, 800), (200, 80, 60)).save(media_dir / "cover.png")
+    r = await c.post(
+        "/assets/import",
+        json={"project_id": pid, "path": str(media_dir / "cover.png"), "name": "カバー: cover.png"},
+    )
+    assert r.status_code == 201, r.text
+    tl, _ = await _apply(c, pid, sid, "podcast")
+    tr = next(t for t in tl["tracks"] if t["name"] == "演出・カバー")
+    (cv,) = [x for x in tl["clips"] if x["track_id"] == tr["id"]]
+    assert cv["start_frame"] == 0 and abs(cv["transform"]["x"]) < 1e-6
+    assert -0.15 < cv["transform"]["y"] < 0  # 中央より少し上（波形は下寄り）
+    # 解説では置かない
+    tl, _ = await _apply(c, pid, sid, "explainer")
+    ids = {t["id"] for t in tl["tracks"] if t["name"] == "演出・カバー"}
+    assert not any(x["track_id"] in ids for x in tl["clips"])
 
 
 async def test_story_cutout_image_gets_parallax(dclient, media_dir):
@@ -1177,9 +1221,10 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
                      (300, "仕組み"), (600, "まとめ")], cmds, lambda n: n, 900, 30.0, 640, 360,
                      None, "#FFFFFF")  # fmt: skip
     cards = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
-    # 章が 3 つ以上なので、目次（N6・2 秒）の後に章の題名カード（H1・2.5 秒）
+    # 章が 3 つ以上なので、目次（N6・2 秒）の後に章の題名カード（H1・2.5 秒）。
+    # 統合版 U23: 章の終わりの 1 秒に見出しの語のカード（最後の章には出さない）
     assert [(x.start_frame, x.duration_frames) for x in cards] == [
-        (300, 60), (600, 60), (360, 75), (660, 75),
+        (300, 60), (600, 60), (360, 75), (660, 75), (270, 30), (570, 30),
     ]  # fmt: skip
     anims = [x for x in cmds if isinstance(x, SetClipAnimation)]
     assert anims[0].animation.keyframes[-1].opacity == 0.0
@@ -1198,7 +1243,7 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
     # 題名の間に収まるだけの短いカードは、外さずに題名カードを出さない
     assert any(isinstance(x, AddClip) and x.clip_id == "short" for x in cmds)
     h1 = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
-    assert [x.start_frame for x in h1] == [300, 600, 360]
+    assert [x.start_frame for x in h1] == [300, 600, 360, 270, 570]
     cmds = []
     await d._h_cards(pid, PROFILES[Purpose.PROMO], DirectionPlan(title="新しい靴"), [], [], cmds,
                      lambda n: n, 900, 30.0, 640, 360, None, "#FFFFFF")  # fmt: skip

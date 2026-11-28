@@ -59,3 +59,46 @@ def frames_from_raw(raw: bytes) -> np.ndarray:
     """ffmpeg の gray の rawvideo（SAMPLE_W × SAMPLE_H）→ (n, h, w)。"""
     n = len(raw) // (SAMPLE_W * SAMPLE_H)
     return np.frombuffer(raw[: n * SAMPLE_W * SAMPLE_H], np.uint8).reshape(n, SAMPLE_H, SAMPLE_W)
+
+
+SHRINK = 0.5  # カード・図が出ている間のワイプの大きさ（元の大きさに対する比）
+SHRINK_FRAMES = 8  # 縮む・戻る動き（f）
+SHRINK_GAP = 20  # これより短い間で続くカード・図は 1 つの区間にまとめる（f）
+
+
+def busy_spans(spans: list[tuple[int, int]], gap: int = SHRINK_GAP) -> list[tuple[int, int]]:
+    """カード・図の出ている区間（フレーム）を、短い間をつないでまとめる。"""
+    out: list[tuple[int, int]] = []
+    for a, b in sorted(spans):
+        if out and a - out[-1][1] < gap:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def shrink_keys(corner: str, w: int, h: int, spans: list[tuple[int, int]],
+                length: int) -> list[tuple[int, float, float, float]]:  # fmt: skip
+    """カード・図が出ている間は、ワイプを隅に寄せたまま SHRINK 倍に縮める（重ならないように）。
+
+    戻り値は (クリップの中のフレーム, 大きさの倍率, x のずれ, y のずれ) の列。キーフレームの
+    scale は置いた大きさへの倍率、x・y は置いた位置からのずれ（画面比）で、拡大縮小は中心で
+    かかるので、縮めた分だけ中心を隅へ寄せる。
+    PC の確認で、画面の 18% のワイプが真ん中のカードの右上に重なった。"""
+    x0, y0, x1, y1 = box(corner, w, h)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    sw, sh = (x1 - x0) * SHRINK, (y1 - y0) * SHRINK
+    sx = x1 - sw / 2 if corner.endswith("right") else x0 + sw / 2
+    sy = y0 + sh / 2 if corner.startswith("top") else y1 - sh / 2
+    full = (1.0, 0.0, 0.0)
+    small = (SHRINK, (sx - cx) / w, (sy - cy) / h)
+    n = SHRINK_FRAMES
+    keys: list[tuple[int, float, float, float]] = []
+    for a, b in busy_spans(spans):
+        a0, b1 = max(0, a - n), min(length - 1, b + n)
+        if b1 - a0 < 2 * n + 1:
+            continue
+        if keys and a0 <= keys[-1][0]:
+            continue
+        keys += [(a0, *full), (a0 + n, *small), (b1 - n, *small), (b1, *full)]
+    return keys

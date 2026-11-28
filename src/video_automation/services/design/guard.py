@@ -569,9 +569,13 @@ OPENING_FRAMES = 15  # 統合版 S5: 縦型の最初の 15f（30fps）に入り�
 
 
 def opening_motion(m: DesignManifest) -> bool:
-    """最初の 15f のうちに、要素が入ってくる動き（不透明度・位置・拡大のキー）があるか。
-    ケン・バーンズ（素材の中で寄る・動く）は数えない。"""
+    """最初の 15f のうちに、要素が入ってくる動き（不透明度・位置・拡大のキー・題名の入り）が
+    あるか。ケン・バーンズ（素材の中で寄る・動く）は数えない。"""
     limit = OPENING_FRAMES / 30
+    # 題名（Blender で書き出した動画）は入りの動き（T16）を画の中に持つので、クリップに
+    # キーフレームが無くても入りの動きに数える（縦型ショートで題名が入っているのに warning が出た）
+    if any(t.kind == "title" and t.start < limit for t in m.texts):
+        return True
     for c in m.clips:
         if c.start >= limit or c.preset in KEN_BURNS:
             continue
