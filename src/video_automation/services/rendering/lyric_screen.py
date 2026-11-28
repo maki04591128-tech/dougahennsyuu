@@ -81,6 +81,21 @@ FONT_OF = {
     "UF3": "Dela Gothic One", "UF4": "Zen Maru Gothic Medium", "UF5": "Zen Kurenaido",
     "UF6": "RocknRoll One", "UF7": "Yuji Boku",
 }  # fmt: skip
+# 方向性ごとの字形の書体の差し替え（統合版 U7・U21 の UF5・UF6 の注: 丸みを強くするなら
+# Mochiy Pop One、手描き風なら Hachi Maru Pop、太い手書きは Yusei Magic）
+DIRECTION_FONT_SWAP: dict[str, dict[str, str]] = {
+    "vocaloid_cute": {"RocknRoll One": "Hachi Maru Pop"},
+    "idol": {"RocknRoll One": "Mochiy Pop One"},
+    "anison": {"Zen Kurenaido": "Yusei Magic"},
+}
+
+
+def fonts_for(direction: str, fonts: Callable[[str], str | None]) -> Callable[[str], str | None]:
+    """方向性の書体の差し替えを掛けた、書体名 → ファイルの関数。"""
+    swap = DIRECTION_FONT_SWAP.get(direction, {})
+    return lambda name: fonts(swap.get(name, name))
+
+
 # 描けるもの（このモジュールで描き分ける値）。ほかの値は要素の表にだけある
 DRAWN = {
     "UC0", "UC1", "UC2", "UC3", "UC5", "UP2", "UP3", "UP4", "UP5", "UP7", "UP8",

@@ -1918,7 +1918,7 @@ class BuildService:
             nth = seen.get(kind, 0)
             seen[kind] = nth + 1
             scr = ls_.screen_for(direction, ph.section, nth) if direction else ls_.EXTRA["U9"]
-            gen = ls_.frames(scr, ph, pic, w, h, fonts, fps, seed=i)
+            gen = ls_.frames(scr, ph, pic, w, h, ls_.fonts_for(direction, fonts), fps, seed=i)
             label = ls_.DIRECTION_NAMES.get(direction, direction) if direction else "U9"
             a = await c.direction._overlay(project_id, gen, f"歌詞の画面（{label}）", fps)
             cmds.append(

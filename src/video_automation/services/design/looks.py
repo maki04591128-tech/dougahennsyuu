@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from video_automation.schemas.design import DesignProfile, Purpose
+from video_automation.services.rendering.font_catalog import LOOK_FONTS
 
 
 @dataclass(frozen=True)
@@ -65,8 +66,9 @@ def apply_look(p: DesignProfile, look: str | None) -> DesignProfile:
     lk = LOOKS[look]
     pal = p.palette.model_copy(update=dict(lk.colors))
     typo = p.typography
-    if lk.heading_font:
-        typo = typo.model_copy(update={"heading_font": lk.heading_font})
+    head = lk.heading_font or LOOK_FONTS.get(look)  # 指定の無い型は、集めた自由な書体
+    if head:
+        typo = typo.model_copy(update={"heading_font": head})
     motion = p.motion
     if lk.stepped and not motion.stepped:
         motion = motion.model_copy(update={"stepped": lk.stepped})
