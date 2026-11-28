@@ -138,8 +138,12 @@ class DesignService:
     async def set(self, project_id: str, design: ProjectDesign) -> ProjectDesign:
         async with self.db.session_factory() as s:
             p = await self._project(s, project_id)
-            p.purpose = design.purpose.value if design.purpose else None
-            p.design_extras = [c.value for c in dict.fromkeys(design.extras)]
+            # 送られた項目だけ変える（{"lyric_direction": ...} だけの更新で用途を消さない）
+            sent = design.model_fields_set
+            if "purpose" in sent:
+                p.purpose = design.purpose.value if design.purpose else None
+            if "extras" in sent:
+                p.design_extras = [c.value for c in dict.fromkeys(design.extras)]
             if design.series_id is not None:
                 if design.series_id and self.series is not None:
                     self.series.get(design.series_id)  # 無いシリーズは付けない
@@ -151,7 +155,8 @@ class DesignService:
             if design.lyric_direction is not None:  # 統合版 U1
                 p.lyric_direction = design.lyric_direction or None
             if design.look is not None:  # 統合版 Y: 選べない型は保存しない
-                ok = design.purpose is not None and allowed(design.purpose, design.look)
+                cur = Purpose(p.purpose) if p.purpose else None
+                ok = cur is not None and allowed(cur, design.look)
                 p.look = design.look if ok else None
             await s.commit()
         return await self.get(project_id)
