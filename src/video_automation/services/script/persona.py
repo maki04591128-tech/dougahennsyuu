@@ -390,6 +390,25 @@ def fill_endings(text: str, p: Persona) -> str:
     return "".join(out) + text[last:]
 
 
+def append_ending(text: str, p: Persona) -> str:
+    """語尾の抜けた文の終わりに、そのキャラクターの最初の語尾を付ける（「…めたん」→「…めたんよ」）。
+
+    「のだ」のキャラクターは fill_endings を使う。書き直しても残ったときの最後の手当て。"""
+    if not p.endings:
+        return text
+    if any(e.endswith("のだ") for e in p.endings):
+        return fill_endings(text, p)
+    out, last = [], 0
+    for m in _SENT.finditer(text):
+        sent = m.group(0)
+        core = sent.strip().rstrip(_TRAIL)
+        if len(core) >= 5 and not _ending_ok(sent.strip(), p.endings):
+            tail = sent.strip()[len(core) :]
+            out.append(text[last : m.start()] + core + p.endings[0] + tail)
+            last = m.end()
+    return "".join(out) + text[last:]
+
+
 # 3 文字以上の漢字・カタカナの語（「白地図」「カレーパン」）。2 文字の語は一般的な語と紛れる
 _SIG_WORD = re.compile(r"[一-龥]{3,}|[ァ-ヺー]{3,}")
 _SIG_STOP = {"センパイ", "オマエ", "アンタ"}  # 呼び方は口調の規則で扱う
@@ -403,6 +422,23 @@ def set_signature(p: Persona, topic: str) -> None:
             if w not in _SIG_STOP and w not in p.name and w not in topic:
                 words.add(w)
     p.signature = words
+
+
+def drop_signature_clauses(text: str, p: Persona) -> str:
+    """決めゼリフの語（手本の「白地図」など）を含む句（読点・句点で区切った所）を外す。
+
+    LLM に書き直させても残ったときの最後の手当て（PC の確認で、ゲーム実況の自己紹介に
+    「白地図を四国に染める女よ」が残った）。残りが 4 字未満なら元の文のまま返す。"""
+    if not p.signature:
+        return text
+    parts = [x for x in re.split(r"(?<=[、,。！？!?])", text) if x]
+    keep = [x for x in parts if not any(w in x for w in p.signature)]
+    if len(keep) == len(parts):
+        return text
+    rest = "".join(keep).strip().rstrip("、,")
+    if len(re.sub(r"[\s、。！？!?…]", "", rest)) < 4:
+        return text
+    return rest
 
 
 def _example_sentences(p: Persona) -> list[str]:
