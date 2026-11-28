@@ -150,6 +150,29 @@ class VA_Settings(bpy.types.PropertyGroup):
         type=bpy.types.Text,
         description="テキストエディタに貼った歌詞（1 行 1 字幕）。無ければ歌声を文字起こしします",
     )
+    mv_image: StringProperty(  # type: ignore[valid-type]
+        name="絵",
+        subtype="FILE_PATH",
+        description=(
+            "MV のショットを作る 1 枚の絵（任意）。透明の部分があれば切り抜きとして使います。"
+            "ピクチャ・デスクトップ・ダウンロードのフォルダに置いてください"
+        ),
+    )
+    lyric_direction: EnumProperty(  # type: ignore[valid-type]
+        name="曲の方向性",
+        description="選ぶと、歌の区間をフレーズごとの「歌詞の画面」で見せます（統合版 U1）",
+        items=[
+            ("AUTO", "おまかせ", "歌詞は動く文字で出します"),
+            ("vocaloid_cool", "ボカロ（かっこいい系）", ""),
+            ("vocaloid_cute", "ボカロ（かわいい系）", ""),
+            ("vocaloid_calm", "ボカロ（しっとり系）", ""),
+            ("anison", "アニソン", ""),
+            ("ballad", "バラード", ""),
+            ("rap", "ラップ", ""),
+            ("pop", "ポップソング", ""),
+            ("idol", "アイドルソング", ""),
+        ],
+    )
     plan_json: StringProperty(default="")  # type: ignore[valid-type]
     job_id: StringProperty(default="")  # type: ignore[valid-type]
     progress: FloatProperty(default=0.0, min=0.0, max=1.0)  # type: ignore[valid-type]
@@ -896,6 +919,8 @@ class VA_OT_make_plan(bpy.types.Operator):
         rec = bpy.path.abspath(st.recording) if st.recording else ""
         song = bpy.path.abspath(st.music) if st.music else ""
         words = st.lyrics.as_string() if st.lyrics else ""
+        pic = bpy.path.abspath(st.mv_image) if st.mv_image else ""
+        direction = "" if st.lyric_direction == "AUTO" else st.lyric_direction
 
         def work():
             _ensure_engine(server)
@@ -911,7 +936,7 @@ class VA_OT_make_plan(bpy.types.Operator):
                     ),
                 )
             )
-            plan = cl.build_plan(text, dur, orient, ref, rec, song, words)
+            plan = cl.build_plan(text, dur, orient, ref, rec, song, words, pic, direction)
             _jobs.put(("plan", plan))
             _jobs.put(("status", "構成を確認してください"))
 
@@ -1123,6 +1148,8 @@ class VA_PT_make(bpy.types.Panel):
         box.prop(st, "music")
         if st.music:
             box.prop(st, "lyrics")
+            box.prop(st, "mv_image")
+            box.prop(st, "lyric_direction")
         lay.operator(VA_OT_make_plan.bl_idname, icon="VIEWZOOM")
 
     def _review(self, lay, st):
