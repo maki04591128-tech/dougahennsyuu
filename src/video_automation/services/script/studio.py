@@ -59,8 +59,10 @@ from video_automation.services.script.persona import (
     BAD_JOINS,
     FOREIGN_SCRIPT,
     Persona,
+    append_ending,
     check_line,
     check_lines,
+    drop_signature_clauses,
     fill_endings,
     foreign_endings,
     parse_style,
@@ -725,11 +727,15 @@ class ScriptStudio:
         rest = []
         for i in need:
             it = items[i]
-            new = _simple_fix(it["text"])
             p = personas[it["speaker"]]
+            new = _simple_fix(drop_signature_clauses(it["text"], p))
             _, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
             if any(x.kind == "ending" for x in iss):
                 new = fill_endings(new, p)
+                _, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
+            if any(x.kind == "ending" for x in iss) and new != it["text"]:
+                # 決めゼリフの句を外した後の文には、語尾を足す（「…めたん」→「…めたんよ」）
+                new = append_ending(new, p)
                 _, iss = check_line(0, new, p, foreign_endings(personas, it["speaker"]), personas)
             if new != it["text"] and not any(x.kind in ("ending", "avoid") for x in iss):
                 it["text"] = new

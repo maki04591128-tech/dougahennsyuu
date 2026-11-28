@@ -981,7 +981,7 @@ async def test_podcast_waveform_per_speaker(dclient):
         in {t["id"] for t in tl["tracks"] if t["kind"] == "audio" and t["name"] != "BGM"}
     )
     assert all(x["start_frame"] == 0 and x["end_frame"] >= voice - 2 for x in waves)
-    assert all(x["transform"]["y"] > 0.2 for x in waves)  # 画面の下寄り
+    assert all(0.15 < x["transform"]["y"] < 0.25 for x in waves)  # 下寄り（字幕の箱の上）
     # 波形は透過で、話していない間は描かない。A と B で色が違う
     container = c.app.state.container
     from video_automation.database.models import Asset
@@ -1222,10 +1222,17 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
                      None, "#FFFFFF")  # fmt: skip
     cards = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
     # 章が 3 つ以上なので、目次（N6・2 秒）の後に章の題名カード（H1・2.5 秒）。
-    # 統合版 U23: 章の終わりの 1 秒に見出しの語のカード（最後の章には出さない）
+    # 10 秒の章には U23 の見出しの語のカードを出さない（20 秒以上の章だけ）
     assert [(x.start_frame, x.duration_frames) for x in cards] == [
-        (300, 60), (600, 60), (360, 75), (660, 75), (270, 30), (570, 30),
+        (300, 60), (600, 60), (360, 75), (660, 75),
     ]  # fmt: skip
+    # 統合版 U23: 20 秒以上の章の終わりの 1 秒に見出しの語のカード（最後の章には出さない）
+    long_: list = []
+    await d._h_cards(pid, PROFILES[Purpose.EXPLAINER], DirectionPlan(), [], [(0, "はじめに"),
+                     (900, "光合成のしくみ"), (1800, "まとめ")], long_, lambda n: n, 2700, 30.0,
+                     640, 360, None, "#FFFFFF")  # fmt: skip
+    words = [x for x in long_ if isinstance(x, AddClip) and x.duration_frames == 30]
+    assert [x.start_frame for x in words] == [870, 1770]
     anims = [x for x in cmds if isinstance(x, SetClipAnimation)]
     assert anims[0].animation.keyframes[-1].opacity == 0.0
     # PC で見つけた不具合: 章の頭のカード（演出・図）に題名カードが重なった。カードは題名の後へ
@@ -1243,7 +1250,7 @@ async def test_h1_chapter_cards_and_h5_closing(dclient):
     # 題名の間に収まるだけの短いカードは、外さずに題名カードを出さない
     assert any(isinstance(x, AddClip) and x.clip_id == "short" for x in cmds)
     h1 = [x for x in cmds if isinstance(x, AddClip) and x.track_id == "演出・章"]
-    assert [x.start_frame for x in h1] == [300, 600, 360, 270, 570]
+    assert [x.start_frame for x in h1] == [300, 600, 360]
     cmds = []
     await d._h_cards(pid, PROFILES[Purpose.PROMO], DirectionPlan(title="新しい靴"), [], [], cmds,
                      lambda n: n, 900, 30.0, 640, 360, None, "#FFFFFF")  # fmt: skip

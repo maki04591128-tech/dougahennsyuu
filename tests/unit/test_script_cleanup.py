@@ -299,6 +299,18 @@ def test_signature_terms():
     assert m.signature == {"白地図"}
     _, iss = check_line(0, "四国めたんの白地図が完成するのよ", m)
     assert any(x.kind == "avoid" and "白地図" in x.expected for x in iss)
+    # 書き直しても残ったときは、決めゼリフの語を含む句だけを外す（PC: ゲーム実況の自己紹介）
+    from video_automation.services.script.persona import drop_signature_clauses
+
+    got = drop_signature_clauses("わたくしは四国めたん、白地図を四国に染める女よ", m)
+    assert got == "わたくしは四国めたん"
+    assert drop_signature_clauses("白地図を染める女よ", m) == "白地図を染める女よ"  # 残りが無い
+    assert drop_signature_clauses("今日はいい天気ね、出かけましょう", m).startswith("今日は")
+    from video_automation.services.script.persona import append_ending
+
+    m2 = parse_style("四国めたん", "一人称は「わたくし」。語尾は「〜よ」・「〜わ」")
+    assert append_ending("わたくしは四国めたん", m2) == "わたくしは四国めたんよ"
+    assert append_ending("今日はいい天気だわ。", m2) == "今日はいい天気だわ。"
     set_signature(m, "白地図の塗り方")
     assert m.signature == set()
 

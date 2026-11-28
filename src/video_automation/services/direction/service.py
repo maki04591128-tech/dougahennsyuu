@@ -214,7 +214,7 @@ LOGO_GLOSS_TRACK = "演出・ロゴの光沢"  # 統合版 L7
 WAVE_TRACK = "演出・波形"  # 統合版 P2
 COVER_TRACK = "演出・カバー"  # 統合版 P2 の中央の絵
 COVER_NAME = "カバー: "  # 構成（build）の cover で取り込んだ画像の名前の頭
-COVER_CY, COVER_H = 0.42, 0.52  # カバーの中心の高さと、大きさの上限（画面の高さに対する比）
+COVER_CY, COVER_H = 0.38, 0.48  # カバーの中心の高さと、大きさの上限（画面の高さに対する比）
 CUT_TRACK = "演出・切り替え"  # 統合版 E6・E9・E10
 FX_TRACK, EMBER_TRACK = "演出・効果", "演出・粒"  # 統合版 X1〜X6
 CLOSE_TRACK, NEWS_TRACK, TICKER_TRACK = "演出・締め", "演出・ニュースの帯", "演出・ティッカー"
@@ -1052,7 +1052,9 @@ class DirectionService:
         return AssetRead.model_validate(row)
 
     CHAPTER_WORD_SEC = 1.0  # U23: 章の最後の 1 語のカードの長さ
-    CHAPTER_WORD_MIN_SEC = 4.0  # これより短い章には出さない
+    # これより短い章には出さない（PC の確認: 10 秒ごとの章では、まとめの語・目次・章の題名が
+    # 続いて 5.5 秒ずつ本編を止めた）
+    CHAPTER_WORD_MIN_SEC = 20.0
 
     async def _chapter_words(
         self,
@@ -1067,7 +1069,8 @@ class DirectionService:
         h: int,
         ink: str,
     ) -> list[str]:
-        """統合版 U23: 解説の各章の終わりに、章の見出しの語（1〜4 字）を単色の全面で 1 秒見せる。
+        """統合版 U23: 解説の各章（20 秒以上）の終わりに、章の見出しの語（1〜4 字）を単色の
+        全面で 1 秒見せる。
 
         語は chapter_word（見出しの最後の語。長ければその中の最も長い漢字・カタカナの続き）。
         色は型の主色の地に文字の色。章の題名（H1）の前に終わるので重ならない。"""
@@ -1075,7 +1078,6 @@ class DirectionService:
 
         n = round(self.CHAPTER_WORD_SEC * fps)
         starts = [st for st, _ in chapters]
-        made = 0
         for k, (st, text) in enumerate(chapters):
             end = starts[k + 1] if k + 1 < len(starts) else None
             if end is None:  # 最後の章は締め（H5・終了画面）に任せる
@@ -1093,8 +1095,8 @@ class DirectionService:
                 AddClip(track_id=lane(CHAPTER_TRACK), asset_id=a.id, start_frame=at,
                         duration_frames=n, clip_id=str(uuid4()))
             )  # fmt: skip
-            made += 1
-        return [f"章の終わり {made} か所に、見出しの語を 1 秒見せました（U23）"] if made else []
+        # 戻り値は「外した演出」の一覧に入るので、置いたことは知らせない（演出の記録に残る）
+        return []
 
     async def _h_cards(
         self,
@@ -3602,7 +3604,9 @@ class DirectionService:
                     lane(WAVE_TRACK),
                     wave_.id,
                     0,
-                    total,
+                    # 書き出した動画は最後の 1 フレームが欠けることがある（PC で「source range
+                    # exceeds asset length」になり、ポッドキャストが作れなかった）
+                    min(total, media_frames(wave_, total)),
                     role="podcast_wave",
                     transform=place(wave_, 0.5, podcast.CENTER_Y),
                 )
