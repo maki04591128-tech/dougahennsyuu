@@ -214,7 +214,12 @@ Claude のスキルと同じ形（`<名前>/SKILL.md`。先頭に `name` と `de
 
 ```powershell
 uv sync --extra ui
+uv run python tools/fetch_fonts.py   # 演出に使う自由な書体（OFL）を data/fonts に取ってくる
 ```
+
+書体は SIL Open Font License 1.1 のものだけを google/fonts から取得する（リポジトリには入れない）。
+一覧と演出との組み合わせ（曲の方向性・見た目の型など）は `services/rendering/font_catalog.py`、
+取得後は `data/fonts/FONTS.md` にも書き出す。無い書体は既定の書体（メイリオなど）で代わりに描く。
 
 ## 起動
 

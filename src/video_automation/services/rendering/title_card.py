@@ -20,6 +20,7 @@ from video_automation.schemas.animation import CardRequest, InfographicRequest
 from video_automation.schemas.timeline import AssetKind, AssetRead, TitleCardRequest
 from video_automation.services.design.guard import font_key
 from video_automation.services.rendering.card import card_filter, card_layout
+from video_automation.services.rendering.font_catalog import find_font
 from video_automation.services.timeline.timeline_service import (
     TimelineNotFoundError,
     TimelineService,
@@ -85,6 +86,11 @@ class TitleCardService:
         if self.settings.title_font_path:
             return self.settings.title_font_path
         if family:
+            # 集めた自由な書体（data/fonts。tools/fetch_fonts.py が取ってくる）を先に探す
+            data = getattr(self.settings, "data_dir", None)
+            got = find_font(family, [Path(data) / "fonts"]) if data else None
+            if got:
+                return got
             key = font_key(family)
             for f in FONT_FILES.get(key, []):
                 if Path(f).is_file():
