@@ -89,6 +89,12 @@ def test_letterbox():
     spans = [(10, 20, "verse"), (20, 30, "chorus_first"), (30, 40, "drop"), (40, 50, "chorus")]
     assert mv.letterbox_spans(spans, 60) == [(0.0, 20), (30, 40)]
     assert mv.letterbox_spans([(0, 10, "verse")], 60) == []
+    # 歌詞の画面（U9 の帯など）の区間には黒帯を重ねない（PC で帯の 2 行目が隠れた）
+    assert mv.letterbox_minus([(0.0, 20.0), (30.0, 40.0)], [(5.0, 8.0), (35.0, 45.0)]) == [
+        (0.0, 5.0), (8.0, 20.0), (30.0, 35.0),
+    ]  # fmt: skip
+    assert mv.letterbox_minus([(0.0, 20.0)], [(0.0, 20.0)]) == []
+    assert mv.letterbox_minus([(0.0, 20.0)], [(5.0, 8.0)], 0.4) == [(0.0, 4.6), (8.0, 20.0)]
 
 
 def test_film_light_and_rim():

@@ -111,6 +111,7 @@ class Client:
         lyrics: str = "",
         image: str = "",
         lyric_direction: str = "",
+        facecam: str = "",
     ) -> dict[str, Any]:
         """image: MV のショットを作る 1 枚の絵（統合版 V1）。lyric_direction: 曲の方向性
         （統合版 U1。"" はおまかせ）。どちらも曲（music）があるときだけ送る。"""
@@ -125,6 +126,8 @@ class Client:
                 body["lyric_direction"] = lyric_direction
         if screen_recording.strip():
             body["screen_recording"] = screen_recording.strip()
+            if facecam.strip():  # 統合版 P6: ゲーム実況のワイプ（録画があるときだけ）
+                body["facecam"] = facecam.strip()
         if duration_sec:
             body["duration_sec"] = duration_sec
         if reference.strip():
